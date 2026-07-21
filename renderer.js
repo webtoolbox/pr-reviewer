@@ -1643,8 +1643,12 @@ function addCommitTooltipsToLineNumbers() {
 }
 
 let activeTooltip = null;
+let tooltipTimer = null;
 
 function handleLineNumberHover(e) {
+  // Clear any pending tooltip
+  if (tooltipTimer) { clearTimeout(tooltipTimer); tooltipTimer = null; }
+
   const td = e.target;
   const lineText = td.textContent.trim();
   const lineNum = parseInt(lineText, 10);
@@ -1665,25 +1669,29 @@ function handleLineNumberHover(e) {
   const commit = commitMap[sha];
   if (!commit) return;
 
-  // Show tooltip with full multi-line description
-  const tooltip = document.createElement('div');
-  tooltip.className = 'commit-tooltip';
-  const fullMsg = escapeHtml(commit.fullMessage || commit.message).replace(/\n/g, '<br>');
-  tooltip.innerHTML = `
-    <div class="tt-sha">${commit.sha}</div>
-    <div class="tt-message">${fullMsg}</div>
-    <div class="tt-author">${commit.author} · ${new Date(commit.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
-  `;
+  // Delay 400ms before showing tooltip
+  tooltipTimer = setTimeout(() => {
+    // Show tooltip with full multi-line description
+    const tooltip = document.createElement('div');
+    tooltip.className = 'commit-tooltip';
+    const fullMsg = escapeHtml(commit.fullMessage || commit.message).replace(/\n/g, '<br>');
+    tooltip.innerHTML = `
+      <div class="tt-sha">${commit.sha}</div>
+      <div class="tt-message">${fullMsg}</div>
+      <div class="tt-author">${commit.author} · ${new Date(commit.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+    `;
 
-  const rect = td.getBoundingClientRect();
-  tooltip.style.left = (rect.right + 8) + 'px';
-  tooltip.style.top = rect.top + 'px';
+    const rect = td.getBoundingClientRect();
+    tooltip.style.left = (rect.right + 8) + 'px';
+    tooltip.style.top = rect.top + 'px';
 
-  document.body.appendChild(tooltip);
-  activeTooltip = tooltip;
+    document.body.appendChild(tooltip);
+    activeTooltip = tooltip;
+  }, 400);
 }
 
 function handleLineNumberLeave() {
+  if (tooltipTimer) { clearTimeout(tooltipTimer); tooltipTimer = null; }
   if (activeTooltip) {
     activeTooltip.remove();
     activeTooltip = null;
