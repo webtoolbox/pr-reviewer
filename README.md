@@ -1,6 +1,6 @@
 # Diff Reviewer
 
-A desktop app that speeds up GitHub PR reviews by loading diffs immediately, pre-filtering files by type, excluding merge commits, and auto-loading the next PR when you're done. Includes desktop AI agent integration for tagging an agent (or any other agent) directly in review comments and automated agent rule proposals based on your feedback. Runs on macOS and Linux.
+A desktop app for GitHub PR reviews with desktop AI agent integration, file pre-filtering, and automated agent rule proposals. Speeds up reviews by loading diffs immediately, excluding merge commits, and auto-loading the next PR. Runs on macOS and Linux.
 
 ![Main Diff View](screenshots/main-diff-view.jpg)
 
@@ -8,15 +8,15 @@ A desktop app that speeds up GitHub PR reviews by loading diffs immediately, pre
 
 Reviewing PRs on GitHub means clicking into a PR, reading the description, scanning commits and comments, then navigating to the Files Changed tab before you can even see the diff. Diff Reviewer skips all of that — it loads the diff immediately and automatically moves to the next PR when you're done.
 
+**Desktop AI agent integration**: Tag @Hermes (or any other agent) in any comment to message a desktop AI agent directly from the review. The agent can help with code analysis, answer questions, or assist with changes.
+
+**Automated agent rule proposals**: After submitting a review, the app can analyze your feedback against the repo's AGENTS.md rules and propose new rules when needed. This replaces a workflow that was previously done manually — reviewing feedback, identifying gaps in agent rules, and updating the rule files.
+
 **Faster review workflow**: Open the app and start reviewing right away. No multi-step navigation. When you finish one PR, the next one loads automatically.
 
 **No merge commit noise**: Diffs automatically exclude merge commits, so you only see the actual code changes. GitHub's diff can sometimes be cluttered with merge commit diffs that make it harder to review.
 
 **Line-level commit attribution**: Hover over any line to see exactly which commit changed it and why. This makes it easy to trace the history of a specific change without digging through git blame.
-
-**Desktop AI agent integration**: Tag @Hermes (or any other agent) in any comment to message a desktop AI agent directly from the review. The agent can help with code analysis, answer questions, or assist with changes.
-
-**Automated agent rule proposals**: After submitting a review, the app can analyze your feedback against the repo's AGENTS.md rules and propose new rules when needed. This replaces a workflow that was previously done manually — reviewing feedback, identifying gaps in agent rules, and updating the rule files.
 
 **Configurable file pre-filtering**: On GitHub, all files are shown by default and you have to manually unselect file types you don't need to review every time. Diff Reviewer lets you configure default file extensions so only relevant files show up. You can also use the file extension filter pane to override that for a specific PR.
 
