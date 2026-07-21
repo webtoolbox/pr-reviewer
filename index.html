@@ -12,14 +12,14 @@
     #review-bar {
       position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
       background: #161b22; border-bottom: 1px solid #30363d;
-      padding: 10px 20px; display: flex; align-items: center; gap: 12px;
+      padding: 10px 20px; display: flex; align-items: center; gap: 10px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       height: 52px;
     }
     #review-bar .pr-info { flex: 1; font-size: 14px; color: #8b949e; }
     #review-bar .pr-info strong { color: #c9d1d9; }
     #review-bar button {
-      padding: 8px 16px; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 14px; border: 1px solid #30363d; border-radius: 6px;
       font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s;
     }
     #review-bar button:disabled { cursor: not-allowed; }
@@ -32,6 +32,80 @@
     #btn-open { background: #21262d; color: #c9d1d9; }
     #btn-open:hover { background: #30363d; }
 
+    /* Badge — matches parent button color */
+    .badge {
+      display: inline-block; border-radius: 10px; padding: 0 5px;
+      font-size: 10px; font-weight: 700; min-width: 16px;
+      text-align: center; margin-left: 5px; line-height: 16px;
+    }
+    #btn-approve .badge { background: rgba(255,255,255,0.25); color: #fff; }
+    #btn-request-changes .badge { background: rgba(255,255,255,0.25); color: #fff; }
+    #btn-comment .badge { background: #58a6ff; color: #0d1117; }
+
+    /* Export / share icon — no background, iOS style */
+    #btn-export {
+      background: transparent !important; border: none !important;
+      padding: 4px !important; cursor: pointer; display: flex;
+      align-items: center; justify-content: center;
+    }
+    #btn-export:hover { opacity: 0.7; }
+    #btn-export svg { width: 18px; height: 18px; fill: #8b949e; }
+
+    /* PR number input */
+    #pr-number-wrapper { display: flex; align-items: center; gap: 4px; }
+    #pr-number {
+      width: 60px; padding: 4px 8px; background: #0d1117;
+      border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9;
+      font-size: 13px; text-align: center;
+    }
+    #pr-number:focus { outline: none; border-color: #58a6ff; }
+
+    /* PR list button */
+    #btn-pr-list {
+      background: #21262d; color: #c9d1d9; position: relative;
+    }
+    #btn-pr-list:hover { background: #30363d; }
+
+    /* PR dropdown */
+    #pr-dropdown {
+      display: none; position: fixed; top: 52px; right: 20px;
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 1001;
+      max-height: 400px; min-width: 360px; overflow-y: auto;
+    }
+    #pr-dropdown.open { display: block; }
+    #pr-dropdown .pr-dropdown-header {
+      padding: 10px 14px; border-bottom: 1px solid #30363d;
+      font-size: 12px; color: #8b949e; font-weight: 600;
+    }
+    #pr-dropdown .pr-item {
+      padding: 10px 14px; border-bottom: 1px solid #21262d;
+      cursor: pointer; transition: background 0.1s;
+    }
+    #pr-dropdown .pr-item:hover { background: #1c2128; }
+    #pr-dropdown .pr-item:last-child { border-bottom: none; }
+    #pr-dropdown .pr-item .pr-title {
+      font-size: 13px; color: #c9d1d9; font-weight: 500; margin-bottom: 3px;
+    }
+    #pr-dropdown .pr-item .pr-meta {
+      font-size: 11px; color: #8b949e;
+    }
+    #pr-dropdown .pr-item .pr-meta .pr-number { color: #58a6ff; font-weight: 600; }
+    #pr-dropdown .pr-item .pr-meta .pr-author { color: #8b949e; }
+    #pr-dropdown .pr-item .pr-meta .pr-reviewers { color: #3fb950; }
+    #pr-dropdown .pr-item .pr-meta .pr-draft {
+      color: #f0883e; font-weight: 600; margin-left: 4px;
+    }
+    #pr-dropdown .pr-loading {
+      padding: 20px; text-align: center; color: #8b949e; font-size: 13px;
+    }
+    #pr-dropdown .pr-empty {
+      padding: 20px; text-align: center; color: #484f58; font-size: 13px;
+    }
+    #pr-dropdown::-webkit-scrollbar { width: 6px; }
+    #pr-dropdown::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    #pr-dropdown::-webkit-scrollbar-track { background: #161b22; }
+
     /* Main content */
     #content { margin-top: 52px; padding: 20px; }
 
@@ -42,7 +116,7 @@
     }
     #empty-state .hint { font-size: 13px; color: #484f58; }
 
-    /* Diff container - hidden by default */
+    /* Diff container */
     #diff-container { display: none; }
     #review-body-container { display: none; padding: 20px 0; }
 
@@ -72,15 +146,13 @@
     .line-comment-marker .comment-text { color: #c9d1d9; margin-top: 4px; display: block; }
     .line-comment-marker strong { color: #58a6ff; }
 
-    /* Inline comment form (inserted between lines in a pane) */
+    /* Inline comment form */
     .d2h-file-side-diff { overflow-y: visible !important; }
     .comment-form-row td { padding: 4px !important; max-width: 50vw; overflow: hidden; }
     .comment-form-row .comment-form {
       background: #161b22; border-left: 3px solid #58a6ff;
       border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
-      padding: 6px 8px;
-      max-width: calc(50vw - 30px); /* Constrain to pane width */
-      overflow: hidden;
+      padding: 6px 8px; max-width: calc(50vw - 30px); overflow: hidden;
     }
     .comment-form-row .comment-label {
       font-size: 11px; color: #58a6ff; margin-bottom: 4px;
@@ -91,12 +163,8 @@
       font-family: inherit; font-size: 12px; resize: vertical;
       box-sizing: border-box; display: block; margin-bottom: 4px;
     }
-    .comment-form-row textarea:focus {
-      outline: none; border-color: #58a6ff;
-    }
-    .comment-form-row .actions {
-      display: flex; justify-content: flex-end; gap: 4px;
-    }
+    .comment-form-row textarea:focus { outline: none; border-color: #58a6ff; }
+    .comment-form-row .actions { display: flex; justify-content: flex-end; gap: 4px; }
     .comment-form-row .btn-cancel {
       background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
       padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;
@@ -170,13 +238,6 @@
       font-size: 10px; color: #484f58; margin-top: 2px;
     }
 
-    /* Comment count badge */
-    .badge {
-      display: inline-block; background: #58a6ff; color: #0d1117;
-      border-radius: 10px; padding: 0 6px; font-size: 11px; font-weight: 600;
-      min-width: 16px; text-align: center; margin-left: 4px;
-    }
-
     /* Line comment buttons */
     .line-comment-btn {
       display: none; position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
@@ -202,7 +263,7 @@
     /* Dark theme overrides for diff2html */
     .d2h-dark-color-scheme { background-color: #0d1117; }
 
-    /* File list - collapsible with max height */
+    /* File list */
     .d2h-file-list-wrapper { margin-bottom: 10px; }
     .d2h-file-list { max-height: 200px; overflow-y: auto; }
     .d2h-file-list::-webkit-scrollbar { width: 6px; }
@@ -224,12 +285,17 @@
     <div class="pr-info" id="pr-info">No diff loaded</div>
     <div id="pr-number-wrapper" style="display:none">
       <label for="pr-number" style="font-size:12px;color:#8b949e;margin-right:4px">PR #</label>
-      <input type="text" id="pr-number" placeholder="#" style="width:60px;padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:13px;text-align:center;">
+      <input type="text" id="pr-number" placeholder="#" title="Enter PR number and press Enter to load">
+      <button id="btn-pr-list" title="List PRs pending review">▾</button>
     </div>
     <button id="btn-comment" style="display:none" title="Cmd+Shift+C">Comment</button>
     <button id="btn-request-changes" style="display:none" title="Cmd+Shift+R">Request Changes</button>
     <button id="btn-approve" style="display:none" title="Cmd+Shift+A">Approve</button>
-    <button id="btn-export" style="display:none" title="Export review as .md file">📤</button>
+    <button id="btn-export" style="display:none" title="Export review as .md file">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M16 5l-1.42 1.42-1.59-1.59V16h-1.98V4.83L9.42 6.42 8 5l4-4 4 4zm4 18H4v-2h16v2z"/>
+      </svg>
+    </button>
     <span id="comment-nav" style="display:none">
       <button id="btn-prev-comment" title="Previous comment (Cmd+[)">◀</button>
       <span id="comment-nav-label" style="font-size:12px;color:#8b949e;margin:0 4px"></span>
@@ -237,22 +303,20 @@
     </span>
   </div>
 
+  <div id="pr-dropdown">
+    <div class="pr-dropdown-header">Pull Requests Pending Review</div>
+    <div class="pr-loading">Loading...</div>
+  </div>
+
   <div id="content">
     <div id="empty-state">
       <div>Open a .diff file to begin reviewing</div>
-      <div class="hint">Click "Open Diff" or drag and drop a file</div>
+      <div class="hint">Click "Open Diff", enter a PR number, or drag and drop a file</div>
     </div>
     <div id="diff-container"></div>
     <div id="review-body-container">
       <h3>Review Summary <span class="shortcut-hint">(Cmd+Shift+Enter to submit)</span></h3>
       <textarea id="review-body" placeholder="Add an overall review comment (optional)..." title="Cmd+Shift+Enter to submit review"></textarea>
-    </div>
-  </div>
-
-    <textarea id="comment-text" placeholder="Write a comment..."></textarea>
-    <div class="actions">
-      <button class="btn-cancel" id="comment-cancel">Cancel</button>
-      <button class="btn-submit" id="comment-submit">Add Comment</button>
     </div>
   </div>
 

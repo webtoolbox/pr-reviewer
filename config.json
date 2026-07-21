@@ -2,5 +2,12 @@
   "aiCommand": "hermes",
   "aiSendArgs": ["send", "--to"],
   "aiChatId": null,
-  "reviewSaveDir": "~/.hermes/profiles/wt/diff-reviews/pending"
+  "aiTagPrefix": "@Hermes",
+  "reviewSaveDir": "~/.hermes/profiles/wt/diff-reviews/pending",
+  "prFilter": {
+    "reviewRequested": true,
+    "titleContains": "for review"
+  },
+  "repoOwner": "webtoolbox",
+  "repoName": "Website-Toolbox"
 }

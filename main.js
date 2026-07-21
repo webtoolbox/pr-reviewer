@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { execFile, exec } = require('child_process');
 
 let mainWindow;
 
@@ -13,7 +13,10 @@ function loadConfig() {
     aiSendArgs: ['send', '--to'],
     aiChatId: null,
     aiTagPrefix: '@Hermes',
-    reviewSaveDir: '~/.hermes/profiles/wt/diff-reviews/pending'
+    reviewSaveDir: '~/.hermes/profiles/wt/diff-reviews/pending',
+    prFilter: { reviewRequested: true, titleContains: '' },
+    repoOwner: '',
+    repoName: ''
   };
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
@@ -37,7 +40,6 @@ for (let i = 0; i < rawArgs.length; i++) {
   }
 }
 
-// Filter out our flags to leave positional args (diff file path) intact
 const positionalArgs = rawArgs.filter((_, i) => {
   const prev = rawArgs[i - 1];
   return rawArgs[i] !== '--chat-id' && rawArgs[i] !== '--pr-number'
@@ -57,7 +59,6 @@ function sendAiMessage(message) {
   });
 }
 
-// Expand ~ in paths
 function expandPath(p) {
   if (p && p.startsWith('~')) {
     return path.join(app.getPath('home'), p.slice(1));
@@ -65,11 +66,10 @@ function expandPath(p) {
   return p;
 }
 
-// Draft management — auto-save drafts keyed by diff file path
+// Draft management
 function getDraftPath(diffFilePath) {
   const draftDir = expandPath(path.join(appConfig.reviewSaveDir, '..', 'drafts'));
   fs.mkdirSync(draftDir, { recursive: true });
-  // Use a hash of the file path as the draft filename
   const crypto = require('crypto');
   const hash = crypto.createHash('md5').update(diffFilePath || 'unsaved').digest('hex').slice(0, 12);
   return path.join(draftDir, `draft-${hash}.json`);
@@ -110,6 +110,31 @@ function deleteDraft(diffFilePath) {
   }
 }
 
+// Generate diff for a PR
+function generateDiff(prNumber) {
+  return new Promise((resolve, reject) => {
+    const repoPath = path.join(app.getPath('home'), 'Website-Toolbox');
+    const owner = appConfig.repoOwner || 'webtoolbox';
+    const repo = appConfig.repoName || 'Website-Toolbox';
+
+    // Get the PR's base and head SHAs
+    exec(`gh api repos/${owner}/${repo}/pulls/${prNumber} --jq '.base.sha, .head.sha'`, { cwd: repoPath }, (err, stdout) => {
+      if (err) return reject(new Error(`Failed to get PR info: ${err.message}`));
+      const [baseSha, headSha] = stdout.trim().split('\n');
+      if (!baseSha || !headSha) return reject(new Error('Could not parse PR SHAs'));
+
+      // Generate diff between base and head, filter for code files
+      const cmd = `git diff ${baseSha}..${headSha} -- '*.pm' '*.cgi' '*.js' '*.tpl' '*.css' '*.less' '*.json'`;
+      exec(cmd, { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 }, (err2, diffOut) => {
+        if (err2) return reject(new Error(`Failed to generate diff: ${err2.message}`));
+        const tmpPath = path.join(app.getPath('temp'), `pr-${prNumber}-clean.diff`);
+        fs.writeFileSync(tmpPath, diffOut);
+        resolve({ diffPath: tmpPath, baseSha, headSha });
+      });
+    });
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -124,7 +149,6 @@ function createWindow() {
 
   mainWindow.loadFile('index.html');
 
-  // If a diff file was passed as argument, load it
   if (positionalArgs[0] && fs.existsSync(positionalArgs[0])) {
     mainWindow.webContents.on('did-finish-load', () => {
       const diffContent = fs.readFileSync(positionalArgs[0], 'utf8');
@@ -141,7 +165,7 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-// Handle file open dialog
+// File open dialog
 ipcMain.handle('open-file', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
@@ -156,12 +180,12 @@ ipcMain.handle('open-file', async () => {
   return null;
 });
 
-// Auto-save draft (called on every comment change)
-ipcMain.handle('save-draft', async (event, { filePath, draft }) => {
-  return saveDraft(filePath, draft);
-});
+// Draft IPC
+ipcMain.handle('save-draft', async (event, { filePath, draft }) => saveDraft(filePath, draft));
+ipcMain.handle('load-draft', async (event, filePath) => loadDraft(filePath));
+ipcMain.handle('delete-draft', async (event, filePath) => { deleteDraft(filePath); return true; });
 
-// Save image to disk (returns relative path for markdown reference)
+// Image save
 ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }) => {
   try {
     const dir = expandPath(reviewDir || appConfig.reviewSaveDir);
@@ -178,20 +202,64 @@ ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }
   }
 });
 
-// Load draft for a given diff file
-ipcMain.handle('load-draft', async (event, filePath) => {
-  return loadDraft(filePath);
+// Generate diff for a PR number
+ipcMain.handle('load-pr', async (event, prNumber) => {
+  try {
+    const { diffPath } = await generateDiff(prNumber);
+    const content = fs.readFileSync(diffPath, 'utf8');
+    const fileName = `pr-${prNumber}-clean.diff`;
+    return { content, fileName, filePath: diffPath, prNumber };
+  } catch (err) {
+    console.error('[pr] load failed:', err.message);
+    return { error: err.message };
+  }
 });
 
-// Delete draft (called after successful final submit)
-ipcMain.handle('delete-draft', async (event, filePath) => {
-  deleteDraft(filePath);
-  return true;
+// List open PRs with filtering
+ipcMain.handle('list-prs', async () => {
+  const owner = appConfig.repoOwner || 'webtoolbox';
+  const repo = appConfig.repoName || 'Website-Toolbox';
+  const filter = appConfig.prFilter || {};
+
+  return new Promise((resolve) => {
+    // Fetch open PRs
+    let cmd = `gh api 'repos/${owner}/${repo}/pulls?state=open&per_page=50' --jq '[.[] | {number, title, author: .user.login, created: .created_at, reviewers: [.requested_reviewers[].login], draft}]'`;
+    exec(cmd, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+      if (err) {
+        console.error('[list-prs] failed:', err.message);
+        resolve({ prs: [], error: err.message });
+        return;
+      }
+
+      let prs = [];
+      try {
+        prs = JSON.parse(stdout);
+      } catch (e) {
+        resolve({ prs: [], error: 'Failed to parse PR list' });
+        return;
+      }
+
+      // Filter: review requested
+      if (filter.reviewRequested) {
+        prs = prs.filter(pr => pr.reviewers && pr.reviewers.includes('webtoolbox'));
+      }
+
+      // Filter: title contains
+      if (filter.titleContains) {
+        const needle = filter.titleContains.toLowerCase();
+        prs = prs.filter(pr => pr.title.toLowerCase().includes(needle));
+      }
+
+      // Sort by created desc
+      prs.sort((a, b) => new Date(b.created) - new Date(a.created));
+
+      resolve({ prs });
+    });
+  });
 });
 
-// Handle saving review (final submit)
+// Final review submit
 ipcMain.handle('save-review', async (event, review) => {
-  // Filter out @Hermes-tagged comments — those are sent to AI, not included in PR review
   const aiTag = (appConfig.aiTagPrefix || '@Hermes').toLowerCase();
   const aiComments = [];
   const prComments = [];
@@ -203,7 +271,6 @@ ipcMain.handle('save-review', async (event, review) => {
     }
   }
 
-  // Send each @Hermes comment to the AI agent (with full context)
   for (const c of aiComments) {
     const level = c.level || 'line';
     let msg = '';
@@ -217,7 +284,6 @@ ipcMain.handle('save-review', async (event, review) => {
     sendAiMessage(msg);
   }
 
-  // Save review with only PR comments
   const reviewToSave = { ...review, comments: prComments };
   const reviewDir = expandPath(appConfig.reviewSaveDir);
   fs.mkdirSync(reviewDir, { recursive: true });
@@ -225,12 +291,8 @@ ipcMain.handle('save-review', async (event, review) => {
   const outputPath = path.join(reviewDir, filename);
   fs.writeFileSync(outputPath, JSON.stringify(reviewToSave, null, 2));
 
-  // Delete the draft since review is submitted
-  if (review.filePath) {
-    deleteDraft(review.filePath);
-  }
+  if (review.filePath) deleteDraft(review.filePath);
 
-  // Send notification
   const prNum = review.prNumber || cliPrNumber;
   const prCount = prComments.length;
   const aiCount = aiComments.length;
@@ -242,15 +304,7 @@ ipcMain.handle('save-review', async (event, review) => {
   return outputPath;
 });
 
-// Expose config to renderer
-ipcMain.handle('get-config', async () => ({
-  chatId: aiChatId,
-  prNumber: cliPrNumber,
-  aiTagPrefix: appConfig.aiTagPrefix || '@Hermes',
-  aiCommand: appConfig.aiCommand
-}));
-
-// Export review as markdown file
+// Export markdown
 ipcMain.handle('export-markdown', async (event, { markdown, defaultName }) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Export Review as Markdown',
@@ -263,3 +317,14 @@ ipcMain.handle('export-markdown', async (event, { markdown, defaultName }) => {
   }
   return null;
 });
+
+// Config
+ipcMain.handle('get-config', async () => ({
+  chatId: aiChatId,
+  prNumber: cliPrNumber,
+  aiTagPrefix: appConfig.aiTagPrefix || '@Hermes',
+  aiCommand: appConfig.aiCommand,
+  prFilter: appConfig.prFilter || {},
+  repoOwner: appConfig.repoOwner || '',
+  repoName: appConfig.repoName || ''
+}));

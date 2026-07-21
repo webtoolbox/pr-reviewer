@@ -945,4 +945,106 @@ function showReviewButtons() {
 
 // Override updateCommentCount to also update nav
 const _originalUpdateCommentCount = updateCommentCount;
-// (already patched above to call updateCommentNav)
+
+// ===================== PR LOADING =====================
+
+const btnPrList = document.getElementById('btn-pr-list');
+const prDropdown = document.getElementById('pr-dropdown');
+let prDropdownOpen = false;
+
+// Enter in PR number input loads that PR
+prNumberInput.addEventListener('keydown', async (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const num = parseInt(prNumberInput.value.trim(), 10);
+    if (num > 0) {
+      await loadPrByNumber(num);
+    }
+  }
+});
+
+async function loadPrByNumber(prNumber) {
+  prInfo.innerHTML = `<strong>Loading PR #${prNumber}...</strong>`;
+  try {
+    const result = await window.electronAPI.loadPr(prNumber);
+    if (result.error) {
+      prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
+      return;
+    }
+    currentFileName = result.fileName || `pr-${prNumber}.diff`;
+    loadDiff(result.content, result.filePath);
+    // Update title bar
+    document.title = `Diff Reviewer — PR #${prNumber}`;
+    // Store PR number
+    prNumberInput.value = prNumber;
+  } catch (err) {
+    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
+  }
+}
+
+// PR dropdown toggle
+btnPrList.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (prDropdownOpen) {
+    closePrDropdown();
+  } else {
+    await openPrDropdown();
+  }
+});
+
+function closePrDropdown() {
+  prDropdown.classList.remove('open');
+  prDropdownOpen = false;
+}
+
+async function openPrDropdown() {
+  prDropdown.classList.add('open');
+  prDropdownOpen = true;
+  prDropdown.innerHTML = '<div class="pr-dropdown-header">Pull Requests Pending Review</div><div class="pr-loading">Loading...</div>';
+
+  const { prs, error } = await window.electronAPI.listPrs();
+
+  if (error) {
+    prDropdown.innerHTML = `<div class="pr-dropdown-header">Pull Requests Pending Review</div><div class="pr-empty">Error: ${escapeHtml(error)}</div>`;
+    return;
+  }
+
+  if (prs.length === 0) {
+    prDropdown.innerHTML = '<div class="pr-dropdown-header">Pull Requests Pending Review</div><div class="pr-empty">No PRs match your filter</div>';
+    return;
+  }
+
+  let html = `<div class="pr-dropdown-header">Pull Requests Pending Review (${prs.length})</div>`;
+  for (const pr of prs) {
+    const date = new Date(pr.created).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const reviewers = (pr.reviewers || []).filter(r => r !== pr.author).join(', ');
+    const draft = pr.draft ? '<span class="pr-draft">DRAFT</span>' : '';
+    html += `
+      <div class="pr-item" data-pr="${pr.number}">
+        <div class="pr-title">${escapeHtml(pr.title)}${draft}</div>
+        <div class="pr-meta">
+          <span class="pr-number">#${pr.number}</span>
+          <span class="pr-author"> by ${escapeHtml(pr.author)}</span>
+          <span> · ${date}</span>
+          ${reviewers ? `<span class="pr-reviewers"> · reviewers: ${escapeHtml(reviewers)}</span>` : ''}
+        </div>
+      </div>`;
+  }
+  prDropdown.innerHTML = html;
+
+  // Wire up click handlers
+  prDropdown.querySelectorAll('.pr-item').forEach(item => {
+    item.addEventListener('click', async () => {
+      const num = parseInt(item.dataset.pr, 10);
+      closePrDropdown();
+      await loadPrByNumber(num);
+    });
+  });
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+  if (prDropdownOpen && !prDropdown.contains(e.target) && e.target !== btnPrList) {
+    closePrDropdown();
+  }
+});
