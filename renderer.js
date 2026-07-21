@@ -365,7 +365,7 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
     <div class="comment-form">
       <div class="comment-label">${escapeHtml(fileName)} line ${lineNum} (${side} side)</div>
       <textarea id="comment-text" placeholder="Write a comment... (start with ${escapeHtml(aiTagPrefix)} to message AI)" autofocus></textarea>
-      <div class="image-paste-hint">💡 Paste an image (Cmd+V) to attach it to your comment</div>
+      <div class="image-paste-hint">💡 Paste (Cmd+V) or drag & drop an image to attach</div>
       <div class="actions">
         <button class="btn-cancel" id="comment-cancel">Cancel</button>
         <button class="btn-submit" id="comment-submit">Add Comment</button>
