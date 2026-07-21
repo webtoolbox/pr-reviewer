@@ -656,15 +656,16 @@ ipcMain.handle('load-pr', async (event, prNumber) => {
     // Fetch PR title, author, and assignees
     const owner = appConfig.repoOwner || 'webtoolbox';
     const repo = appConfig.repoName || 'Website-Toolbox';
-    let prTitle = '', prAuthor = '', prAssignees = [];
+    let prTitle = '', prAuthor = '', prAssignees = [], prBody = '';
     try {
       const prJson = await execPromise(
-        `gh pr view ${prNumber} --repo ${owner}/${repo} --json title,author,assignees`
+        `gh pr view ${prNumber} --repo ${owner}/${repo} --json title,author,assignees,body`
       );
       const prData = JSON.parse(prJson);
       prTitle = prData.title || '';
       prAuthor = prData.author?.login || '';
       prAssignees = (prData.assignees || []).map(a => a.login).filter(a => a !== prAuthor);
+      prBody = prData.body || '';
     } catch {}
 
     return {
@@ -675,6 +676,7 @@ ipcMain.handle('load-pr', async (event, prNumber) => {
       prTitle,
       prAuthor,
       prAssignees,
+      prBody,
       reviewInfo: result.reviewInfo,
       filesChanged: result.filesChanged
     };
@@ -903,5 +905,223 @@ ipcMain.handle('get-config', async () => ({
   prFilter: appConfig.prFilter || {},
   repoOwner: appConfig.repoOwner || '',
   repoName: appConfig.repoName || '',
-  imageUploadEnabled: (appConfig.imageUpload || {}).enabled || false
+  imageUploadEnabled: (appConfig.imageUpload || {}).enabled || false,
+  rules: appConfig.rules || { enabled: false }
 }));
+
+// ===================== AGENT RULES PROPOSAL =====================
+
+// Get agent rules files from the repo
+ipcMain.handle('get-agent-rules', async () => {
+  const owner = appConfig.repoOwner;
+  const repo = appConfig.repoName;
+  if (!owner || !repo) return { error: 'No repo configured' };
+  
+  try {
+    // Fetch AGENTS.md
+    let agentsMd = '';
+    try {
+      agentsMd = await execPromise(
+        `gh api repos/${owner}/${repo}/contents/AGENTS.md --jq .content | base64 -d`
+      );
+    } catch {}
+    
+    // Fetch referenced instruction files
+    const instructionFiles = {};
+    const instrDir = '.github/instructions';
+    try {
+      const files = await execPromise(
+        `gh api repos/${owner}/${repo}/contents/${instrDir} --jq '.[].name'`
+      );
+      for (const file of files.split('\n').filter(f => f.endsWith('.md'))) {
+        try {
+          const content = await execPromise(
+            `gh api repos/${owner}/${repo}/contents/${instrDir}/${file} --jq .content | base64 -d`
+          );
+          instructionFiles[`${instrDir}/${file}`] = content;
+        } catch {}
+      }
+    } catch {}
+    
+    return { agentsMd, instructionFiles };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+// Analyze review feedback against existing rules and propose new ones
+ipcMain.handle('propose-rules', async (event, { feedback, agentsMd, instructionFiles }) => {
+  const rulesConfig = appConfig.rules || {};
+  if (!rulesConfig.enabled) return { proposals: [], disabled: true };
+  
+  const aiCmd = rulesConfig.aiCommand || appConfig.aiCommand || 'hermes';
+  
+  // Build context of all existing rules
+  let existingRules = `# AGENTS.md\n${agentsMd}\n\n`;
+  for (const [file, content] of Object.entries(instructionFiles || {})) {
+    existingRules += `# ${file}\n${content}\n\n`;
+  }
+  
+  // Build feedback summary
+  const feedbackText = feedback.map(f => `- [${f.file}${f.line ? ` line ${f.line}` : ''}] ${f.text}`).join('\n');
+  
+  const prompt = `You are analyzing code review feedback to propose new agent rules.
+
+EXISTING RULES:
+${existingRules}
+
+REVIEW FEEDBACK:
+${feedbackText}
+
+Analyze the feedback. For each piece of feedback that is NOT already covered by an existing rule:
+1. Propose a brief, generalized rule that would prevent similar issues
+2. Indicate which file it should go in (AGENTS.md for general rules, or the appropriate instruction file for language-specific rules)
+
+Reply with ONLY a JSON array. Each item: {"rule": "...", "file": "path/to/file.md", "reason": "brief reason"}
+If all feedback is already covered, return an empty array: []
+Do not include rules that are already covered by existing rules.
+Rules should be generalized, not specific to this one PR.
+Keep rules concise — one sentence each when possible.`;
+
+  return new Promise((resolve) => {
+    const args = ['send', prompt];
+    let output = '';
+    const proc = require('child_process').execFile(aiCmd, args, { timeout: 120000 }, (err, stdout) => {
+      if (err) { resolve({ proposals: [], error: err.message }); return; }
+      try {
+        // Extract JSON from response
+        const match = stdout.match(/\[[\s\S]*\]/);
+        const proposals = match ? JSON.parse(match[0]) : [];
+        resolve({ proposals });
+      } catch (e) {
+        resolve({ proposals: [], error: 'Failed to parse AI response', raw: stdout });
+      }
+    });
+  });
+});
+
+// Save proposed rules to files
+ipcMain.handle('save-agent-rules', async (event, { rules }) => {
+  const owner = appConfig.repoOwner;
+  const repo = appConfig.repoName;
+  if (!owner || !repo) return { error: 'No repo configured' };
+  
+  const results = [];
+  // Group rules by file
+  const byFile = {};
+  for (const r of rules) {
+    if (!byFile[r.file]) byFile[r.file] = [];
+    byFile[r.file].push(r.rule);
+  }
+  
+  for (const [file, newRules] of Object.entries(byFile)) {
+    try {
+      // Fetch current content
+      let current = '';
+      try {
+        current = await execPromise(
+          `gh api repos/${owner}/${repo}/contents/${file} --jq .content | base64 -d`
+        );
+      } catch {}
+      
+      // Append new rules
+      const additions = newRules.map(r => `- ${r}`).join('\n');
+      const updated = current.trim() + '\n\n## Added by Code Review\n' + additions + '\n';
+      
+      // Get SHA for update
+      let sha = '';
+      try {
+        sha = await execPromise(
+          `gh api repos/${owner}/${repo}/contents/${file} --jq .sha`
+        );
+      } catch {}
+      
+      const payload = JSON.stringify({
+        message: `Add review-derived rules to ${file}`,
+        content: Buffer.from(updated).toString('base64'),
+        ...(sha ? { sha } : {})
+      });
+      
+      await execPromise(
+        `echo '${payload.replace(/'/g, "'\\''")}' | gh api repos/${owner}/${repo}/contents/${file} --method PUT --input -`
+      );
+      
+      results.push({ file, success: true, count: newRules.length });
+    } catch (err) {
+      results.push({ file, success: false, error: err.message });
+    }
+  }
+  
+  return { results };
+});
+
+// Delete PR temp files
+ipcMain.handle('delete-pr-files', async (event, prNumber) => {
+  const generatedDir = getGeneratedDir();
+  let deleted = 0;
+  try {
+    const files = fs.readdirSync(generatedDir);
+    for (const f of files) {
+      if (f.includes(`-${prNumber}-`) || f.includes(`pr-${prNumber}`)) {
+        fs.unlinkSync(path.join(generatedDir, f));
+        deleted++;
+      }
+    }
+  } catch {}
+  
+  // Also delete drafts for this PR
+  const draftsDir = getDraftsDir();
+  try {
+    const files = fs.readdirSync(draftsDir);
+    for (const f of files) {
+      try {
+        const draft = JSON.parse(fs.readFileSync(path.join(draftsDir, f), 'utf8'));
+        if (draft.prNumber == prNumber) {
+          fs.unlinkSync(path.join(draftsDir, f));
+          deleted++;
+        }
+      } catch {}
+    }
+  } catch {}
+  
+  return { deleted };
+});
+
+// Get next PR to review from the list
+ipcMain.handle('get-next-pr', async (event, currentPrNumber) => {
+  try {
+    const owner = appConfig.repoOwner;
+    const repo = appConfig.repoName;
+    const filter = appConfig.prFilter || {};
+    
+    let cmd = `gh pr list --repo ${owner}/${repo} --state open --json number,title,author,createdAt,headRefName,isDraft`;
+    
+    const output = await execPromise(cmd);
+    let prs = JSON.parse(output);
+    
+    if (filter.reviewRequested) {
+      const viewer = await execPromise('gh api user --jq .login');
+      prs = prs.filter(pr => {
+        // PRs where the viewer is requested as reviewer
+        return true; // gh pr list with --json doesn't include review requests, filter client-side
+      });
+    }
+    
+    if (filter.titleContains) {
+      const needle = filter.titleContains.toLowerCase();
+      prs = prs.filter(pr => (pr.title || '').toLowerCase().includes(needle));
+    }
+    
+    // Find next PR after current
+    const currentIdx = prs.findIndex(pr => pr.number === currentPrNumber);
+    if (currentIdx >= 0 && currentIdx < prs.length - 1) {
+      return { pr: prs[currentIdx + 1] };
+    } else if (prs.length > 0 && prs[0].number !== currentPrNumber) {
+      return { pr: prs[0] };
+    }
+    
+    return { pr: null };
+  } catch (err) {
+    return { error: err.message };
+  }
+});

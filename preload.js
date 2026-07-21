@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPrCommits: (prNumber) => ipcRenderer.invoke('get-pr-commits', prNumber),
   getFileBlame: (data) => ipcRenderer.invoke('get-file-blame', data),
   submitGitHubReview: (data) => ipcRenderer.invoke('submit-github-review', data),
+  getAgentRules: () => ipcRenderer.invoke('get-agent-rules'),
+  proposeRules: (data) => ipcRenderer.invoke('propose-rules', data),
+  saveAgentRules: (data) => ipcRenderer.invoke('save-agent-rules', data),
+  deletePrFiles: (prNumber) => ipcRenderer.invoke('delete-pr-files', prNumber),
+  getNextPr: (prNumber) => ipcRenderer.invoke('get-next-pr', prNumber),
   onLoadDiff: (callback) => ipcRenderer.on('load-diff', (event, data) => callback(data)),
   onTriggerOpenFile: (callback) => ipcRenderer.on('trigger-open-file', () => callback())
 });

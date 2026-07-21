@@ -739,6 +739,17 @@ async function submitReview(eventType) {
         if (aiCount > 0) {
           prInfo.innerHTML += ` <span style="color:#58a6ff">(${aiCount} sent to AI)</span>`;
         }
+
+        // Collect feedback for rules analysis
+        const feedback = [];
+        for (const c of comments) {
+          if (c.text && !c.text.toLowerCase().startsWith('@hermes')) {
+            feedback.push({ file: c.file, line: c.line, text: c.text });
+          }
+        }
+        if (feedback.length > 0) {
+          await showRulesDialog(feedback);
+        }
       }
     }
   } catch (err) {
@@ -1097,6 +1108,7 @@ async function loadPrByNumber(prNumber) {
     // Store PR title for later use
     currentPrTitle = result.prTitle || '';
     currentPrNumber = prNumber;
+    currentPrBody = result.prBody || '';
 
     // Update title bar
     document.title = currentPrTitle ? `${currentPrTitle} — Diff Reviewer` : `Diff Reviewer — PR #${prNumber}`;
@@ -1361,6 +1373,7 @@ let currentDiffContent = null;
 let currentDiffFilePath = null;
 let currentPrTitle = '';
 let currentPrNumber = null;
+let currentPrBody = '';
 
 // Override loadDiff to store content and apply filter
 const originalLoadDiff = typeof loadDiff !== 'undefined' ? loadDiff : null;
@@ -1547,7 +1560,7 @@ function updatePrInfoBar(prNumber, prTitle, result) {
   // Title line + author/assignees line
   let html = '';
   if (prTitle) {
-    html += `<div class="pr-title-line"><strong>${escapeHtml(prTitle)}</strong></div>`;
+    html += `<div class="pr-title-line"><strong>${escapeHtml(prTitle)}</strong><button id="btn-pr-desc-toggle" title="Show PR description">▾</button></div>`;
   }
   // Second line: author + assignees
   if (result) {
@@ -1561,6 +1574,15 @@ function updatePrInfoBar(prNumber, prTitle, result) {
     }
   }
   prInfo.innerHTML = html;
+
+  // Add ▾ toggle handler
+  const toggleBtn = document.getElementById('btn-pr-desc-toggle');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePrDescDropdown();
+    });
+  }
 
   // Inject review info into the diff2html file list area (right-aligned, same row as files changed)
   if (result) {
@@ -1592,6 +1614,65 @@ function updatePrInfoBar(prNumber, prTitle, result) {
     }
   }
 }
+
+// ===================== PR DESCRIPTION DROPDOWN =====================
+
+function togglePrDescDropdown() {
+  let dropdown = document.getElementById('pr-desc-dropdown');
+  if (dropdown && dropdown.classList.contains('open')) {
+    closePrDescDropdown();
+    return;
+  }
+  if (!dropdown) {
+    dropdown = document.createElement('div');
+    dropdown.id = 'pr-desc-dropdown';
+    document.body.appendChild(dropdown);
+  }
+
+  // Render markdown
+  const body = currentPrBody || '';
+  let rendered = '';
+  if (body) {
+    try {
+      rendered = marked.parse(body);
+    } catch {
+      rendered = `<p>${escapeHtml(body)}</p>`;
+    }
+  } else {
+    rendered = '<p style="color:#484f58;font-style:italic;">No description provided.</p>';
+  }
+
+  dropdown.innerHTML = `<div class="pr-desc-content">${rendered}</div>`;
+
+  // Position below the review bar
+  const reviewBar = document.getElementById('review-bar');
+  const barRect = reviewBar.getBoundingClientRect();
+  dropdown.style.top = `${barRect.bottom + 4}px`;
+  dropdown.style.left = '50%';
+  dropdown.style.transform = 'translateX(-50%)';
+  dropdown.classList.add('open');
+
+  // Rotate ▾ arrow
+  const toggleBtn = document.getElementById('btn-pr-desc-toggle');
+  if (toggleBtn) toggleBtn.classList.add('open');
+}
+
+function closePrDescDropdown() {
+  const dropdown = document.getElementById('pr-desc-dropdown');
+  if (dropdown) dropdown.classList.remove('open');
+  const toggleBtn = document.getElementById('btn-pr-desc-toggle');
+  if (toggleBtn) toggleBtn.classList.remove('open');
+}
+
+// Close PR desc dropdown on click outside
+document.addEventListener('click', (e) => {
+  const dropdown = document.getElementById('pr-desc-dropdown');
+  if (dropdown && dropdown.classList.contains('open')) {
+    if (!dropdown.contains(e.target) && e.target.id !== 'btn-pr-desc-toggle') {
+      closePrDescDropdown();
+    }
+  }
+});
 
 // Open PR URL in browser
 document.addEventListener('click', (e) => {
@@ -1695,6 +1776,127 @@ function handleLineNumberLeave() {
   if (activeTooltip) {
     activeTooltip.remove();
     activeTooltip = null;
+  }
+}
+
+// ===================== RULES PROPOSAL =====================
+
+const rulesOverlay = document.getElementById('rules-overlay');
+const rulesBody = document.getElementById('rules-body');
+const btnRulesSave = document.getElementById('btn-rules-save');
+const btnRulesCancel = document.getElementById('btn-rules-cancel');
+
+let currentRuleProposals = [];
+let rulesAvailableFiles = [];
+
+async function showRulesDialog(reviewFeedback) {
+  const config = await window.electronAPI.getConfig();
+  if (!config.rules || !config.rules.enabled) return;
+  
+  rulesOverlay.style.display = 'flex';
+  rulesBody.innerHTML = '<div class="rules-loading">Analyzing feedback against existing rules...</div>';
+  btnRulesSave.disabled = true;
+  
+  // Fetch existing rules
+  const rulesData = await window.electronAPI.getAgentRules();
+  if (rulesData.error) {
+    rulesBody.innerHTML = `<div class="rules-empty">Error: ${escapeHtml(rulesData.error)}</div>`;
+    return;
+  }
+  
+  // Build available files list
+  rulesAvailableFiles = ['AGENTS.md'];
+  if (rulesData.instructionFiles) {
+    rulesAvailableFiles.push(...Object.keys(rulesData.instructionFiles));
+  }
+  
+  // Get proposals from AI
+  const result = await window.electronAPI.proposeRules({
+    feedback: reviewFeedback,
+    agentsMd: rulesData.agentsMd || '',
+    instructionFiles: rulesData.instructionFiles || {}
+  });
+  
+  if (result.disabled) {
+    rulesOverlay.style.display = 'none';
+    return;
+  }
+  
+  if (result.error) {
+    rulesBody.innerHTML = `<div class="rules-empty">Error: ${escapeHtml(result.error)}</div>`;
+    return;
+  }
+  
+  currentRuleProposals = result.proposals || [];
+  
+  if (currentRuleProposals.length === 0) {
+    rulesBody.innerHTML = '<div class="rules-empty">All feedback is already covered by existing rules. No new rules needed.</div>';
+    // Auto-close after 2 seconds and proceed to cleanup
+    setTimeout(async () => {
+      rulesOverlay.style.display = 'none';
+      await cleanupAndLoadNext();
+    }, 2000);
+    return;
+  }
+  
+  // Render proposals
+  btnRulesSave.disabled = false;
+  let html = '';
+  currentRuleProposals.forEach((proposal, i) => {
+    html += `<div class="rule-item" data-index="${i}">
+      <div class="rule-item-header">
+        <input type="checkbox" id="rule-check-${i}" checked>
+        <span class="rule-reason">${escapeHtml(proposal.reason || '')}</span>
+        <select id="rule-file-${i}">
+          ${rulesAvailableFiles.map(f => `<option value="${f}" ${f === proposal.file ? 'selected' : ''}>${f}</option>`).join('')}
+        </select>
+      </div>
+      <textarea id="rule-text-${i}">${escapeHtml(proposal.rule)}</textarea>
+    </div>`;
+  });
+  rulesBody.innerHTML = html;
+}
+
+btnRulesSave.addEventListener('click', async () => {
+  const rulesToSave = [];
+  currentRuleProposals.forEach((proposal, i) => {
+    const checkbox = document.getElementById(`rule-check-${i}`);
+    if (checkbox && checkbox.checked) {
+      rulesToSave.push({
+        rule: document.getElementById(`rule-text-${i}`).value,
+        file: document.getElementById(`rule-file-${i}`).value
+      });
+    }
+  });
+  
+  if (rulesToSave.length > 0) {
+    btnRulesSave.disabled = true;
+    btnRulesSave.textContent = 'Saving...';
+    const result = await window.electronAPI.saveAgentRules({ rules: rulesToSave });
+    // Could show success/failure message here
+  }
+  
+  rulesOverlay.style.display = 'none';
+  btnRulesSave.textContent = 'Save Rules';
+  await cleanupAndLoadNext();
+});
+
+btnRulesCancel.addEventListener('click', async () => {
+  rulesOverlay.style.display = 'none';
+  await cleanupAndLoadNext();
+});
+
+async function cleanupAndLoadNext() {
+  const prNum = currentPrNumber;
+  if (!prNum) return;
+  
+  // Delete temp files
+  await window.electronAPI.deletePrFiles(prNum);
+  
+  // Load next PR
+  const nextResult = await window.electronAPI.getNextPr(prNum);
+  if (nextResult.pr) {
+    await loadPrByNumber(nextResult.pr.number);
   }
 }
 
