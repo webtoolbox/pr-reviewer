@@ -25,10 +25,10 @@
   },
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/webtoolbox/diff-reviewer.git"
   },
   "bugs": {
-    "url": ""
+    "url": "https://github.com/webtoolbox/diff-reviewer/issues"
   },
-  "homepage": ""
+  "homepage": "https://github.com/webtoolbox/diff-reviewer#readme"
 }
