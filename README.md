@@ -20,6 +20,10 @@ A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, fi
 
 ![PR Dropdown](screenshots/pr-dropdown.jpg)
 
+- **PR description dropdown** — ▾ button next to title shows the full PR description with markdown rendering
+
+![PR Description Dropdown](screenshots/pr-description-dropdown.jpg)
+
 - **Configurable filtering** — by review requested, title contains
 - **Open PRs in new windows** via the ↗ icon in the dropdown
 
@@ -49,6 +53,12 @@ A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, fi
 - **Image support** — paste (Cmd+V) or drag-and-drop images into comments
 - **S3 upload** — images uploaded to S3 for inline GitHub markdown
 - **AI agent integration** — tag @Hermes in comments to message an AI agent
+
+### Agent Rules
+- **Rules proposal** — after submitting a review, AI analyzes feedback against AGENTS.md and proposes new rules
+- **Configurable** — enable/disable via `rules.enabled` in config.json
+
+![Rules Proposal](screenshots/rules-dialog-preview.png)
 
 ### Multi-Window Support
 - **New windows** (Cmd+N) — open multiple PRs in separate windows simultaneously
@@ -135,6 +145,9 @@ Private config overrides public config. Your private config should NOT be commit
   "tooltip": {
     "showDelay": 400,
     "hideDelay": 200
+  },
+  "rules": {
+    "enabled": false
   }
 }
 ```
