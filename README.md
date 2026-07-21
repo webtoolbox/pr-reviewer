@@ -168,30 +168,6 @@ When `since-review` mode is active:
 - Only includes files changed by authored (non-merge) commits
 - Filters to code files only (configurable via `codeFileExtensions`)
 
-### Example Private Config (for Website Toolbox)
-
-```json
-{
-  "repoOwner": "webtoolbox",
-  "repoName": "Website-Toolbox",
-  "prFilter": {
-    "reviewRequested": true,
-    "titleContains": "for review"
-  },
-  "diff": {
-    "mode": "since-review",
-    "excludeMerges": true,
-    "codeFileExtensions": [".pm", ".cgi", ".js", ".tpl", ".css", ".less", ".json"]
-  },
-  "imageUpload": {
-    "enabled": true,
-    "s3Bucket": "pubsharefiles",
-    "awsProfile": "mfa",
-    "awsRegion": "us-east-1"
-  }
-}
-```
-
 ## Usage
 
 ### Launching
