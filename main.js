@@ -186,9 +186,17 @@ ipcMain.handle('save-review', async (event, review) => {
     }
   }
 
-  // Send each @Hermes comment to the AI agent
+  // Send each @Hermes comment to the AI agent (with full context)
   for (const c of aiComments) {
-    const msg = `[${c.file} line ${c.line}] ${c.text}`;
+    const level = c.level || 'line';
+    let msg = '';
+    if (level === 'file') {
+      msg = `[File comment: ${c.file}]\n${c.text.replace(aiTag, '').trim()}`;
+    } else {
+      const side = c.side || 'RIGHT';
+      const codeContext = c.codeContext || '';
+      msg = `[${c.file} line ${c.line} (${side})]${codeContext ? '\n```' + codeContext + '```' : ''}\n${c.text.replace(aiTag, '').trim()}`;
+    }
     sendAiMessage(msg);
   }
 
@@ -224,3 +232,17 @@ ipcMain.handle('get-config', async () => ({
   aiTagPrefix: appConfig.aiTagPrefix || '@Hermes',
   aiCommand: appConfig.aiCommand
 }));
+
+// Export review as markdown file
+ipcMain.handle('export-markdown', async (event, { markdown, defaultName }) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export Review as Markdown',
+    defaultPath: defaultName || 'review.md',
+    filters: [{ name: 'Markdown', extensions: ['md'] }]
+  });
+  if (!result.canceled && result.filePath) {
+    fs.writeFileSync(result.filePath, markdown);
+    return result.filePath;
+  }
+  return null;
+});

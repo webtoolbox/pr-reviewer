@@ -154,6 +154,22 @@
       font-size: 11px; color: #484f58; font-weight: normal; margin-left: 6px;
     }
 
+    /* Comment navigation */
+    #comment-nav button {
+      background: #21262d; color: #8b949e; border: 1px solid #30363d;
+      padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    #comment-nav button:hover { background: #30363d; color: #c9d1d9; }
+
+    /* Image in comment */
+    .comment-text img {
+      max-width: 100%; max-height: 200px; border-radius: 4px;
+      border: 1px solid #30363d; margin-top: 4px; display: block;
+    }
+    .comment-form .image-paste-hint {
+      font-size: 10px; color: #484f58; margin-top: 2px;
+    }
+
     /* Line comment buttons */
     .line-comment-btn {
       display: none; position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
@@ -206,6 +222,12 @@
     <button id="btn-comment" style="display:none" title="Cmd+Shift+C">Comment</button>
     <button id="btn-request-changes" style="display:none" title="Cmd+Shift+R">Request Changes</button>
     <button id="btn-approve" style="display:none" title="Cmd+Shift+A">Approve</button>
+    <button id="btn-export" style="display:none" title="Export review as Markdown">Export .md</button>
+    <span id="comment-nav" style="display:none">
+      <button id="btn-prev-comment" title="Previous comment (Cmd+[)">◀</button>
+      <span id="comment-nav-label" style="font-size:12px;color:#8b949e;margin:0 4px"></span>
+      <button id="btn-next-comment" title="Next comment (Cmd+])">▶</button>
+    </span>
   </div>
 
   <div id="content">

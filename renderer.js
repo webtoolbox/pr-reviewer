@@ -1,12 +1,13 @@
 // State
 let currentDiff = '';
 let currentFileName = '';
-let currentFilePath = ''; // Absolute path of the diff file (for draft keying)
-let comments = []; // { file, line, side, text, isAiTagged, level } level: 'line' | 'file'
-let commentTarget = null; // { file, line, side, element, level }
+let currentFilePath = '';
+let comments = []; // { file, line, side, text, isAiTagged, level, codeContext, imageDataUrl }
+let commentTarget = null; // { file, line, side, element, level, codeContext }
 let parsedDiff = null;
 let aiTagPrefix = '@Hermes';
-let fileCommentCounts = {}; // { fileName: count }
+let fileCommentCounts = {};
+let currentCommentIndex = -1; // For batch navigation
 
 // DOM elements
 const diffContainer = document.getElementById('diff-container');
@@ -18,6 +19,11 @@ const btnApprove = document.getElementById('btn-approve');
 const btnRequestChanges = document.getElementById('btn-request-changes');
 const btnComment = document.getElementById('btn-comment');
 const btnOpen = document.getElementById('btn-open');
+const btnExport = document.getElementById('btn-export');
+const commentNav = document.getElementById('comment-nav');
+const commentNavLabel = document.getElementById('comment-nav-label');
+const btnPrevComment = document.getElementById('btn-prev-comment');
+const btnNextComment = document.getElementById('btn-next-comment');
 const prNumberInput = document.getElementById('pr-number');
 const prNumberWrapper = document.getElementById('pr-number-wrapper');
 
@@ -333,6 +339,10 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
   const fileName = getFileName(lineElement);
   const lineNum = getLineNumber(lineElement, isRight);
 
+  // Capture the actual code content of this line
+  const codeContent = lineElement.querySelector('.d2h-code-line-ctn, .d2h-code-side-linenumber');
+  const codeText = lineElement.textContent.replace(/^\s*\d+/, '').trim(); // strip line number prefix
+
   closeCommentDialog();
 
   commentTarget = {
@@ -340,7 +350,8 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
     line: lineNum,
     side: isRight ? 'RIGHT' : 'LEFT',
     element: lineElement,
-    level: 'line'
+    level: 'line',
+    codeContext: codeText
   };
 
   const formRow = document.createElement('tr');
@@ -354,6 +365,7 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
     <div class="comment-form">
       <div class="comment-label">${escapeHtml(fileName)} line ${lineNum} (${side} side)</div>
       <textarea id="comment-text" placeholder="Write a comment... (start with ${escapeHtml(aiTagPrefix)} to message AI)" autofocus></textarea>
+      <div class="image-paste-hint">💡 Paste an image (Cmd+V) to attach it to your comment</div>
       <div class="actions">
         <button class="btn-cancel" id="comment-cancel">Cancel</button>
         <button class="btn-submit" id="comment-submit">Add Comment</button>
@@ -367,8 +379,12 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
     row.parentNode.insertBefore(formRow, row.nextSibling);
   }
 
+  // Focus and add image paste support
   const ta = formRow.querySelector('textarea');
-  if (ta) ta.focus();
+  if (ta) {
+    ta.focus();
+    setupImagePaste(ta);
+  }
 
   formRow.querySelector('#comment-cancel').addEventListener('click', closeCommentDialog);
   formRow.querySelector('#comment-submit').addEventListener('click', submitComment);
@@ -387,6 +403,10 @@ function submitComment() {
   const text = ta ? ta.value.trim() : '';
   if (!text || !commentTarget) return;
 
+  // Check for pasted image
+  const imageEl = document.querySelector('#active-comment-form .pasted-image');
+  const imageDataUrl = imageEl ? imageEl.src : null;
+
   const isAiTagged = text.toLowerCase().startsWith(aiTagPrefix.toLowerCase());
   const level = commentTarget.level || 'line';
 
@@ -396,7 +416,9 @@ function submitComment() {
     side: commentTarget.side,
     text: text,
     isAiTagged: isAiTagged,
-    level: level
+    level: level,
+    codeContext: commentTarget.codeContext || null,
+    imageDataUrl: imageDataUrl || null
   };
   comments.push(comment);
 
@@ -408,6 +430,7 @@ function submitComment() {
 
   commentTarget = null;
   updateCommentCount();
+  updateCommentNav();
   autoSaveDraft();
 }
 
@@ -569,12 +592,6 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function showReviewButtons() {
-  btnApprove.style.display = 'inline-block';
-  btnRequestChanges.style.display = 'inline-block';
-  btnComment.style.display = 'inline-block';
-}
-
 function resetButtons() {
   btnApprove.disabled = false;
   btnRequestChanges.disabled = false;
@@ -718,6 +735,20 @@ document.addEventListener('keydown', (e) => {
     }
     return;
   }
+
+  // Cmd+] — Next comment
+  if (e.key === ']' && isMeta && !e.shiftKey) {
+    e.preventDefault();
+    navigateToComment('next');
+    return;
+  }
+
+  // Cmd+[ — Previous comment
+  if (e.key === '[' && isMeta && !e.shiftKey) {
+    e.preventDefault();
+    navigateToComment('prev');
+    return;
+  }
 });
 
 // Drag and drop
@@ -751,3 +782,162 @@ window.electronAPI.getConfig().then((config) => {
   if (config.prNumber) prNumberInput.value = config.prNumber;
   if (config.aiTagPrefix) aiTagPrefix = config.aiTagPrefix;
 }).catch(() => {});
+
+// ===================== IMAGE PASTE =====================
+
+function setupImagePaste(textarea) {
+  textarea.addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target.result;
+          // Show image preview below textarea
+          const form = textarea.closest('.comment-form');
+          const existing = form.querySelector('.pasted-image');
+          if (existing) existing.remove();
+          const img = document.createElement('img');
+          img.className = 'pasted-image';
+          img.src = dataUrl;
+          img.style.cssText = 'max-width:100%;max-height:200px;border-radius:4px;border:1px solid #30363d;margin-top:4px;display:block;';
+          const actions = form.querySelector('.actions');
+          form.insertBefore(img, actions);
+        };
+        reader.readAsDataURL(blob);
+        return;
+      }
+    }
+  });
+}
+
+// ===================== COMMENT NAVIGATION =====================
+
+function updateCommentNav() {
+  const count = comments.length;
+  if (count === 0) {
+    commentNav.style.display = 'none';
+    currentCommentIndex = -1;
+    return;
+  }
+  commentNav.style.display = 'inline-flex';
+  commentNav.style.alignItems = 'center';
+  if (currentCommentIndex >= count) currentCommentIndex = count - 1;
+  if (currentCommentIndex < 0) currentCommentIndex = 0;
+  commentNavLabel.textContent = `${currentCommentIndex + 1} / ${count}`;
+}
+
+function navigateToComment(direction) {
+  const count = comments.length;
+  if (count === 0) return;
+
+  if (direction === 'next') {
+    currentCommentIndex = (currentCommentIndex + 1) % count;
+  } else {
+    currentCommentIndex = (currentCommentIndex - 1 + count) % count;
+  }
+
+  updateCommentNav();
+
+  // Find and scroll to the marker
+  const markers = document.querySelectorAll('[data-comment-index]');
+  for (const m of markers) {
+    if (parseInt(m.dataset.commentIndex, 10) === currentCommentIndex) {
+      m.scrollIntoView({ behavior: 'instant', block: 'center' });
+      // Brief highlight
+      m.style.outline = '2px solid #58a6ff';
+      setTimeout(() => { m.style.outline = ''; }, 1500);
+      return;
+    }
+  }
+}
+
+btnPrevComment.addEventListener('click', () => navigateToComment('prev'));
+btnNextComment.addEventListener('click', () => navigateToComment('next'));
+
+// ===================== EXPORT AS MARKDOWN =====================
+
+async function exportAsMarkdown() {
+  const prNumber = prNumberInput.value.trim();
+  const prNum = prNumber || 'unknown';
+  const reviewBodyText = reviewBody.value.trim();
+  const type = 'comment'; // Default type for export
+
+  let md = `# PR #${prNum} Review\n\n`;
+  md += `**Date:** ${new Date().toISOString()}\n`;
+  md += `**Files changed:** ${(currentDiff.match(/diff --git/g) || []).length}\n\n`;
+
+  if (reviewBodyText) {
+    md += `## Review Summary\n\n${reviewBodyText}\n\n`;
+  }
+
+  // Group comments by file
+  const byFile = {};
+  for (const c of comments) {
+    if (!byFile[c.file]) byFile[c.file] = [];
+    byFile[c.file].push(c);
+  }
+
+  const prComments = comments.filter(c => !c.isAiTagged);
+  const aiComments = comments.filter(c => c.isAiTagged);
+
+  if (prComments.length > 0) {
+    md += `## Line & File Comments (${prComments.length})\n\n`;
+    for (const [file, fileComments] of Object.entries(byFile)) {
+      const prFileComments = fileComments.filter(c => !c.isAiTagged);
+      if (prFileComments.length === 0) continue;
+      md += `### ${file}\n\n`;
+      for (const c of prFileComments) {
+        if (c.level === 'file') {
+          md += `**File-level comment:**\n> ${c.text}\n\n`;
+        } else {
+          md += `**Line ${c.line}** (${c.side}):\n`;
+          if (c.codeContext) {
+            md += `\`\`\`\n${c.codeContext}\n\`\`\`\n`;
+          }
+          md += `> ${c.text}\n\n`;
+          if (c.imageDataUrl) {
+            md += `![comment image](${c.imageDataUrl})\n\n`;
+          }
+        }
+      }
+    }
+  }
+
+  if (aiComments.length > 0) {
+    md += `## AI-Tagged Comments (${aiComments.length})\n\n`;
+    for (const c of aiComments) {
+      if (c.level === 'file') {
+        md += `**${c.file}** — ${c.text}\n\n`;
+      } else {
+        md += `**${c.file}:${c.line}** (${c.side}) — ${c.text}\n\n`;
+      }
+    }
+  }
+
+  const defaultName = `pr-${prNum}-review.md`;
+  const savedPath = await window.electronAPI.exportMarkdown({ markdown: md, defaultName });
+  if (savedPath) {
+    prInfo.innerHTML = `<strong style="color:#3fb950">✓ Exported to ${savedPath.split('/').pop()}</strong>`;
+  }
+}
+
+btnExport.addEventListener('click', exportAsMarkdown);
+
+// ===================== SHOW/HIDE BUTTONS =====================
+
+// Override showReviewButtons to also show export and nav
+const _originalShowReviewButtons = showReviewButtons;
+function showReviewButtons() {
+  btnApprove.style.display = 'inline-block';
+  btnRequestChanges.style.display = 'inline-block';
+  btnComment.style.display = 'inline-block';
+  btnExport.style.display = 'inline-block';
+}
+
+// Override updateCommentCount to also update nav
+const _originalUpdateCommentCount = updateCommentCount;
+// (already patched above to call updateCommentNav)
