@@ -12,6 +12,7 @@ A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, fi
 - **File-level comments** for overall feedback on a file
 - **Review body** with optional summary text
 - **Three review types**: Comment, Request Changes, Approve
+- **Direct GitHub submission** — reviews submitted directly to GitHub via `gh` API
 - **Auto-save drafts** — comments survive app restarts
 - **Export as markdown** with code context and images
 
@@ -24,15 +25,17 @@ A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, fi
 - **New window** — open multiple PRs in separate windows simultaneously
 - **PR number input** — type a PR number and press Enter to load
 - **PR URL link** — click to open the PR in your browser
+- **PR info bar** — shows PR title, author, and assignees
 
 ### Commits & History
 - **Commits panel** — view all commits in the PR with messages
 
 ![Commits Panel](screenshots/commits-panel.jpg)
 
-- **Line-level commit tooltips** — hover over line numbers to see which commit changed that line
+- **Line-level commit tooltips** — hover over line numbers to see which commit changed that line (with configurable delay)
 
 ![Commit Tooltip](screenshots/commit-tooltip.jpg)
+- **Multi-line commit messages** — tooltips show full commit descriptions with body text
 - **Commit links** — click any commit to open it in your browser
 
 ### File Filtering
@@ -48,13 +51,14 @@ A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, fi
 
 ![Comment Form](screenshots/comment-form.jpg)
 
-- **File-level comments** — click the 💬 button on file headers
+- **File-level comments** — click the comment icon on file headers
 
 ![File Comment](screenshots/file-comment.jpg)
 
 - **Image support** — paste (Cmd+V) or drag-and-drop images
 - **S3 upload** — images uploaded to S3 for inline GitHub markdown
 - **AI agent integration** — tag @Hermes in comments to message an AI agent
+- **AI PR context** — when no chat-id is specified, PR number is included in messages for context
 
 ### Multi-Window Support
 - **File > New Window** (Cmd+N) — open blank Diff Reviewer windows
@@ -138,6 +142,13 @@ Private config overrides public config. Your private config should NOT be commit
     "enabled": true,
     "retentionDays": 180,
     "runOnStartup": true
+  },
+  "style": {
+    "rounded": true
+  },
+  "tooltip": {
+    "showDelay": 400,
+    "hideDelay": 200
   }
 }
 ```
@@ -203,7 +214,7 @@ When `since-review` mode is active:
 4. Click "Add Comment" or press Cmd+Enter
 
 ### File-Level Comments
-1. Click the 💬 button next to a file name in the diff header
+1. Click the comment icon next to a file name in the diff header
 2. Add your comment about the overall file
 
 ### Reviewing
