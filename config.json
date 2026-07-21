@@ -8,6 +8,15 @@
     "reviewRequested": true,
     "titleContains": "for review"
   },
-  "repoOwner": "webtoolbox",
-  "repoName": "Website-Toolbox"
+  "repoOwner": "",
+  "repoName": "",
+  "imageUpload": {
+    "enabled": false,
+    "provider": "s3",
+    "s3Bucket": "",
+    "s3Prefix": "",
+    "s3Acl": "public-read",
+    "awsProfile": "default",
+    "awsRegion": "us-east-1"
+  }
 }

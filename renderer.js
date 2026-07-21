@@ -896,13 +896,14 @@ async function exportAsMarkdown() {
           }
           md += `> ${c.text}\n\n`;
           if (c.imageDataUrl) {
-            // Save image as file, use relative path in markdown
             const imgName = `comment-${comments.indexOf(c)}-${Date.now()}.png`;
-            const imgPath = await window.electronAPI.saveImage({
+            const imgResult = await window.electronAPI.saveImage({
               reviewDir: null, imageDataUrl: c.imageDataUrl, fileName: imgName
             });
-            if (imgPath) {
-              md += `![comment image](${imgPath})\n\n`;
+            // Prefer S3 URL (works in GitHub markdown), fall back to local path
+            const imgRef = (imgResult && imgResult.url) || (imgResult && imgResult.localPath) || null;
+            if (imgRef) {
+              md += `![comment image](${imgRef})\n\n`;
             } else {
               md += `*(image could not be saved)*\n\n`;
             }

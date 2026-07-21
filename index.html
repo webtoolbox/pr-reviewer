@@ -189,10 +189,13 @@
     }
 
     /* File-level comment button */
+    .d2h-file-header { display: flex; align-items: center; overflow: hidden; }
+    .d2h-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-comment-btn {
       background: #21262d; color: #8b949e; border: 1px solid #30363d;
       padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;
       margin-left: 8px; transition: all 0.15s;
+      white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center;
     }
     .file-comment-btn:hover { background: #30363d; color: #c9d1d9; }
     .file-comment-btn .comment-count {

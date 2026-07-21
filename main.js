@@ -5,9 +5,11 @@ const { execFile, exec } = require('child_process');
 
 let mainWindow;
 
-// Load config from config.json
+// Load config: private (~/.config/diff-reviewer/config.json) overrides public (./config.json)
 function loadConfig() {
-  const configPath = path.join(__dirname, 'config.json');
+  const publicConfigPath = path.join(__dirname, 'config.json');
+  const privateConfigPath = path.join(app.getPath('home'), '.config', 'diff-reviewer', 'config.json');
+
   const defaults = {
     aiCommand: 'hermes',
     aiSendArgs: ['send', '--to'],
@@ -16,14 +18,39 @@ function loadConfig() {
     reviewSaveDir: '~/.hermes/profiles/wt/diff-reviews/pending',
     prFilter: { reviewRequested: true, titleContains: '' },
     repoOwner: '',
-    repoName: ''
+    repoName: '',
+    imageUpload: {
+      enabled: false,
+      provider: 's3',
+      s3Bucket: '',
+      s3Prefix: '',
+      s3Acl: 'public-read',
+      awsProfile: 'default',
+      awsRegion: 'us-east-1'
+    }
   };
+
+  let config = { ...defaults };
+
+  // Load public config
   try {
-    const raw = fs.readFileSync(configPath, 'utf8');
-    return { ...defaults, ...JSON.parse(raw) };
-  } catch {
-    return defaults;
-  }
+    const raw = fs.readFileSync(publicConfigPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    config = { ...config, ...parsed };
+    if (parsed.imageUpload) config.imageUpload = { ...config.imageUpload, ...parsed.imageUpload };
+    if (parsed.prFilter) config.prFilter = { ...config.prFilter, ...parsed.prFilter };
+  } catch {}
+
+  // Load private config (overrides public)
+  try {
+    const raw = fs.readFileSync(privateConfigPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    config = { ...config, ...parsed };
+    if (parsed.imageUpload) config.imageUpload = { ...config.imageUpload, ...parsed.imageUpload };
+    if (parsed.prFilter) config.prFilter = { ...config.prFilter, ...parsed.prFilter };
+  } catch {}
+
+  return config;
 }
 
 const appConfig = loadConfig();
@@ -110,6 +137,45 @@ function deleteDraft(diffFilePath) {
   }
 }
 
+// Upload image to S3 and return public URL
+function uploadImageToS3(imageDataUrl, fileName) {
+  return new Promise((resolve, reject) => {
+    const upload = appConfig.imageUpload || {};
+    if (!upload.enabled || !upload.s3Bucket) {
+      return reject(new Error('S3 image upload not configured'));
+    }
+
+    // Write temp file
+    const tmpPath = path.join(app.getPath('temp'), fileName);
+    const base64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
+    fs.writeFileSync(tmpPath, Buffer.from(base64, 'base64'));
+
+    const bucket = upload.s3Bucket;
+    const prefix = upload.s3Prefix || '';
+    const acl = upload.s3Acl || 'public-read';
+    const profile = upload.awsProfile || 'default';
+    const region = upload.awsRegion || 'us-east-1';
+    const s3Key = prefix ? `${prefix}/${fileName}` : fileName;
+
+    const cmd = `aws --profile ${profile} --region ${region} s3 cp "${tmpPath}" "s3://${bucket}/${s3Key}" --acl ${acl}`;
+
+    exec(cmd, { timeout: 30000 }, (err, stdout, stderr) => {
+      // Clean up temp file
+      try { fs.unlinkSync(tmpPath); } catch {}
+
+      if (err) {
+        console.error('[s3] upload failed:', err.message);
+        return reject(new Error(`S3 upload failed: ${err.message}`));
+      }
+
+      // Construct public URL
+      const url = `https://${bucket}.s3.amazonaws.com/${encodeURIComponent(fileName)}`;
+      console.log('[s3] uploaded:', url);
+      resolve(url);
+    });
+  });
+}
+
 // Generate diff for a PR
 function generateDiff(prNumber) {
   return new Promise((resolve, reject) => {
@@ -117,13 +183,11 @@ function generateDiff(prNumber) {
     const owner = appConfig.repoOwner || 'webtoolbox';
     const repo = appConfig.repoName || 'Website-Toolbox';
 
-    // Get the PR's base and head SHAs
     exec(`gh api repos/${owner}/${repo}/pulls/${prNumber} --jq '.base.sha, .head.sha'`, { cwd: repoPath }, (err, stdout) => {
       if (err) return reject(new Error(`Failed to get PR info: ${err.message}`));
       const [baseSha, headSha] = stdout.trim().split('\n');
       if (!baseSha || !headSha) return reject(new Error('Could not parse PR SHAs'));
 
-      // Generate diff between base and head, filter for code files
       const cmd = `git diff ${baseSha}..${headSha} -- '*.pm' '*.cgi' '*.js' '*.tpl' '*.css' '*.less' '*.json'`;
       exec(cmd, { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 }, (err2, diffOut) => {
         if (err2) return reject(new Error(`Failed to generate diff: ${err2.message}`));
@@ -185,8 +249,9 @@ ipcMain.handle('save-draft', async (event, { filePath, draft }) => saveDraft(fil
 ipcMain.handle('load-draft', async (event, filePath) => loadDraft(filePath));
 ipcMain.handle('delete-draft', async (event, filePath) => { deleteDraft(filePath); return true; });
 
-// Image save
+// Image save (local file + optional S3 upload)
 ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }) => {
+  // Always save locally
   try {
     const dir = expandPath(reviewDir || appConfig.reviewSaveDir);
     const imagesDir = path.join(dir, 'images');
@@ -195,14 +260,26 @@ ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }
     const buffer = Buffer.from(base64, 'base64');
     const filePath = path.join(imagesDir, fileName);
     fs.writeFileSync(filePath, buffer);
-    return `images/${fileName}`;
   } catch (err) {
-    console.error('[image] save failed:', err.message);
-    return null;
+    console.error('[image] local save failed:', err.message);
   }
+
+  // Upload to S3 if configured
+  const upload = appConfig.imageUpload || {};
+  if (upload.enabled && upload.s3Bucket) {
+    try {
+      const url = await uploadImageToS3(imageDataUrl, fileName);
+      return { localPath: `images/${fileName}`, url };
+    } catch (err) {
+      console.error('[image] S3 upload failed:', err.message);
+      return { localPath: `images/${fileName}`, url: null };
+    }
+  }
+
+  return { localPath: `images/${fileName}`, url: null };
 });
 
-// Generate diff for a PR number
+// Load PR diff
 ipcMain.handle('load-pr', async (event, prNumber) => {
   try {
     const { diffPath } = await generateDiff(prNumber);
@@ -217,12 +294,15 @@ ipcMain.handle('load-pr', async (event, prNumber) => {
 
 // List open PRs with filtering
 ipcMain.handle('list-prs', async () => {
-  const owner = appConfig.repoOwner || 'webtoolbox';
-  const repo = appConfig.repoName || 'Website-Toolbox';
+  const owner = appConfig.repoOwner;
+  const repo = appConfig.repoName;
+  if (!owner || !repo) {
+    return { prs: [], error: 'Set repoOwner and repoName in config' };
+  }
+
   const filter = appConfig.prFilter || {};
 
   return new Promise((resolve) => {
-    // Fetch open PRs
     let cmd = `gh api 'repos/${owner}/${repo}/pulls?state=open&per_page=50' --jq '[.[] | {number, title, author: .user.login, created: .created_at, reviewers: [.requested_reviewers[].login], draft}]'`;
     exec(cmd, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
       if (err) {
@@ -239,20 +319,16 @@ ipcMain.handle('list-prs', async () => {
         return;
       }
 
-      // Filter: review requested
       if (filter.reviewRequested) {
-        prs = prs.filter(pr => pr.reviewers && pr.reviewers.includes('webtoolbox'));
+        prs = prs.filter(pr => pr.reviewers && pr.reviewers.includes(owner));
       }
 
-      // Filter: title contains
       if (filter.titleContains) {
         const needle = filter.titleContains.toLowerCase();
         prs = prs.filter(pr => pr.title.toLowerCase().includes(needle));
       }
 
-      // Sort by created desc
       prs.sort((a, b) => new Date(b.created) - new Date(a.created));
-
       resolve({ prs });
     });
   });
@@ -326,5 +402,6 @@ ipcMain.handle('get-config', async () => ({
   aiCommand: appConfig.aiCommand,
   prFilter: appConfig.prFilter || {},
   repoOwner: appConfig.repoOwner || '',
-  repoName: appConfig.repoName || ''
+  repoName: appConfig.repoName || '',
+  imageUploadEnabled: (appConfig.imageUpload || {}).enabled || false
 }));
