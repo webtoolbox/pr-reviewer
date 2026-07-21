@@ -2,6 +2,8 @@
 
 A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, file-level comments, AI agent integration, and S3 image upload support.
 
+![Main Diff View](screenshots/main-diff-view.jpg)
+
 ## Features
 
 ### Core Review Features
@@ -13,23 +15,44 @@ A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, fi
 - **Auto-save drafts** — comments survive app restarts
 - **Export as markdown** with code context and images
 
-### AI Agent Integration
-- Tag `@Hermes` (or custom prefix) in comments to message an AI agent
-- AI-tagged comments are sent separately from PR review comments
-- Full context sent: file path, line number, side, code snippet, comment text
-- Works with or without a specific chat session (creates new session if needed)
-
-### Image Support
-- **Paste images** (Cmd+V) into comment forms
-- **Drag and drop** image files onto comment forms
-- **S3 upload** — images uploaded to S3 for inline GitHub markdown
-- **Local storage** — images saved alongside reviews for offline access
-
 ### PR Management
 - **PR dropdown** — lists open PRs pending your review
+
+![PR Dropdown](screenshots/pr-dropdown.jpg)
+
 - **Configurable filtering** — by review requested, title contains
 - **New window** — open multiple PRs in separate windows simultaneously
 - **PR number input** — type a PR number and press Enter to load
+- **PR URL link** — click to open the PR in your browser
+
+### Commits & History
+- **Commits panel** — view all commits in the PR with messages
+
+![Commits Panel](screenshots/commits-panel.jpg)
+
+- **Line-level commit tooltips** — hover over line numbers to see which commit changed that line
+- **Commit links** — click any commit to open it in your browser
+
+### File Filtering
+- **File extension filter** — filter the diff by file type
+
+![File Filter](screenshots/file-filter.jpg)
+
+- **Configurable defaults** — set your preferred extensions in config
+- **Intelligent checkboxes** — only shows extensions found in the current diff
+
+### Commenting
+- **Line-level comments** — click the + button on any line
+
+![Comment Form](screenshots/comment-form.jpg)
+
+- **File-level comments** — click the 💬 button on file headers
+
+![File Comment](screenshots/file-comment.jpg)
+
+- **Image support** — paste (Cmd+V) or drag-and-drop images
+- **S3 upload** — images uploaded to S3 for inline GitHub markdown
+- **AI agent integration** — tag @Hermes in comments to message an AI agent
 
 ### Multi-Window Support
 - **File > New Window** (Cmd+N) — open blank Diff Reviewer windows
@@ -98,7 +121,7 @@ Private config overrides public config. Your private config should NOT be commit
   "diff": {
     "mode": "since-review",
     "excludeMerges": true,
-    "codeFileExtensions": [".pm", ".cgi", ".js", ".tpl", ".css", ".less", ".json"]
+    "codeFileExtensions": []
   },
   "imageUpload": {
     "enabled": false,
@@ -233,6 +256,7 @@ npm run build:dir    # Build unpacked directory
 ├── config.json       # Public config
 ├── icon.png          # App icon
 ├── package.json      # Dependencies and build config
+├── screenshots/      # App screenshots for documentation
 └── README.md         # This file
 ```
 
