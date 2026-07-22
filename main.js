@@ -498,6 +498,28 @@ function createMenu() {
           }
         },
         { type: 'separator' },
+        {
+          label: 'Export Review',
+          submenu: [
+            {
+              label: 'As Markdown',
+              accelerator: 'CmdOrCtrl+Shift+E',
+              click: () => {
+                const focused = BrowserWindow.getFocusedWindow();
+                if (focused) focused.webContents.send('export-markdown');
+              }
+            },
+            {
+              label: 'As JSON',
+              accelerator: 'CmdOrCtrl+Shift+J',
+              click: () => {
+                const focused = BrowserWindow.getFocusedWindow();
+                if (focused) focused.webContents.send('export-json');
+              }
+            }
+          ]
+        },
+        { type: 'separator' },
         { role: 'close' }
       ]
     },
@@ -1126,6 +1148,20 @@ ipcMain.handle('export-markdown', async (event, { markdown, defaultName }) => {
   });
   if (!result.canceled && result.filePath) {
     fs.writeFileSync(result.filePath, markdown);
+    return result.filePath;
+  }
+  return null;
+});
+
+ipcMain.handle('export-json', async (event, { json, defaultName }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showSaveDialog(win, {
+    title: 'Export Review as JSON',
+    defaultPath: defaultName || 'review.json',
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  });
+  if (!result.canceled && result.filePath) {
+    fs.writeFileSync(result.filePath, json);
     return result.filePath;
   }
   return null;

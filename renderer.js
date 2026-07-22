@@ -20,7 +20,6 @@ const btnApprove = document.getElementById('btn-approve');
 const btnRequestChanges = document.getElementById('btn-request-changes');
 const btnComment = document.getElementById('btn-comment');
 const btnOpen = document.getElementById('btn-open');
-const btnExport = document.getElementById('btn-export');
 const commentNav = document.getElementById('comment-nav');
 const commentNavLabel = document.getElementById('comment-nav-label');
 const btnPrevComment = document.getElementById('btn-prev-comment');
@@ -1310,17 +1309,14 @@ async function exportAsMarkdown() {
   }
 }
 
-btnExport.addEventListener('click', exportAsMarkdown);
-
 // ===================== SHOW/HIDE BUTTONS =====================
 
-// Override showReviewButtons to also show export and nav
+// Override showReviewButtons to also show nav
 const _originalShowReviewButtons = showReviewButtons;
 function showReviewButtons() {
   btnApprove.style.display = 'inline-block';
   btnRequestChanges.style.display = 'inline-block';
   btnComment.style.display = 'inline-block';
-  btnExport.style.display = 'inline-block';
 }
 
 // Override updateCommentCount to also update nav
@@ -2439,8 +2435,33 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Listen for menu trigger
+// Listen for menu triggers
 window.electronAPI.onOpenPreferences(() => openPreferences());
+
+// Menu: File > Export Review > As Markdown
+window.electronAPI.onExportMarkdown(() => exportAsMarkdown());
+
+// Menu: File > Export Review > As JSON
+window.electronAPI.onExportJson(() => exportAsJson());
+
+function exportAsJson() {
+  const prNum = prNumberInput.value.trim() || '0';
+  const review = {
+    prNumber: prNum ? parseInt(prNum, 10) : null,
+    body: reviewBody.value.trim(),
+    comments: comments,
+    filePath: currentFilePath,
+    fileName: currentFileName,
+    timestamp: new Date().toISOString()
+  };
+  const json = JSON.stringify(review, null, 2);
+  const defaultName = `pr-${prNum}-review.json`;
+  window.electronAPI.exportJson({ json, defaultName }).then(savedPath => {
+    if (savedPath) {
+      prInfo.innerHTML = `<strong style="color:#3fb950">✓ Exported to ${savedPath.split('/').pop()}</strong>`;
+    }
+  });
+}
 
 // ===================== VOICE MODE =====================
 

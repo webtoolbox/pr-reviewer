@@ -27,5 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onOpenPreferences: (callback) => ipcRenderer.on('open-preferences', () => callback()),
   getCollaborators: () => ipcRenderer.invoke('get-collaborators'),
   autoFixWithAi: (data) => ipcRenderer.invoke('auto-fix-with-ai', data),
-  processVoiceCommand: (data) => ipcRenderer.invoke('process-voice-command', data)
+  processVoiceCommand: (data) => ipcRenderer.invoke('process-voice-command', data),
+  exportJson: (data) => ipcRenderer.invoke('export-json', data),
+  onExportMarkdown: (callback) => ipcRenderer.on('export-markdown', () => callback()),
+  onExportJson: (callback) => ipcRenderer.on('export-json', () => callback())
 });

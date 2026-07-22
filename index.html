@@ -42,16 +42,6 @@
     #btn-request-changes .badge { background: rgba(255,255,255,0.25); color: #fff; }
     #btn-comment .badge { background: #58a6ff; color: #0d1117; }
 
-    /* Export / share icon */
-    #btn-export {
-      background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
-      padding: 4px 6px; border-radius: 8px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: all 0.15s;
-    }
-    #btn-export:hover { background: #30363d; }
-    #btn-export svg { width: 14px; height: 14px; fill: none; stroke: #c9d1d9; }
-
     /* Voice mic button */
     #btn-voice {
       background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
@@ -885,11 +875,6 @@
     <button id="btn-comment" style="display:none" title="Cmd+Shift+C">Comment</button>
     <button id="btn-request-changes" style="display:none" title="Cmd+Shift+R">Request Changes</button>
     <button id="btn-approve" style="display:none" title="Cmd+Shift+A">Approve</button>
-    <button id="btn-export" style="display:none" title="Export review as .md file">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-      </svg>
-    </button>
     <button id="btn-voice" title="Voice mode (Ctrl+B)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>

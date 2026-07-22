@@ -791,6 +791,16 @@ ipcMain.handle('save-preferences', async (event, prefs) => {
   fs.writeFileSync(outputPath, JSON.stringify(prefs, null, 2));
   return { success: true };
 });
+ipcMain.handle('export-markdown', async (event, { markdown, defaultName }) => {
+  const outputPath = path.join(app.getPath('temp'), defaultName || 'review.md');
+  fs.writeFileSync(outputPath, markdown);
+  return outputPath;
+});
+ipcMain.handle('export-json', async (event, { json, defaultName }) => {
+  const outputPath = path.join(app.getPath('temp'), defaultName || 'review.json');
+  fs.writeFileSync(outputPath, json);
+  return outputPath;
+});
 ipcMain.handle('open-file-in-editor', async () => ({ success: true }));
 ipcMain.handle('get-pr-commits', async () => ({ commits: [], prUrl: '#' }));
 ipcMain.handle('get-file-blame', async () => ({}));
