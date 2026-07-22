@@ -21,6 +21,8 @@ function loadConfig() {
     prFilter: { reviewRequested: true, titleContains: '' },
     repoOwner: '',
     repoName: '',
+    repoPath: '',
+    editorCommand: 'code',
     imageUpload: {
       enabled: false,
       provider: 's3',
@@ -905,9 +907,31 @@ ipcMain.handle('get-config', async () => ({
   prFilter: appConfig.prFilter || {},
   repoOwner: appConfig.repoOwner || '',
   repoName: appConfig.repoName || '',
+  repoPath: appConfig.repoPath || '',
+  editorCommand: appConfig.editorCommand || 'code',
   imageUploadEnabled: (appConfig.imageUpload || {}).enabled || false,
   rules: appConfig.rules || { enabled: false }
 }));
+
+// Open file in editor at specific line
+ipcMain.handle('open-file-in-editor', async (event, { filePath, line }) => {
+  const editor = appConfig.editorCommand || 'code';
+  const repoPath = appConfig.repoPath || '';
+  const fullPath = repoPath ? path.join(repoPath, filePath) : filePath;
+  
+  try {
+    // VS Code: code -g file:line
+    // Sublime: subl file:line
+    // Most editors support file:line format
+    const args = line ? ['-g', `${fullPath}:${line}`] : [fullPath];
+    require('child_process').execFile(editor, args, (err) => {
+      if (err) console.error('Failed to open editor:', err.message);
+    });
+    return { success: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
 
 // ===================== AGENT RULES PROPOSAL =====================
 

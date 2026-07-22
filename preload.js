@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPrCommits: (prNumber) => ipcRenderer.invoke('get-pr-commits', prNumber),
   getFileBlame: (data) => ipcRenderer.invoke('get-file-blame', data),
   submitGitHubReview: (data) => ipcRenderer.invoke('submit-github-review', data),
+  openFileInEditor: (data) => ipcRenderer.invoke('open-file-in-editor', data),
   getAgentRules: () => ipcRenderer.invoke('get-agent-rules'),
   proposeRules: (data) => ipcRenderer.invoke('propose-rules', data),
   saveAgentRules: (data) => ipcRenderer.invoke('save-agent-rules', data),

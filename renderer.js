@@ -251,6 +251,23 @@ function addFileCommentButtons() {
     const fileNameEl = header.querySelector('.d2h-file-name');
     const fileName = fileNameEl ? fileNameEl.textContent.trim() : 'unknown';
 
+    // Make file name clickable to open in editor
+    if (fileNameEl) {
+      fileNameEl.style.cursor = 'pointer';
+      fileNameEl.title = 'Click to open in editor';
+      fileNameEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Get the first line number shown in this file's diff
+        const firstLine = wrapper.querySelector('.d2h-code-linenumber, .d2h-code-side-linenumber');
+        let line = 1;
+        if (firstLine) {
+          const num = parseInt(firstLine.textContent.trim());
+          if (!isNaN(num)) line = num;
+        }
+        window.electronAPI.openFileInEditor({ filePath: fileName, line });
+      });
+    }
+
     const btn = document.createElement('button');
     btn.className = 'file-comment-btn';
     btn.dataset.fileName = fileName;

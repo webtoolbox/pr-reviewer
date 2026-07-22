@@ -10,6 +10,8 @@
   },
   "repoOwner": "",
   "repoName": "",
+  "repoPath": "",
+  "editorCommand": "code",
   "diff": {
     "mode": "since-review",
     "excludeMerges": true,
