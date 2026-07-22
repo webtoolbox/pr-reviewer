@@ -77,7 +77,6 @@ const positionalArgs = rawArgs.filter((_, i) => {
 
 function sendAiMessage(message, prNumber) {
   if (!aiChatId) {
-    // No chat-id specified — prepend PR context so agent understands the message
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
     console.log('[ai] No chat-id configured, sending to new session');
     const args = [appConfig.aiSendArgs[0], prefix + message];
@@ -91,6 +90,22 @@ function sendAiMessage(message, prNumber) {
   execFile(appConfig.aiCommand, args, (err) => {
     if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message);
     else console.log(`[${appConfig.aiCommand}] message sent`);
+  });
+}
+
+// Ask AI and wait for response
+function askAiQuestion(question, prNumber) {
+  return new Promise((resolve) => {
+    const prefix = prNumber ? `[PR #${prNumber}] ` : '';
+    const args = ['chat', '-q', prefix + question];
+    execFile(appConfig.aiCommand, args, { timeout: 120000 }, (err, stdout) => {
+      if (err) {
+        console.error(`[${appConfig.aiCommand}] ask failed:`, err.message);
+        resolve({ error: err.message });
+      } else {
+        resolve({ response: stdout.trim() });
+      }
+    });
   });
 }
 
@@ -731,27 +746,49 @@ ipcMain.handle('list-prs', async () => {
 
 ipcMain.handle('save-review', async (event, review) => {
   const aiTag = (appConfig.aiTagPrefix || '@Hermes').toLowerCase();
+  const askTag = '@ask';
   const aiComments = [];
+  const askComments = [];
   const prComments = [];
   for (const c of review.comments || []) {
-    if (c.text.toLowerCase().startsWith(aiTag)) {
+    const textLower = c.text.toLowerCase();
+    if (textLower.startsWith(askTag)) {
+      askComments.push(c);
+    } else if (textLower.startsWith(aiTag)) {
       aiComments.push(c);
     } else {
       prComments.push(c);
     }
   }
 
+  // Fire-and-forget to Hermes
   for (const c of aiComments) {
     const level = c.level || 'line';
     let msg = '';
     if (level === 'file') {
-      msg = `[File comment: ${c.file}]\n${c.text.replace(aiTag, '').trim()}`;
+      msg = `[File comment: ${c.file}]\n${c.text.slice(aiTag.length).trim()}`;
     } else {
       const side = c.side || 'RIGHT';
       const codeContext = c.codeContext || '';
-      msg = `[${c.file} line ${c.line} (${side})]${codeContext ? '\n```' + codeContext + '```' : ''}\n${c.text.replace(aiTag, '').trim()}`;
+      msg = `[${c.file} line ${c.line} (${side})]${codeContext ? '\n```' + codeContext + '```' : ''}\n${c.text.slice(aiTag.length).trim()}`;
     }
     sendAiMessage(msg, review.prNumber || cliPrNumber);
+  }
+
+  // @ask: wait for response
+  const askResponses = [];
+  for (const c of askComments) {
+    const level = c.level || 'line';
+    let msg = '';
+    if (level === 'file') {
+      msg = `[File comment: ${c.file}]\n${c.text.slice(askTag.length).trim()}`;
+    } else {
+      const side = c.side || 'RIGHT';
+      const codeContext = c.codeContext || '';
+      msg = `[${c.file} line ${c.line} (${side})]${codeContext ? '\n```' + codeContext + '```' : ''}\n${c.text.slice(askTag.length).trim()}`;
+    }
+    const result = await askAiQuestion(msg, review.prNumber || cliPrNumber);
+    askResponses.push({ file: c.file, line: c.line, question: c.text.slice(askTag.length).trim(), ...result });
   }
 
   const reviewToSave = { ...review, comments: prComments };
@@ -766,12 +803,14 @@ ipcMain.handle('save-review', async (event, review) => {
   const prNum = review.prNumber || cliPrNumber;
   const prCount = prComments.length;
   const aiCount = aiComments.length;
+  const askCount = askComments.length;
   let summary = `Review submitted for PR #${prNum || '?'}: ${review.type}`;
   if (prCount > 0) summary += ` with ${prCount} line comment${prCount !== 1 ? 's' : ''}`;
   if (aiCount > 0) summary += ` (${aiCount} sent to AI)`;
+  if (askCount > 0) summary += ` (${askCount} AI responses received)`;
   sendAiMessage(summary, prNum);
 
-  return outputPath;
+  return { outputPath, askResponses };
 });
 
 // Submit review directly to GitHub via gh CLI

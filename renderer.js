@@ -301,7 +301,7 @@ function openFileCommentDialog(wrapper, fileName) {
   formDiv.innerHTML = `
     <div class="comment-form">
       <div class="comment-label">💬 ${escapeHtml(fileName)} — file-level comment</div>
-      <textarea id="comment-text" placeholder="Write a comment about this file... (start with ${escapeHtml(aiTagPrefix)} to message AI)" autofocus></textarea>
+      <textarea id="comment-text" placeholder="Write a comment about this file... (${escapeHtml(aiTagPrefix)} to message AI, @ask for inline response)" autofocus></textarea>
       <div class="actions">
         <button class="btn-cancel" id="comment-cancel">Cancel</button>
         <button class="btn-submit" id="comment-submit">Add Comment</button>
@@ -384,7 +384,7 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
   formCell.innerHTML = `
     <div class="comment-form">
       <div class="comment-label">${escapeHtml(fileName)} line ${lineNum} (${side} side)</div>
-      <textarea id="comment-text" placeholder="Write a comment... (start with ${escapeHtml(aiTagPrefix)} to message AI)" autofocus></textarea>
+      <textarea id="comment-text" placeholder="Write a comment... (${escapeHtml(aiTagPrefix)} to message AI, @ask for inline response)" autofocus></textarea>
       <div class="image-paste-hint">💡 Paste (Cmd+V) or drag & drop an image to attach</div>
       <div class="actions">
         <button class="btn-cancel" id="comment-cancel">Cancel</button>
@@ -427,7 +427,7 @@ function submitComment() {
   const imageEl = document.querySelector('#active-comment-form .pasted-image');
   const imageDataUrl = imageEl ? imageEl.src : null;
 
-  const isAiTagged = text.toLowerCase().startsWith(aiTagPrefix.toLowerCase());
+  const isAiTagged = text.toLowerCase().startsWith(aiTagPrefix.toLowerCase()) || text.toLowerCase().startsWith('@ask');
   const level = commentTarget.level || 'line';
 
   const comment = {
@@ -518,7 +518,7 @@ function editComment(marker) {
       const newText = newTa ? newTa.value.trim() : '';
       if (!newText) return;
       comments[idx].text = newText;
-      comments[idx].isAiTagged = newText.toLowerCase().startsWith(aiTagPrefix.toLowerCase());
+      comments[idx].isAiTagged = newText.toLowerCase().startsWith(aiTagPrefix.toLowerCase()) || newText.toLowerCase().startsWith('@ask');
       // Rebuild marker
       const isAi = comments[idx].isAiTagged;
       marker.className = 'file-comment-marker' + (isAi ? ' ai-tagged' : '');
@@ -567,7 +567,7 @@ function editComment(marker) {
       const newText = newTa ? newTa.value.trim() : '';
       if (!newText) return;
       comments[idx].text = newText;
-      comments[idx].isAiTagged = newText.toLowerCase().startsWith(aiTagPrefix.toLowerCase());
+      comments[idx].isAiTagged = newText.toLowerCase().startsWith(aiTagPrefix.toLowerCase()) || newText.toLowerCase().startsWith('@ask');
       const isAi = comments[idx].isAiTagged;
       marker.className = 'line-comment-marker' + (isAi ? ' ai-tagged' : '');
       const displayText = isAi ? newText.slice(aiTagPrefix.length).trim() : newText;
@@ -713,12 +713,27 @@ async function submitReview(eventType) {
   };
 
   try {
-    const savedPath = await window.electronAPI.saveReview(review);
-    const prCount = comments.filter(c => !c.isAiTagged).length;
-    const aiCount = comments.filter(c => c.isAiTagged).length;
+    const result = await window.electronAPI.saveReview(review);
+    const savedPath = result.outputPath || result;
+    const askResponses = result.askResponses || [];
+    const prCount = comments.filter(c => { const t = c.text.toLowerCase(); return !t.startsWith('@hermes') && !t.startsWith('@ask'); }).length;
+    const aiCount = comments.filter(c => c.text.toLowerCase().startsWith('@hermes')).length;
+    const askCount = comments.filter(c => c.text.toLowerCase().startsWith('@ask')).length;
     let msg = '<strong style="color:#3fb950">✓ Review saved</strong>';
     if (aiCount > 0) msg += ` <span style="color:#58a6ff">(${aiCount} sent to AI)</span>`;
+    if (askCount > 0) msg += ` <span style="color:#3fb950">(${askCount} AI responses received)</span>`;
     prInfo.innerHTML = msg;
+
+    // Show @ask responses inline
+    if (askResponses.length > 0) {
+      for (const resp of askResponses) {
+        const label = resp.error ? `<span style="color:#f85149">Error: ${escapeHtml(resp.error)}</span>` : `<div style="white-space:pre-wrap;color:#c9d1d9;font-size:13px;">${escapeHtml(resp.response)}</div>`;
+        prInfo.innerHTML += `<div style="margin-top:8px;padding:8px;background:#161b22;border:1px solid #30363d;border-radius:6px;">
+          <span style="color:#8b949e;font-size:11px;">@ask ${escapeHtml(resp.file)}:${resp.line}</span>
+          ${label}
+        </div>`;
+      }
+    }
 
     btnApprove.disabled = true;
     btnRequestChanges.disabled = true;
@@ -760,7 +775,8 @@ async function submitReview(eventType) {
         // Collect feedback for rules analysis
         const feedback = [];
         for (const c of comments) {
-          if (c.text && !c.text.toLowerCase().startsWith('@hermes')) {
+          const t = c.text.toLowerCase();
+          if (!t.startsWith('@hermes') && !t.startsWith('@ask')) {
             feedback.push({ file: c.file, line: c.line, text: c.text });
           }
         }

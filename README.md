@@ -8,7 +8,7 @@ A desktop app for GitHub PR reviews with desktop AI agent integration, file pre-
 
 Reviewing PRs on GitHub means clicking into a PR, reading the description, scanning commits and comments, then navigating to the Files Changed tab before you can even see the diff. Diff Reviewer skips all of that — it loads the diff immediately and automatically moves to the next PR when you're done.
 
-**Desktop AI agent integration**: Tag @Hermes (or any other agent) in any comment to message a desktop AI agent directly from the review. The agent can help with code analysis, answer questions, or assist with changes.
+**Desktop AI agent integration**: Tag @hermes (or any other agent) in any comment to message a desktop AI agent directly from the review. The agent can help with code analysis, answer questions, or assist with changes. Use @ask to get the response displayed inline in the app.
 
 **Automated agent rule proposals**: After submitting a review, the app can analyze your feedback against the repo's AGENTS.md rules and propose new rules when needed. This replaces a workflow that was previously done manually — reviewing feedback, identifying gaps in agent rules, and updating the rule files.
 
@@ -68,7 +68,7 @@ Reviewing PRs on GitHub means clicking into a PR, reading the description, scann
 
 - **Image support** — paste (Cmd+V) or drag-and-drop images into comments
 - **S3 upload** — images uploaded to S3 for inline GitHub markdown
-- **Desktop AI agent integration** — tag @Hermes (or any other agent) in comments to message a desktop AI agent
+- **Desktop AI agent integration** — tag @hermes (or any other agent) in comments to message a desktop AI agent. Use @ask for inline responses.
 
 ### Agent Rules
 - **Rules proposal** — after submitting a review, AI analyzes feedback against AGENTS.md and proposes new rules
@@ -226,7 +226,7 @@ When `since-review` mode is active:
 
 ### Adding Comments
 1. Hover over a line and click the green + button
-2. Type your comment (tag @Hermes to message AI)
+2. Type your comment (tag @hermes to message AI, @ask for inline response)
 3. Optionally paste or drag an image
 4. Click "Add Comment" or press Cmd+Enter
 
