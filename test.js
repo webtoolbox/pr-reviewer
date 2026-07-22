@@ -442,6 +442,29 @@ async function runTests() {
   );
   assert('File open in editor handler available', editorHandlerExists);
 
+  // TEST: File sorting by extension
+  const sortTestDiff = 'diff --git a/b.js b/b.js\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/a.pm b/a.pm\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/a.js b/a.js\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/b.pm b/b.pm\n@@ -1 +1 @@\n-a\n+b';
+  const sortResult = await mainWindow.webContents.executeJavaScript(
+    `sortDiffByExtension(${JSON.stringify(sortTestDiff)})`
+  );
+  const sortedFiles = (sortResult.match(/b\/\w+\.\w+/g) || []).map(m => m.replace('b/', ''));
+  assert('Files sorted by extension', sortedFiles.join(',') === 'a.js,b.js,a.pm,b.pm', `order: ${sortedFiles.join(',')}`);
+
+  // TEST: New preference fields exist
+  const newPrefFields = await mainWindow.webContents.executeJavaScript(`
+    ['pref-title-contains','pref-review-requested','pref-diff-mode','pref-s3-prefix']
+    .map(id => ({ id, exists: !!document.getElementById(id) }))
+  `);
+  const allNewFieldsExist = newPrefFields.every(f => f.exists);
+  assert('New preference fields exist', allNewFieldsExist,
+    `missing: ${newPrefFields.filter(f => !f.exists).map(f => f.id).join(', ') || 'none'}`);
+
+  // TEST: Collapsed files section structure exists (renderFilteredDiff creates it)
+  const collapsedClassExists = await mainWindow.webContents.executeJavaScript(
+    `typeof appendCollapsedFilteredFiles === 'function'`
+  );
+  assert('Collapsed files function exists', collapsedClassExists);
+
   // Summary
   log('');
   log('='.repeat(50));

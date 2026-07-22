@@ -145,6 +145,9 @@ function loadDiff(content, filePath) {
     return;
   }
 
+  // Sort files by extension, then by name
+  content = sortDiffByExtension(content);
+
   currentDiff = content;
   currentDiffContent = content;
   currentDiffFilePath = filePath;
@@ -1416,7 +1419,7 @@ function renderFilteredDiff() {
   if (!currentDiffContent) return;
 
   // Parse diff and filter by extensions
-  const filteredDiff = filterDiffByExtensions(currentDiffContent, activeExtensions);
+  const { filtered: filteredDiff, excluded: excludedFiles } = filterDiffByExtensions(currentDiffContent, activeExtensions);
 
   // Use diff2html to render
   const diff2htmlUi = new Diff2HtmlUI(document.getElementById('diff-container'), filteredDiff, {
@@ -1431,24 +1434,131 @@ function renderFilteredDiff() {
   // Re-add comment buttons
   addLineCommentButtons();
   addFileCommentButtons();
+
+  // Append collapsed excluded files at the bottom
+  appendCollapsedFilteredFiles(excludedFiles);
+}
+
+// Render collapsed entries for filtered-out files
+function appendCollapsedFilteredFiles(excludedFiles) {
+  const container = document.getElementById('diff-container');
+  // Remove previous collapsed section if any
+  const existing = container.querySelector('.collapsed-files-section');
+  if (existing) existing.remove();
+
+  if (!excludedFiles || excludedFiles.length === 0) return;
+
+  const section = document.createElement('div');
+  section.className = 'collapsed-files-section';
+  section.innerHTML = `
+    <div class="collapsed-files-header">
+      <span>Filtered out</span>
+      <span class="count">${excludedFiles.length}</span>
+    </div>
+    ${excludedFiles.map((f, i) => `
+      <div class="collapsed-file-item" data-index="${i}" title="${f.name}">
+        <span class="toggle-icon">▶</span>
+        <span class="file-path">${f.name}</span>
+        <span class="file-ext">${f.ext}</span>
+      </div>
+      <div class="collapsed-file-diff" data-index="${i}"></div>
+    `).join('')}
+  `;
+  container.appendChild(section);
+
+  // Attach click handlers
+  section.addEventListener('click', (e) => {
+    const item = e.target.closest('.collapsed-file-item');
+    if (!item) return;
+
+    const idx = item.dataset.index;
+    const diffPanel = section.querySelector(`.collapsed-file-diff[data-index="${idx}"]`);
+    if (!diffPanel) return;
+
+    const isExpanded = item.classList.toggle('expanded');
+    if (isExpanded) {
+      diffPanel.style.display = 'block';
+      // Render diff on first expand (lazy)
+      if (!diffPanel.dataset.rendered) {
+        const fileDiff = excludedFiles[idx].diff;
+        const diff2htmlUi = new Diff2HtmlUI(diffPanel, fileDiff, {
+          drawFileList: false,
+          matching: 'lines',
+          outputFormat: 'side-by-side',
+          colorScheme: 'dark'
+        });
+        diff2htmlUi.draw();
+        diffPanel.dataset.rendered = 'true';
+      }
+    } else {
+      diffPanel.style.display = 'none';
+    }
+  });
 }
 
 // Filter diff content by file extensions
 function filterDiffByExtensions(diffContent, extensions) {
-  if (!extensions || extensions.length === 0) return diffContent;
+  if (!extensions || extensions.length === 0) return { filtered: sortDiffByExtension(diffContent), excluded: [] };
 
   const files = diffContent.split(/^diff --git /m);
-  const filteredFiles = files.filter(file => {
+  const includedFiles = [];
+  const excludedFiles = [];
+
+  for (const file of files) {
     if (!file.trim()) return false;
-    // Check if this file matches any of the selected extensions
     const firstLine = file.split('\n')[0];
     const filePath = firstLine.match(/a\/(.+?) b\//);
-    if (!filePath) return false;
+    if (!filePath) continue;
     const ext = filePath[1].includes('.') ? '.' + filePath[1].split('.').pop() : '';
-    return extensions.includes(ext);
+    if (extensions.includes(ext)) {
+      includedFiles.push(file);
+    } else {
+      excludedFiles.push({ name: filePath[1], ext, diff: 'diff --git ' + file });
+    }
+  }
+
+  // Sort included files by extension, then by name
+  includedFiles.sort((a, b) => {
+    const extA = getExt(a);
+    const extB = getExt(b);
+    if (extA !== extB) return extA.localeCompare(extB);
+    return getName(a).localeCompare(getName(b));
   });
 
-  return filteredFiles.map(file => 'diff --git ' + file).join('');
+  return {
+    filtered: includedFiles.map(file => 'diff --git ' + file).join(''),
+    excluded: excludedFiles
+  };
+}
+
+// Extract file extension from diff file block
+function getExt(fileBlock) {
+  const match = fileBlock.split('\n')[0].match(/a\/(.+?) b\//);
+  if (!match) return '';
+  const name = match[1];
+  return name.includes('.') ? '.' + name.split('.').pop() : '';
+}
+
+// Extract file name from diff file block
+function getName(fileBlock) {
+  const match = fileBlock.split('\n')[0].match(/a\/(.+?) b\//);
+  return match ? match[1] : '';
+}
+
+// Sort diff content by file extension, then by name
+function sortDiffByExtension(diffContent) {
+  if (!diffContent || !diffContent.includes('diff --git')) return diffContent;
+  const files = diffContent.split(/^diff --git /m);
+  const validFiles = files.filter(f => f.trim());
+
+  validFiles.sort((a, b) => {
+    const extA = getExt(a);
+    const extB = getExt(b);
+    if (extA !== extB) return extA.localeCompare(extB);
+    return getName(a).localeCompare(getName(b));
+  });
+
+  return validFiles.map(f => 'diff --git ' + f).join('');
 }
 
 // Update the loadDiff function to store content
@@ -1964,7 +2074,11 @@ const prefFields = [
   { id: 'pref-aws-region', key: 'imageUpload.awsRegion', type: 'text' },
   { id: 'pref-cleanup-enabled', key: 'cleanup.enabled', type: 'checkbox' },
   { id: 'pref-retention-days', key: 'cleanup.retentionDays', type: 'number' },
-  { id: 'pref-rules-enabled', key: 'rules.enabled', type: 'checkbox' }
+  { id: 'pref-rules-enabled', key: 'rules.enabled', type: 'checkbox' },
+  { id: 'pref-title-contains', key: 'prFilter.titleContains', type: 'text' },
+  { id: 'pref-review-requested', key: 'prFilter.reviewRequested', type: 'checkbox' },
+  { id: 'pref-diff-mode', key: 'diff.mode', type: 'select' },
+  { id: 'pref-s3-prefix', key: 'imageUpload.s3Prefix', type: 'text' }
 ];
 
 function getNestedValue(obj, path) {

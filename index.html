@@ -469,6 +469,90 @@
       font-size: 10px; color: #484f58; margin-top: 2px;
     }
 
+    /* Collapsed filtered files */
+    .collapsed-files-section {
+      margin-top: 16px;
+    }
+    .collapsed-files-header {
+      padding: 10px 16px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px 10px 0 0;
+      font-size: 13px;
+      color: #8b949e;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .collapsed-files-header .count {
+      background: #30363d;
+      color: #c9d1d9;
+      border-radius: 10px;
+      padding: 0 6px;
+      font-size: 11px;
+      font-weight: 600;
+      min-width: 20px;
+      text-align: center;
+      line-height: 20px;
+    }
+    .collapsed-file-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-top: none;
+      font-size: 13px;
+      color: #484f58;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      user-select: none;
+    }
+    .collapsed-file-item:last-child {
+      border-radius: 0 0 10px 10px;
+    }
+    .collapsed-file-item:hover {
+      background: #161b22;
+      color: #8b949e;
+    }
+    .collapsed-file-item .toggle-icon {
+      width: 14px;
+      margin-right: 8px;
+      font-size: 10px;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+      text-align: center;
+    }
+    .collapsed-file-item.expanded .toggle-icon {
+      transform: rotate(90deg);
+    }
+    .collapsed-file-item .file-path {
+      flex: 1;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .collapsed-file-item .file-ext {
+      margin-left: 8px;
+      font-size: 11px;
+      color: #30363d;
+      flex-shrink: 0;
+    }
+    .collapsed-file-item:hover .file-ext {
+      color: #484f58;
+    }
+    .collapsed-file-diff {
+      display: none;
+      border: 1px solid #30363d;
+      border-top: none;
+      overflow: hidden;
+    }
+    .collapsed-file-diff .d2h-wrapper {
+      border-radius: 0;
+    }
+
     /* Line comment buttons */
     .line-comment-btn {
       display: none; position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
@@ -802,6 +886,13 @@
               <input type="checkbox" id="pref-exclude-merges">
             </div>
           </div>
+          <div class="prefs-row">
+            <label for="pref-diff-mode">Diff mode</label>
+            <select id="pref-diff-mode">
+              <option value="since-review">since-review</option>
+              <option value="full">full</option>
+            </select>
+          </div>
         </div>
 
         <div class="prefs-section">
@@ -823,6 +914,10 @@
           <div class="prefs-row">
             <label for="pref-aws-region">AWS Region</label>
             <input type="text" id="pref-aws-region" placeholder="us-east-1">
+          </div>
+          <div class="prefs-row">
+            <label for="pref-s3-prefix">S3 Prefix</label>
+            <input type="text" id="pref-s3-prefix" placeholder="images/">
           </div>
         </div>
 
@@ -846,6 +941,20 @@
             <label>Enabled</label>
             <div class="checkbox-wrapper">
               <input type="checkbox" id="pref-rules-enabled">
+            </div>
+          </div>
+        </div>
+
+        <div class="prefs-section">
+          <div class="prefs-section-title">PR Filter</div>
+          <div class="prefs-row">
+            <label for="pref-title-contains">Title contains</label>
+            <input type="text" id="pref-title-contains" placeholder="for review">
+          </div>
+          <div class="prefs-row">
+            <label>Review requested</label>
+            <div class="checkbox-wrapper">
+              <input type="checkbox" id="pref-review-requested">
             </div>
           </div>
         </div>
