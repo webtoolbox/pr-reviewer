@@ -1,6 +1,6 @@
 # PR Reviewer
 
-A desktop AI-native diff reviewer for GitHub PRs with voice commands, before/after design comparison, desktop AI agent integration, file pre-filtering, and automated agent rule proposals. Speeds up reviews by loading diffs immediately, excluding merge commits, and auto-loading the next PR.
+A desktop AI-native diff reviewer for GitHub PRs with voice commands, desktop AI agent integration, and automatic PR and agent rule creation based on review comments. Speeds up reviews by loading diffs immediately, excluding merge commits, and auto-loading the next PR.
 
 ![Main Diff View](screenshots/main-diff-view.jpg)
 
