@@ -1516,6 +1516,80 @@ ipcMain.handle('save-preferences', async (event, prefs) => {
   }
 });
 
+// ===================== BINARY CHECKS =====================
+
+// Check if a command is available on PATH
+function checkCommand(cmd) {
+  return new Promise((resolve) => {
+    const which = process.platform === 'win32' ? 'where' : 'which';
+    exec(`${which} ${cmd}`, { timeout: 5000 }, (err) => {
+      resolve(!err);
+    });
+  });
+}
+
+// Check gh and AI agent availability
+ipcMain.handle('check-binaries', async () => {
+  const ghAvailable = await checkCommand('gh');
+
+  // Popular AI agents to check
+  const aiAgents = [
+    { id: 'hermes', name: 'Hermes', command: 'hermes', tagPrefix: '@Hermes' },
+    { id: 'claude', name: 'Claude Code', command: 'claude', tagPrefix: '@Claude' },
+    { id: 'cursor', name: 'Cursor', command: 'cursor', tagPrefix: '@Cursor' },
+    { id: 'copilot', name: 'GitHub Copilot CLI', command: 'copilot', tagPrefix: '@Copilot' },
+    { id: 'aider', name: 'Aider', command: 'aider', tagPrefix: '@Aider' },
+    { id: 'codex', name: 'Codex CLI', command: 'codex', tagPrefix: '@Codex' },
+  ];
+
+  const availableAgents = [];
+  for (const agent of aiAgents) {
+    const available = await checkCommand(agent.command);
+    if (available) {
+      availableAgents.push({ ...agent, available: true });
+    }
+  }
+
+  return { ghAvailable, availableAgents };
+});
+
+// Auto-detect and set AI agent if not configured yet
+ipcMain.handle('auto-detect-agent', async () => {
+  // If agent is already configured, skip
+  if (appConfig.aiCommand && appConfig.aiCommand.trim()) {
+    return { detected: false, agent: appConfig.aiCommand };
+  }
+
+  const aiAgents = [
+    { command: 'hermes', tagPrefix: '@Hermes' },
+    { command: 'claude', tagPrefix: '@Claude' },
+    { command: 'cursor', tagPrefix: '@Cursor' },
+    { command: 'copilot', tagPrefix: '@Copilot' },
+    { command: 'aider', tagPrefix: '@Aider' },
+    { command: 'codex', tagPrefix: '@Codex' },
+  ];
+
+  for (const agent of aiAgents) {
+    const available = await checkCommand(agent.command);
+    if (available) {
+      appConfig.aiCommand = agent.command;
+      if (!appConfig.aiTagPrefix || appConfig.aiTagPrefix === '@Hermes') {
+        appConfig.aiTagPrefix = agent.tagPrefix;
+      }
+      // Save config
+      try {
+        const privateDir = path.join(app.getPath('home'), '.config', 'pr-reviewer');
+        const privateConfigPath = path.join(privateDir, 'config.json');
+        fs.mkdirSync(privateDir, { recursive: true });
+        fs.writeFileSync(privateConfigPath, JSON.stringify(appConfig, null, 2));
+      } catch {}
+      return { detected: true, agent: agent.command };
+    }
+  }
+
+  return { detected: false, agent: null };
+});
+
 // Open file in editor at specific line
 ipcMain.handle('open-file-in-editor', async (event, { filePath, line }) => {
   const editor = appConfig.editorCommand || 'code';

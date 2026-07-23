@@ -34,5 +34,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportJson: (data) => ipcRenderer.invoke('export-json', data),
   onExportMarkdown: (callback) => ipcRenderer.on('export-markdown', () => callback()),
   onExportJson: (callback) => ipcRenderer.on('export-json', () => callback()),
-  downloadGithubImages: (data) => ipcRenderer.invoke('download-github-images', data)
+  downloadGithubImages: (data) => ipcRenderer.invoke('download-github-images', data),
+  checkBinaries: () => ipcRenderer.invoke('check-binaries'),
+  autoDetectAgent: () => ipcRenderer.invoke('auto-detect-agent')
 });

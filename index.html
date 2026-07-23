@@ -307,6 +307,35 @@
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       height: calc(100vh - 52px); color: #8b949e; font-size: 16px; gap: 12px;
     }
+
+    /* Error screen for missing binaries */
+    #error-screen {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: #0d1117; z-index: 9999;
+      flex-direction: column; align-items: center; justify-content: center;
+      padding: 40px; text-align: center;
+    }
+    #error-screen.visible { display: flex; }
+    #error-screen .error-icon {
+      width: 64px; height: 64px; border-radius: 50%;
+      background: #f8514922; display: flex; align-items: center; justify-content: center;
+      margin-bottom: 24px;
+    }
+    #error-screen .error-icon svg { width: 32px; height: 32px; stroke: #f85149; fill: none; }
+    #error-screen h2 { color: #f85149; font-size: 20px; margin-bottom: 12px; }
+    #error-screen .error-msg { color: #c9d1d9; font-size: 14px; max-width: 500px; line-height: 1.6; margin-bottom: 8px; }
+    #error-screen .error-cmd {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 12px 20px; font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 13px; color: #c9d1d9; margin: 12px 0; display: inline-block;
+    }
+    #error-screen .error-section { margin-bottom: 32px; }
+    #error-screen .error-section h3 { color: #d29922; font-size: 15px; margin-bottom: 8px; }
+    #error-screen .retry-btn {
+      background: #238636; color: #fff; border: none; border-radius: 8px;
+      padding: 10px 24px; font-size: 14px; cursor: pointer; margin-top: 16px;
+    }
+    #error-screen .retry-btn:hover { background: #2ea043; }
     #empty-state .hint { font-size: 13px; color: #484f58; }
 
     /* Diff container */
@@ -1100,6 +1129,16 @@
     <div class="commits-loading">Loading commits...</div>
   </div>
 
+  <div id="error-screen">
+    <div class="error-icon">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+      </svg>
+    </div>
+    <div id="error-content"></div>
+    <button class="retry-btn" id="error-retry" style="display:none" onclick="location.reload()">Retry</button>
+  </div>
+
   <div id="content">
     <div id="empty-state">
       <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#30363d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:16px">
@@ -1180,8 +1219,15 @@
           <div class="prefs-panel" data-section="ai-agent">
             <div class="prefs-panel-title">AI Agent</div>
             <div class="prefs-row">
-              <label for="pref-ai-command">Command</label>
-              <input type="text" id="pref-ai-command" placeholder="hermes">
+              <label for="pref-ai-command">Agent</label>
+              <select id="pref-ai-command">
+                <option value="hermes">Hermes</option>
+                <option value="claude">Claude Code</option>
+                <option value="cursor">Cursor</option>
+                <option value="copilot">GitHub Copilot CLI</option>
+                <option value="aider">Aider</option>
+                <option value="codex">Codex CLI</option>
+              </select>
             </div>
             <div class="prefs-row">
               <label for="pref-ai-tag">Tag prefix</label>

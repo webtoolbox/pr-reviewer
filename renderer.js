@@ -970,11 +970,140 @@ window.electronAPI.onLoadDiff((data) => {
   }
 });
 
+// ===================== BINARY CHECKS =====================
+
+let ghMissing = false;
+let noAgentFound = false;
+
+function getPlatformInstructions() {
+  const platform = navigator.platform.toLowerCase();
+  if (platform.includes('mac')) {
+    return {
+      gh: 'brew install gh',
+      agents: {
+        hermes: 'npm install -g @nousresearch/hermes-agent',
+        claude: 'npm install -g @anthropic-ai/claude-code',
+        cursor: 'brew install --cask cursor',
+        copilot: 'npm install -g @githubnext/copilot-cli',
+        aider: 'pip install aider-chat',
+        codex: 'npm install -g @openai/codex',
+      }
+    };
+  } else if (platform.includes('win')) {
+    return {
+      gh: 'winget install GitHub.cli',
+      agents: {
+        hermes: 'npm install -g @nousresearch/hermes-agent',
+        claude: 'npm install -g @anthropic-ai/claude-code',
+        cursor: 'winget install Cursor.Cursor',
+        copilot: 'npm install -g @githubnext/copilot-cli',
+        aider: 'pip install aider-chat',
+        codex: 'npm install -g @openai/codex',
+      }
+    };
+  } else {
+    return {
+      gh: 'sudo apt install gh  # or: sudo dnf install gh',
+      agents: {
+        hermes: 'npm install -g @nousresearch/hermes-agent',
+        claude: 'npm install -g @anthropic-ai/claude-code',
+        cursor: 'wget -q https://www.cursor.com/download -O cursor.deb && sudo dpkg -i cursor.deb',
+        copilot: 'npm install -g @githubnext/copilot-cli',
+        aider: 'pip install aider-chat',
+        codex: 'npm install -g @openai/codex',
+      }
+    };
+  }
+}
+
+function showErrorScreen(errors) {
+  const screen = document.getElementById('error-screen');
+  const content = document.getElementById('error-content');
+  const retryBtn = document.getElementById('error-retry');
+
+  let html = '';
+  for (const err of errors) {
+    html += `<div class="error-section">
+      <h3>${err.title}</h3>
+      <div class="error-msg">${err.message}</div>
+      <div class="error-cmd">${err.cmd}</div>
+    </div>`;
+  }
+  content.innerHTML = html;
+  retryBtn.style.display = 'inline-block';
+  screen.classList.add('visible');
+}
+
+function hideErrorScreen() {
+  const screen = document.getElementById('error-screen');
+  screen.classList.remove('visible');
+}
+
+async function checkBinariesAndMaybeShowError() {
+  try {
+    const { ghAvailable, availableAgents } = await window.electronAPI.checkBinaries();
+    const platform = getPlatformInstructions();
+    const errors = [];
+
+    if (!ghAvailable) {
+      ghMissing = true;
+      errors.push({
+        title: 'GitHub CLI (gh) is not installed',
+        message: 'PR Reviewer requires the GitHub CLI to fetch pull requests. Install it with:',
+        cmd: platform.gh
+      });
+    } else {
+      ghMissing = false;
+    }
+
+    if (availableAgents.length === 0) {
+      noAgentFound = true;
+      errors.push({
+        title: 'No AI agent found',
+        message: 'PR Reviewer requires at least one AI agent for auto-fix and review features. Install one of:',
+        cmd: Object.values(platform.agents).join('\n    ')
+      });
+    } else {
+      noAgentFound = false;
+    }
+
+    if (errors.length > 0) {
+      showErrorScreen(errors);
+    } else {
+      hideErrorScreen();
+    }
+  } catch {}
+}
+
+async function autoDetectAgent() {
+  try {
+    const result = await window.electronAPI.autoDetectAgent();
+    if (result.detected) {
+      // Update the select dropdown if it exists
+      const select = document.getElementById('pref-ai-command');
+      if (select) select.value = result.agent;
+    }
+  } catch {}
+}
+
+// Re-check on focus if previously missing
+window.addEventListener('focus', async () => {
+  if (ghMissing || noAgentFound) {
+    await checkBinariesAndMaybeShowError();
+  }
+});
+
 // Fetch config from main process
 window.electronAPI.getConfig().then(async (config) => {
   if (config.prNumber) prNumberInput.value = config.prNumber;
   if (config.aiTagPrefix) aiTagPrefix = config.aiTagPrefix;
   fetchCollaborators();
+
+  // Check binaries on startup
+  await checkBinariesAndMaybeShowError();
+
+  // Auto-detect AI agent if not configured
+  await autoDetectAgent();
 
   // Load repos and pre-fetch PRs on startup
   try {
