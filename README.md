@@ -1,6 +1,6 @@
 # Diff Reviewer
 
-A desktop AI-native diff reviewer for GitHub PRs with voice commands, before/after design comparison, desktop AI agent integration, file pre-filtering, and automated agent rule proposals. Speeds up reviews by loading diffs immediately, excluding merge commits, and auto-loading the next PR. Runs on macOS and Linux.
+A desktop AI-native diff reviewer for GitHub PRs with voice commands, before/after design comparison, desktop AI agent integration, file pre-filtering, and automated agent rule proposals. Speeds up reviews by loading diffs immediately, excluding merge commits, and auto-loading the next PR.
 
 ![Main Diff View](screenshots/main-diff-view.jpg)
 
@@ -105,11 +105,13 @@ Reviewing PRs on GitHub means clicking into a PR, reading the description, scann
 ### Platform Integration
 - **macOS**: .app bundle, dock icon, file associations for .diff/.patch
 - **Linux**: Run from source or build .deb/.rpm/.AppImage
+- **Windows**: Run from source or build .exe installer/portable
 
 ### Data Management
 - **Persistent storage** — all data stored locally:
   - macOS: `~/Library/Application Support/diff-reviewer/`
   - Linux: `~/.config/diff-reviewer/`
+  - Windows: `%APPDATA%\diff-reviewer\`
   - `reviews/` — submitted review JSONs
   - `drafts/` — auto-saved comment drafts
   - `generated/` — generated PR diff files
@@ -157,6 +159,29 @@ npx electron-builder --linux
 
 #### Data Storage (Linux)
 App data is stored in `~/.config/diff-reviewer/` instead of the macOS path.
+
+### Windows
+
+#### From Source
+```bash
+git clone https://github.com/webtoolbox/diff-reviewer.git
+cd diff-reviewer
+npm install
+npm start
+```
+
+#### Build Windows Package (optional)
+```bash
+npx electron-builder --win
+# Creates .exe installer and portable version in dist/
+```
+
+#### Prerequisites
+- **Node.js** 18+ and npm
+- **git** and **gh** (GitHub CLI) — `gh` must be authenticated (`gh auth login`)
+
+#### Data Storage (Windows)
+App data is stored in `%APPDATA%\diff-reviewer\` (typically `C:\Users\<username>\AppData\Roaming\diff-reviewer\`).
 
 ## Configuration
 
