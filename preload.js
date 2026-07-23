@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onLoadDiff: (callback) => ipcRenderer.on('load-diff', (event, data) => callback(data)),
   onTriggerOpenFile: (callback) => ipcRenderer.on('trigger-open-file', () => callback()),
   onOpenPreferences: (callback) => ipcRenderer.on('open-preferences', () => callback()),
+  onCheckUpdateMenu: (callback) => ipcRenderer.on('check-update-menu', () => callback()),
   getCollaborators: () => ipcRenderer.invoke('get-collaborators'),
   autoFixWithAi: (data) => ipcRenderer.invoke('auto-fix-with-ai', data),
   processVoiceCommand: (data) => ipcRenderer.invoke('process-voice-command', data),

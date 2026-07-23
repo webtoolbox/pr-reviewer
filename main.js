@@ -543,6 +543,15 @@ function createMenu() {
           ]
         },
         { type: 'separator' },
+        {
+          label: 'Check for Updates...',
+          click: async () => {
+            const focused = BrowserWindow.getFocusedWindow();
+            if (!focused) return;
+            focused.webContents.send('check-update-menu');
+          }
+        },
+        { type: 'separator' },
         { role: 'close' }
       ]
     },

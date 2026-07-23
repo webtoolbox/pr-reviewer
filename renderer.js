@@ -3125,6 +3125,24 @@ document.addEventListener('keydown', (e) => {
 // Listen for menu triggers
 window.electronAPI.onOpenPreferences(() => openPreferences());
 
+// Menu: File > Check for Updates (immediate, no idle wait)
+window.electronAPI.onCheckUpdateMenu(async () => {
+  try {
+    showToast('Checking for updates...', 'info');
+    const result = await window.electronAPI.checkUpdate();
+    if (result.upToDate) {
+      showToast('Up to date', 'success');
+    } else if (result.error) {
+      showToast(`Update check failed: ${result.error}`, 'error');
+    } else {
+      showToast('Update found! Installing...', 'info');
+      await window.electronAPI.applyUpdate();
+    }
+  } catch (err) {
+    showToast(`Update failed: ${err.message}`, 'error');
+  }
+});
+
 // ===================== AUTO-UPDATE UI =====================
 
 // Auto-update checkbox handler
