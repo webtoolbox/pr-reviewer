@@ -8,6 +8,9 @@
     "reviewRequested": true,
     "titleContains": "for review"
   },
+  "repos": [
+    { "owner": "webtoolbox", "name": "Website-Toolbox", "checked": true }
+  ],
   "repoOwner": "",
   "repoName": "",
   "repoPath": "",
