@@ -218,6 +218,201 @@ function restoreDraft(draft) {
   autoSaveDraft(); // Save immediately to confirm draft is valid
 }
 
+// ===================== INLINE REVIEW COMMENTS =====================
+
+// Track which comments are from the current user (to avoid re-posting)
+let inlineReviewComments = [];
+let currentInlineCommentIds = new Set();
+
+async function fetchAndDisplayReviewComments(prNumber, repoKey) {
+  try {
+    const { comments, error } = await window.electronAPI.getReviewComments({ prNumber, repo: repoKey });
+    if (error || !comments || comments.length === 0) return;
+
+    // Group comments by file and line
+    const commentsByFileLine = {};
+    for (const comment of comments) {
+      // Skip reply comments (they'll be shown as threads)
+      if (comment.inReplyToId) continue;
+
+      const key = `${comment.path}:${comment.line || comment.originalLine}`;
+      if (!commentsByFileLine[key]) commentsByFileLine[key] = [];
+      commentsByFileLine[key].push(comment);
+    }
+
+    // Also collect replies and attach to parent comments
+    const repliesByParentId = {};
+    for (const comment of comments) {
+      if (comment.inReplyToId) {
+        if (!repliesByParentId[comment.inReplyToId]) repliesByParentId[comment.inReplyToId] = [];
+        repliesByParentId[comment.inReplyToId].push(comment);
+      }
+    }
+
+    // Store all comment IDs to prevent re-posting
+    inlineReviewComments = comments;
+    currentInlineCommentIds = new Set(comments.map(c => c.id));
+
+    // Insert comments into the diff
+    insertInlineComments(commentsByFileLine, repliesByParentId);
+  } catch (err) {
+    console.error('[review-comments] fetch failed:', err);
+  }
+}
+
+function insertInlineComments(commentsByFileLine, repliesByParentId) {
+  if (!parsedDiff) return;
+
+  const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+
+  for (const wrapper of fileWrappers) {
+    const fileNameEl = wrapper.querySelector('.d2h-file-name');
+    const fileName = fileNameEl ? fileNameEl.textContent.trim() : '';
+
+    // Get parsed diff data for this file
+    const fileData = parsedDiff[fileName];
+    if (!fileData) continue;
+
+    // Process each side (LEFT=index 0, RIGHT=index 1)
+    const sideDiffs = wrapper.querySelectorAll('.d2h-file-side-diff');
+    sideDiffs.forEach((sideDiff, sideIndex) => {
+      const isRight = sideIndex === 1;
+      const sideData = isRight ? fileData.right : fileData.left;
+      const side = isRight ? 'RIGHT' : 'LEFT';
+
+      const codeLines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
+
+      codeLines.forEach((lineEl, lineIndex) => {
+        // Get the actual line number from parsedDiff
+        const entry = sideData[lineIndex];
+        if (!entry) return;
+        const lineNum = entry.lineNum;
+
+        // Check if there are comments for this file/line/side
+        const key = `${fileName}:${lineNum}`;
+        const lineComments = commentsByFileLine[key] || [];
+        const relevantComments = lineComments.filter(c => {
+          if (c.side === 'RIGHT' && !isRight) return false;
+          if (c.side === 'LEFT' && isRight) return false;
+          return true;
+        });
+
+        if (relevantComments.length === 0) return;
+
+        // Create comment container
+        const commentContainer = document.createElement('div');
+        commentContainer.className = 'inline-review-comments';
+        commentContainer.dataset.line = lineNum;
+        commentContainer.dataset.file = fileName;
+        commentContainer.dataset.side = side;
+
+        for (const comment of relevantComments) {
+          // Unresolved threads expand by default, resolved collapse
+          const defaultExpanded = comment.resolved === false;
+          const commentEl = createReviewCommentElement(comment, repliesByParentId, defaultExpanded);
+          commentContainer.appendChild(commentEl);
+        }
+
+        // Insert after the line
+        lineEl.parentNode.insertBefore(commentContainer, lineEl.nextSibling);
+      });
+    });
+  }
+}
+
+function createReviewCommentElement(comment, repliesByParentId, defaultExpanded = false) {
+  const el = document.createElement('div');
+  el.className = 'inline-review-comment' + (defaultExpanded ? '' : ' resolved-collapsed');
+  el.dataset.commentId = comment.id;
+
+  // Format the comment body (basic markdown)
+  const bodyHtml = formatCommentBody(comment.body);
+
+  // Get replies
+  const replies = repliesByParentId[comment.id] || [];
+
+  // Determine initial display state based on resolved status
+  const repliesDisplay = replies.length > 0 ? (defaultExpanded ? 'block' : 'none') : 'none';
+  const bodyDisplay = defaultExpanded ? 'block' : 'none';
+  const toggleExpandedClass = defaultExpanded ? ' expanded' : '';
+
+  el.innerHTML = `
+    <div class="review-comment-header">
+      <img class="review-comment-avatar" src="${escapeHtml(comment.authorAvatar)}" alt="${escapeHtml(comment.author)}">
+      <span class="review-comment-author">${escapeHtml(comment.author)}</span>
+      <span class="review-comment-date">${formatRelativeTime(comment.createdAt)}</span>
+      ${replies.length > 0 || !defaultExpanded ? `
+      <button class="review-comment-toggle${toggleExpandedClass}" title="${defaultExpanded ? 'Collapse thread' : 'Expand thread'}">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+          <path d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>
+        </svg>
+        ${replies.length > 0 ? `<span class="reply-count">${replies.length}</span>` : ''}
+      </button>` : ''}
+    </div>
+    <div class="review-comment-body" style="display:${bodyDisplay}">${bodyHtml}</div>
+    <div class="review-comment-replies" style="display:${repliesDisplay}">
+      ${replies.map(reply => `
+        <div class="inline-review-comment reply">
+          <div class="review-comment-header">
+            <img class="review-comment-avatar" src="${escapeHtml(reply.authorAvatar)}" alt="${escapeHtml(reply.author)}">
+            <span class="review-comment-author">${escapeHtml(reply.author)}</span>
+            <span class="review-comment-date">${formatRelativeTime(reply.createdAt)}</span>
+          </div>
+          <div class="review-comment-body">${formatCommentBody(reply.body)}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  // Add toggle handler
+  const toggleBtn = el.querySelector('.review-comment-toggle');
+  const repliesContainer = el.querySelector('.review-comment-replies');
+  const bodyContainer = el.querySelector('.review-comment-body');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      const isCurrentlyCollapsed = !toggleBtn.classList.contains('expanded');
+      // Toggle body and replies together
+      if (bodyContainer) bodyContainer.style.display = isCurrentlyCollapsed ? 'block' : 'none';
+      if (repliesContainer) repliesContainer.style.display = isCurrentlyCollapsed ? 'block' : 'none';
+      toggleBtn.classList.toggle('expanded', isCurrentlyCollapsed);
+      el.classList.toggle('resolved-collapsed', !isCurrentlyCollapsed);
+    });
+  }
+
+  return el;
+}
+
+function formatCommentBody(body) {
+  if (!body) return '';
+  // Basic markdown: bold, italic, code, links
+  let html = escapeHtml(body);
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+
+function formatRelativeTime(dateStr) {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 30) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+// Check if a comment ID is from a fetched review comment (to prevent re-posting)
+function isReviewComment(commentId) {
+  return currentInlineCommentIds.has(commentId);
+}
+
 // ===================== LINE COMMENT BUTTONS =====================
 
 function addCommentButtons() {
@@ -1505,6 +1700,9 @@ async function loadPrByNumber(prNumber, repoKey) {
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
+    // Fetch and display inline review comments
+    fetchAndDisplayReviewComments(prNumber, repoKey);
+
     // Store PR title for later use
     currentPrTitle = result.prTitle || '';
     currentPrNumber = prNumber;
@@ -2114,7 +2312,7 @@ function renderFilteredDiff() {
     drawFileList: true,
     matching: 'lines',
     outputFormat: 'side-by-side',
-    colorScheme: 'dark'
+    colorScheme: 'auto'
   });
   diff2htmlUi.draw();
   diff2htmlUi.fileListToggle(false);

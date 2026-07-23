@@ -1414,6 +1414,55 @@ ipcMain.handle('get-pr-commits', async (event, prNumber) => {
   }
 });
 
+// Get inline review comments for a PR
+ipcMain.handle('get-review-comments', async (event, { prNumber, repo }) => {
+  let owner, repoName;
+  if (repo && repo.includes('/')) {
+    [owner, repoName] = repo.split('/');
+  } else {
+    owner = appConfig.repoOwner || 'webtoolbox';
+    repoName = appConfig.repoName || 'Website-Toolbox';
+  }
+
+  try {
+    let allComments = [];
+    let page = 1;
+    while (true) {
+      const stdout = await execPromise(
+        `gh api "repos/${owner}/${repoName}/pulls/${prNumber}/comments?per_page=100&page=${page}"`
+      );
+      const batch = JSON.parse(stdout || '[]');
+      allComments = allComments.concat(batch);
+      if (batch.length < 100) break;
+      page++;
+    }
+
+    // Map to our format
+    const comments = allComments.map(c => ({
+      id: c.id,
+      path: c.path,
+      line: c.line,
+      side: c.side, // LEFT or RIGHT
+      body: c.body,
+      author: c.user.login,
+      authorAvatar: c.user.avatar_url,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      diffHunk: c.diff_hunk,
+      resolved: c.resolved || false,
+      inReplyToId: c.in_reply_to_id,
+      position: c.position,
+      originalLine: c.original_line,
+      originalPosition: c.original_position
+    }));
+
+    return { comments };
+  } catch (err) {
+    console.error('[review-comments] failed:', err.message);
+    return { comments: [], error: err.message };
+  }
+});
+
 // Get blame/annotation for a file to map lines to commits
 ipcMain.handle('get-file-blame', async (event, { prNumber, filePath }) => {
   const repoPath = path.join(app.getPath('home'), 'Website-Toolbox');

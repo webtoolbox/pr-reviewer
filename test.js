@@ -557,6 +557,44 @@ async function runTests() {
   assert('Mention filters to alok-wt only', filterResult.hasAlok && filterResult.noShrutih,
     `hasAlok=${filterResult.hasAlok}, noShrutih=${filterResult.noShrutih}`);
 
+  // ===================== INLINE REVIEW COMMENTS TESTS =====================
+
+  // TEST: getReviewComments bridge exists
+  const reviewCommentsBridgeExists = await mainWindow.webContents.executeJavaScript(
+    `typeof window.electronAPI.getReviewComments === 'function'`
+  );
+  assert('getReviewComments bridge exists', reviewCommentsBridgeExists);
+
+  // TEST: fetchAndDisplayReviewComments function exists
+  const fetchReviewFnExists = await mainWindow.webContents.executeJavaScript(
+    `typeof fetchAndDisplayReviewComments === 'function'`
+  );
+  assert('fetchAndDisplayReviewComments function exists', fetchReviewFnExists);
+
+  // TEST: createReviewCommentElement function exists
+  const createReviewElFnExists = await mainWindow.webContents.executeJavaScript(
+    `typeof createReviewCommentElement === 'function'`
+  );
+  assert('createReviewCommentElement function exists', createReviewElFnExists);
+
+  // TEST: isReviewComment function exists
+  const isReviewCommentFnExists = await mainWindow.webContents.executeJavaScript(
+    `typeof isReviewComment === 'function'`
+  );
+  assert('isReviewComment function exists', isReviewCommentFnExists);
+
+  // TEST: inlineReviewComments array exists
+  const inlineReviewCommentsExists = await mainWindow.webContents.executeJavaScript(
+    `typeof inlineReviewComments !== 'undefined' && Array.isArray(inlineReviewComments)`
+  );
+  assert('inlineReviewComments array exists', inlineReviewCommentsExists);
+
+  // TEST: currentInlineCommentIds Set exists
+  const currentInlineCommentIdsExists = await mainWindow.webContents.executeJavaScript(
+    `typeof currentInlineCommentIds !== 'undefined' && currentInlineCommentIds instanceof Set`
+  );
+  assert('currentInlineCommentIds Set exists', currentInlineCommentIdsExists);
+
   // ===================== FUNCTIONAL TESTS: FILE NAME FILTER =====================
 
   // TEST: File name filter actually filters files
@@ -1414,6 +1452,34 @@ ipcMain.handle('get-collaborators', async (event, repoKey) => [
   {login: 'shrutih-wt', avatar_url: 'https://avatars.githubusercontent.com/u/4?v=4'},
   {login: 'alok-wt', avatar_url: 'https://avatars.githubusercontent.com/u/5?v=4'}
 ]);
+ipcMain.handle('get-review-comments', async (event, { prNumber, repo }) => ({
+  comments: [
+    {
+      id: 1, path: 'src/main.js', line: 25, side: 'RIGHT',
+      body: 'This function could use error handling.',
+      author: 'octocat', authorAvatar: 'https://avatars.githubusercontent.com/u/583231?v=4',
+      createdAt: '2026-07-20T10:30:00Z', updatedAt: '2026-07-20T10:30:00Z',
+      diffHunk: '', resolved: false, inReplyToId: null,
+      position: 10, originalLine: 25, originalPosition: 10
+    },
+    {
+      id: 2, path: 'src/main.js', line: 25, side: 'RIGHT',
+      body: 'Good point, will fix.',
+      author: 'sandeep', authorAvatar: 'https://avatars.githubusercontent.com/u/12345?v=4',
+      createdAt: '2026-07-20T11:00:00Z', updatedAt: '2026-07-20T11:00:00Z',
+      diffHunk: '', resolved: false, inReplyToId: 1,
+      position: 10, originalLine: 25, originalPosition: 10
+    },
+    {
+      id: 3, path: 'src/main.js', line: 35, side: 'RIGHT',
+      body: 'Resolved thread.',
+      author: 'octocat', authorAvatar: 'https://avatars.githubusercontent.com/u/583231?v=4',
+      createdAt: '2026-07-20T12:00:00Z', updatedAt: '2026-07-20T12:00:00Z',
+      diffHunk: '', resolved: true, inReplyToId: null,
+      position: 20, originalLine: 35, originalPosition: 20
+    }
+  ]
+}));
 ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBody }) => {
   // Mock: return a fake PR URL for testing
   if (!prNumber) return { error: 'PR number is required' };

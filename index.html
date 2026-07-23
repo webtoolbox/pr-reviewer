@@ -715,6 +715,88 @@
     .d2h-code-line:hover .line-comment-btn { display: block; }
     .d2h-code-side-line, .d2h-code-line { position: relative; }
 
+    /* Inline review comments */
+    .inline-review-comments {
+      background: #161b22;
+      border-left: 3px solid #58a6ff;
+      margin: 0;
+      padding: 8px 12px;
+      font-size: 13px;
+    }
+    .inline-review-comment {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      margin: 6px 0;
+      padding: 10px 12px;
+    }
+    .inline-review-comment.reply {
+      border: none;
+      background: transparent;
+      margin: 0 -12px;
+      padding: 0 12px;
+    }
+    .review-comment-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .review-comment-avatar {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+    }
+    .review-comment-author {
+      font-weight: 600;
+      color: #c9d1d9;
+      font-size: 12px;
+    }
+    .review-comment-date {
+      color: #8b949e;
+      font-size: 11px;
+    }
+    .review-comment-toggle {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: #8b949e;
+      cursor: pointer;
+      padding: 2px 4px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .review-comment-toggle:hover {
+      color: #c9d1d9;
+    }
+    .review-comment-toggle.expanded svg {
+      transform: rotate(180deg);
+    }
+    .reply-count {
+      font-size: 11px;
+      background: #30363d;
+      border-radius: 10px;
+      padding: 0 6px;
+    }
+    .review-comment-body {
+      color: #c9d1d9;
+      line-height: 1.5;
+      word-wrap: break-word;
+    }
+    .review-comment-body code {
+      background: #1c2128;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+    }
+    .review-comment-replies {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid #21262d;
+    }
+
     /* Review body */
     #review-body-container h3 { margin-bottom: 8px; color: #8b949e; font-size: 14px; }
     #review-body {
@@ -1042,6 +1124,120 @@
     .compare-overlay .compare-hint {
       position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
       font-size: 11px; color: #484f58;
+    }
+
+    /* Light theme (system default) */
+    @media (prefers-color-scheme: light) {
+      body { background: #ffffff; color: #24292f; }
+      #review-bar { background: #f6f8fa; border-bottom: 1px solid #d0d7de; }
+      #review-bar button { background: #f6f8fa; color: #24292f; border: 1px solid #d0d7de; }
+      #review-bar button:hover { background: #e9ecef; }
+      #review-bar input { background: #ffffff; color: #24292f; border: 1px solid #d0d7de; }
+      #review-bar input:focus { border-color: #0969da; }
+
+      /* Diff container */
+      #diff-container { background: #ffffff; }
+      .d2h-dark-color-scheme { background-color: #ffffff; }
+
+      /* PR info */
+      #pr-info { background: #f6f8fa; border-bottom: 1px solid #d0d7de; color: #24292f; }
+      #pr-info a { color: #0969da; }
+
+      /* File list */
+      .d2h-file-list-wrapper { background: #f6f8fa; border: 1px solid #d0d7de; }
+      .d2h-file-list-header { background: #f6f8fa; color: #24292f; border-bottom: 1px solid #d0d7de; }
+      .d2h-file-list-line { border-bottom: 1px solid #d0d7de; }
+      .d2h-file-list-line a { color: #0969da; }
+      .d2h-file-list-line deletion { color: #cf222e; }
+      .d2h-file-list-line addition { color: #116329; }
+
+      /* File headers */
+      .d2h-file-header { background: #f6f8fa; border-bottom: 1px solid #d0d7de; color: #24292f; }
+      .d2h-file-name { color: #24292f; }
+
+      /* Code lines */
+      .d2h-code-side-line { background: #ffffff; }
+      .d2h-code-line { background: #ffffff; }
+      .d2h-code-linenumber { background: #f6f8fa; color: #656d76; border-right: 1px solid #d0d7de; }
+      .d2h-code-side-linenumber { background: #f6f8fa; color: #656d76; border-right: 1px solid #d0d7de; }
+
+      /* Diff highlights */
+      .d2h-del { background: #ffebe9; }
+      .d2h-ins { background: #dafbe1; }
+      .d2h-del-side-diff { background: #ffebe9; }
+      .d2h-ins-side-diff { background: #dafbe1; }
+      .d2h-code-line-del { background: #ffebe9; }
+      .d2h-code-line-ins { background: #dafbe1; }
+
+      /* Dropdowns */
+      #pr-dropdown, #repo-dropdown, #file-filter-dropdown {
+        background: #ffffff; border: 1px solid #d0d7de;
+      }
+      #pr-dropdown .pr-dropdown-header, #repo-dropdown .repo-dropdown-header {
+        background: #f6f8fa; color: #24292f; border-bottom: 1px solid #d0d7de;
+      }
+      #pr-dropdown .pr-item, #repo-dropdown .repo-item {
+        color: #24292f;
+      }
+      #pr-dropdown .pr-item:hover, #repo-dropdown .repo-item:hover {
+        background: #f6f8fa;
+      }
+      .pr-search-wrapper { background: #ffffff; border-bottom: 1px solid #d0d7de; }
+      .pr-search-wrapper input { background: #ffffff; color: #24292f; border: 1px solid #d0d7de; }
+      .pr-search-wrapper input:focus { border-color: #0969da; }
+
+      /* Review body */
+      #review-body { background: #ffffff; color: #24292f; border: 1px solid #d0d7de; }
+      #review-body:focus { border-color: #0969da; }
+
+      /* Buttons */
+      .btn-approve { background: #2da44e; color: #ffffff; }
+      .btn-approve:hover { background: #218838; }
+      .btn-request-changes { background: #cf222e; color: #ffffff; }
+      .btn-request-changes:hover { background: #a40e26; }
+      .btn-comment { background: #0969da; color: #ffffff; }
+      .btn-comment:hover { background: #0550ae; }
+
+      /* Inline review comments */
+      .inline-review-comments { background: #f6f8fa; border-left-color: #0969da; }
+      .inline-review-comment { background: #ffffff; border-color: #d0d7de; }
+      .review-comment-author { color: #24292f; }
+      .review-comment-body { color: #24292f; }
+      .review-comment-body code { background: #f6f8fa; }
+      .review-comment-replies { border-top-color: #d0d7de; }
+      .inline-review-comment.reply { border: none; background: transparent; }
+
+      /* Line comment markers */
+      .line-comment-marker { background: #ddf4ff; }
+      .line-comment-marker td { color: #0969da; }
+
+      /* File filter */
+      #file-filter-dropdown { background: #ffffff; border: 1px solid #d0d7de; }
+
+      /* Commits panel */
+      #commits-panel { background: #f6f8fa; border: 1px solid #d0d7de; }
+      .commit-item { border-bottom: 1px solid #d0d7de; }
+      .commit-item:hover { background: #ffffff; }
+      .commit-sha { color: #0969da; }
+      .commit-message { color: #24292f; }
+      .commit-author { color: #656d76; }
+
+      /* Review buttons container */
+      #review-body-container { background: #f6f8fa; border-top: 1px solid #d0d7de; }
+
+      /* Toast */
+      .toast { background: #ffffff; color: #24292f; border: 1px solid #d0d7de; }
+
+      /* Empty state */
+      #empty-state { color: #656d76; }
+
+      /* Error screen */
+      #error-screen { background: #ffffff; }
+      #error-screen .error-cmd { background: #f6f8fa; border-color: #d0d7de; }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar-thumb { background: #d0d7de; }
+      ::-webkit-scrollbar-track { background: #f6f8fa; }
     }
 
   </style>

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onOpenPreferences: (callback) => ipcRenderer.on('open-preferences', () => callback()),
   onCheckUpdateMenu: (callback) => ipcRenderer.on('check-update-menu', () => callback()),
   getCollaborators: () => ipcRenderer.invoke('get-collaborators'),
+  getReviewComments: (data) => ipcRenderer.invoke('get-review-comments', data),
   autoFixWithAi: (data) => ipcRenderer.invoke('auto-fix-with-ai', data),
   processVoiceCommand: (data) => ipcRenderer.invoke('process-voice-command', data),
   exportJson: (data) => ipcRenderer.invoke('export-json', data),
