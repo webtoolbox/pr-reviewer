@@ -2456,7 +2456,6 @@ if (typeof window !== 'undefined') {
 // ===================== COMMITS PANEL & PR URL =====================
 
 const btnCommits = document.getElementById('btn-commits');
-const btnPrNewWindow = document.getElementById('btn-pr-new-window');
 const commitsPanel = document.getElementById('commits-panel');
 const commitsCount = document.getElementById('commits-count');
 let commitsPanelOpen = false;
@@ -2466,8 +2465,11 @@ let blameCache = {};  // { filePath: { lineNum: sha } }
 let commitMap = {};   // { sha: commitObj }
 
 // Toggle commits panel
-// Open PR in new window
-btnPrNewWindow.addEventListener('click', async () => {
+// Open PR in new window (inline button in title line)
+document.addEventListener('click', async (e) => {
+  const newWindowBtn = e.target.closest('.pr-new-window-inline');
+  if (!newWindowBtn) return;
+  e.stopPropagation();
   const prNumber = prNumberInput.value.trim();
   if (!prNumber) return;
   try {
@@ -2567,7 +2569,8 @@ async function loadPrCommits(prNumber) {
 
     // Show commits button and new window button
     btnCommits.style.display = 'flex';
-    btnPrNewWindow.style.display = 'flex';
+    const newWindowInline = document.querySelector('.pr-new-window-inline');
+    if (newWindowInline) newWindowInline.style.display = 'inline-flex';
 
     // Load blame data for files in the diff
     loadBlameData(prNumber);
@@ -2585,7 +2588,7 @@ function updatePrInfoBar(prNumber, prTitle, result) {
     if (beforeAfterPairs && beforeAfterPairs.length > 0) {
       compareIcon = '<span class="pr-compare-toggle" title="View before/after screenshots"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="8" height="18" rx="1"/><rect x="14" y="3" width="8" height="18" rx="1"/></svg></span>';
     }
-    html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>${compareIcon}</div>`;
+    html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
   }
   // Second line: author + assignees
   if (result) {
