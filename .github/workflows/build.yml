@@ -1,0 +1,53 @@
+name: Build App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run build
+        if: matrix.os == 'macos-latest'
+
+      - run: npx electron-builder --linux
+        if: matrix.os == 'ubuntu-latest'
+
+      - run: npx electron-builder --win
+        if: matrix.os == 'windows-latest'
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'macos-latest'
+        with:
+          name: macos-build
+          path: dist/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: linux-build
+          path: dist/*.deb
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: windows-build
+          path: dist/*.exe
