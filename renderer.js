@@ -41,12 +41,43 @@ function populateFileSidebar() {
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
   if (fileWrappers.length === 0) return;
 
+  // Parse diff content to determine file status from --git headers
+  const fileStatusMap = {}; // fileName -> { status, additions, deletions }
+  if (currentDiff) {
+    const diffLines = currentDiff.split('\n');
+    for (const line of diffLines) {
+      if (!line.startsWith('diff --git ')) continue;
+      // Parse: diff --git a/path/to/file b/path/to/file
+      const gitMatch = line.match(/diff --git (.+?) (.+)/);
+      if (!gitMatch) continue;
+      const aPath = gitMatch[1];
+      const bPath = gitMatch[2];
+      // Strip a/ and b/ prefixes
+      const aName = aPath.startsWith('a/') ? aPath.slice(2) : aPath;
+      const bName = bPath.startsWith('b/') ? bPath.slice(2) : bPath;
+      const hasA = aPath.startsWith('a/') && aPath !== 'a/dev/null';
+      const hasB = bPath.startsWith('b/') && bPath !== 'b/dev/null';
+
+      let status = 'modified';
+      if (hasA && !hasB) {
+        status = 'removed';
+      } else if (!hasA && hasB) {
+        status = 'added';
+      } else if (aName !== bName) {
+        status = 'renamed';
+      }
+      fileStatusMap[bName] = { status };
+    }
+  }
+
+  // Collect file info from wrappers
+  const files = [];
   fileWrappers.forEach((wrapper, index) => {
     const nameEl = wrapper.querySelector('.d2h-file-name');
     if (!nameEl) return;
     const fileName = nameEl.textContent.trim();
 
-    // Extract +/- counts from the file header if available
+    // Extract +/- counts
     const header = wrapper.querySelector('.d2h-file-header');
     let additions = 0, deletions = 0;
     if (header) {
@@ -61,51 +92,181 @@ function populateFileSidebar() {
       }
     }
 
-    const item = document.createElement('div');
-    item.className = 'sidebar-file-item';
-    item.dataset.fileIndex = index;
-    item.title = fileName;
+    const statusInfo = fileStatusMap[fileName] || { status: 'modified' };
 
-    // Build item content with name and counts
+    files.push({
+      name: fileName,
+      index,
+      status: statusInfo.status,
+      additions,
+      deletions,
+      wrapper
+    });
+  });
+
+  // Build folder tree from flat file list
+  const tree = {}; // { folderName: { files: [], children: {} } }
+  for (const file of files) {
+    const parts = file.name.split('/');
+    const fileName = parts.pop();
+    let node = tree;
+
+    // Navigate/create folder hierarchy
+    for (const part of parts) {
+      if (!node[part]) node[part] = { _files: [], _children: {} };
+      node = node[part]._children || {};
+    }
+
+    // Add file to the deepest folder
+    // Re-navigate to find the right node
+    let target = tree;
+    for (const part of parts) {
+      target = target[part]._children;
+    }
+    target._files = target._files || [];
+    target._files.push({ ...file, displayName: fileName });
+  }
+
+  // Build tree recursively and render
+  function renderTree(node, container, depth) {
+    const entries = Object.keys(node).sort();
+    for (const key of entries) {
+      const group = node[key];
+      if (key === '_files') continue;
+
+      const folderEl = document.createElement('div');
+      folderEl.className = 'sidebar-folder-group';
+
+      const allFiles = collectFiles(group);
+      const folderRow = document.createElement('div');
+      folderRow.className = 'sidebar-folder-row';
+      folderRow.style.paddingLeft = (8 + depth * 12) + 'px';
+
+      const toggle = document.createElement('span');
+      toggle.className = 'sidebar-folder-toggle';
+      toggle.textContent = '▾';
+
+      const folderIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      folderIcon.setAttribute('class', 'sidebar-folder-icon');
+      folderIcon.setAttribute('viewBox', '0 0 16 16');
+      folderIcon.innerHTML = '<path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"/>';
+
+      const folderName = document.createElement('span');
+      folderName.className = 'sidebar-folder-name';
+      folderName.textContent = key;
+
+      const fileCount = document.createElement('span');
+      fileCount.className = 'sidebar-folder-count';
+      fileCount.textContent = allFiles.length;
+
+      folderRow.appendChild(toggle);
+      folderRow.appendChild(folderIcon);
+      folderRow.appendChild(folderName);
+      folderRow.appendChild(fileCount);
+
+      const filesContainer = document.createElement('div');
+      filesContainer.className = 'sidebar-folder-files';
+
+      // Render files in this folder
+      if (group._files) {
+        for (const file of group._files) {
+          filesContainer.appendChild(createFileRow(file, depth + 1));
+        }
+      }
+
+      // Recursively render sub-folders
+      if (Object.keys(group._children || {}).length > 0) {
+        renderTree(group._children, filesContainer, depth + 1);
+      }
+
+      // Toggle expand/collapse
+      let expanded = true;
+      folderRow.addEventListener('click', () => {
+        expanded = !expanded;
+        toggle.textContent = expanded ? '▾' : '▸';
+        toggle.classList.toggle('collapsed', !expanded);
+        filesContainer.style.display = expanded ? 'block' : 'none';
+      });
+
+      folderEl.appendChild(folderRow);
+      folderEl.appendChild(filesContainer);
+      container.appendChild(folderEl);
+    }
+  }
+
+  function createFileRow(file, depth) {
+    const row = document.createElement('div');
+    row.className = 'sidebar-file-row';
+    row.dataset.fileIndex = file.index;
+    row.title = file.name;
+    row.style.paddingLeft = (8 + depth * 12) + 'px';
+
+    // Status icon
+    const statusIcon = document.createElement('span');
+    statusIcon.className = 'file-status-icon ' + file.status;
+    switch (file.status) {
+      case 'added': statusIcon.textContent = '+'; break;
+      case 'removed': statusIcon.textContent = '−'; break;
+      case 'modified': statusIcon.textContent = '■'; break;
+      case 'renamed': statusIcon.textContent = '±'; break;
+      default: statusIcon.textContent = '■'; break;
+    }
+
+    // File name
     const nameSpan = document.createElement('span');
-    nameSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
-    nameSpan.textContent = fileName;
+    nameSpan.className = 'file-name';
+    nameSpan.textContent = file.displayName;
 
-    const countsSpan = document.createElement('span');
-    countsSpan.style.cssText = 'flex-shrink:0;margin-left:8px;font-size:11px;font-family:monospace;';
+    row.appendChild(statusIcon);
+    row.appendChild(nameSpan);
 
-    if (additions > 0) {
-      const addSpan = document.createElement('span');
-      addSpan.style.color = '#3fb950';
-      addSpan.textContent = '+' + additions;
-      countsSpan.appendChild(addSpan);
+    // Counts
+    if (file.additions > 0 || file.deletions > 0) {
+      const countsSpan = document.createElement('span');
+      countsSpan.className = 'file-counts';
+      if (file.additions > 0) {
+        const addSpan = document.createElement('span');
+        addSpan.className = 'additions';
+        addSpan.textContent = '+' + file.additions;
+        countsSpan.appendChild(addSpan);
+      }
+      if (file.deletions > 0) {
+        const delSpan = document.createElement('span');
+        delSpan.className = 'deletions';
+        delSpan.textContent = '−' + file.deletions;
+        countsSpan.appendChild(delSpan);
+      }
+      row.appendChild(countsSpan);
     }
-    if (deletions > 0) {
-      const delSpan = document.createElement('span');
-      delSpan.style.color = '#f85149';
-      delSpan.textContent = ' -' + deletions;
-      countsSpan.appendChild(delSpan);
-    }
 
-    item.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;color:#8b949e;border-bottom:1px solid #21262d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background 0.1s,color 0.1s;display:flex;align-items:center;';
-    item.appendChild(nameSpan);
-    item.appendChild(countsSpan);
-
-    item.addEventListener('click', () => {
-      // Scroll to the file header (not the first code line) and offset for the fixed toolbar
-      const header = wrapper.querySelector('.d2h-file-header');
-      const target = header || wrapper;
-      const toolbarHeight = 52; // #review-bar height
+    // Click handler - scroll to file
+    row.addEventListener('click', () => {
+      const wrapper = diffContainer.querySelectorAll('.d2h-file-wrapper')[file.index];
+      if (!wrapper) return;
+      const hdr = wrapper.querySelector('.d2h-file-header');
+      const target = hdr || wrapper;
+      const toolbarHeight = 52;
       const rect = target.getBoundingClientRect();
       const scrollTop = window.pageYOffset + rect.top - toolbarHeight - 8;
       window.scrollTo({ top: scrollTop, behavior: 'smooth' });
-      // Highlight active item
-      fileSidebarList.querySelectorAll('.sidebar-file-item').forEach(el => el.classList.remove('active'));
-      item.classList.add('active');
+      // Highlight active
+      fileSidebarList.querySelectorAll('.sidebar-file-row, .sidebar-file-item').forEach(el => el.classList.remove('active'));
+      row.classList.add('active');
     });
 
-    fileSidebarList.appendChild(item);
-  });
+    return row;
+  }
+
+  function collectFiles(node) {
+    const result = [];
+    if (node._files) result.push(...node._files);
+    for (const key of Object.keys(node._children || {})) {
+      result.push(...collectFiles(node._children[key]));
+    }
+    return result;
+  }
+
+  renderTree(tree, fileSidebarList, 0);
 
   // Remove the original file list from diff container
   const fileListWrapper = diffContainer.querySelector('.d2h-file-list-wrapper');
@@ -114,6 +275,51 @@ function populateFileSidebar() {
   // Show sidebar
   fileSidebar.style.display = 'block';
   contentDiv.classList.add('diff-loaded');
+
+  // Set up filter input
+  const filterInput = document.getElementById('file-sidebar-filter');
+  if (filterInput) {
+    filterInput.value = '';
+    filterInput.addEventListener('input', () => {
+      const query = filterInput.value.toLowerCase().trim();
+      const allFileRows = fileSidebarList.querySelectorAll('.sidebar-file-row');
+      const allFolderGroups = fileSidebarList.querySelectorAll('.sidebar-folder-group');
+
+      if (!query) {
+        // Show everything
+        allFileRows.forEach(row => row.style.display = '');
+        allFolderGroups.forEach(g => {
+          g.style.display = '';
+          const filesContainer = g.querySelector('.sidebar-folder-files');
+          if (filesContainer) filesContainer.style.display = '';
+        });
+        return;
+      }
+
+      // Hide all folders first
+      allFolderGroups.forEach(g => g.style.display = 'none');
+
+      // Show files matching query and their parent folders
+      allFileRows.forEach(row => {
+        const fileName = (row.title || '').toLowerCase();
+        if (fileName.includes(query)) {
+          row.style.display = '';
+          // Show parent folder
+          let parent = row.parentElement;
+          while (parent && parent !== fileSidebarList) {
+            if (parent.classList && parent.classList.contains('sidebar-folder-group')) {
+              parent.style.display = '';
+              const filesContainer = parent.querySelector('.sidebar-folder-files');
+              if (filesContainer) filesContainer.style.display = '';
+            }
+            parent = parent.parentElement;
+          }
+        } else {
+          row.style.display = 'none';
+        }
+      });
+    });
+  }
 }
 
 function hideFileSidebar() {
@@ -993,10 +1199,17 @@ function showToast(message, type = 'info', duration = 8000) {
   toast.className = `toast toast-${type}`;
   toast.innerHTML = message;
   container.appendChild(toast);
-  setTimeout(() => {
+  const timer = setTimeout(() => {
     toast.classList.add('toast-out');
     setTimeout(() => toast.remove(), 300);
   }, duration);
+  // Return a dismiss handle so callers can remove the toast early
+  toast._dismiss = () => {
+    clearTimeout(timer);
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 300);
+  };
+  return toast;
 }
 
 function resetButtons() {
@@ -1178,6 +1391,12 @@ async function submitReview(eventType) {
         // Auto-remove this PR from the cached list
         if (review.prNumber && cachedPrList) {
           cachedPrList = cachedPrList.filter(pr => pr.number !== review.prNumber);
+        }
+
+        // Re-render dropdown if open to reflect removal
+        if (prDropdownOpen) {
+          const searchInput = document.getElementById('pr-search');
+          renderPrList(cachedPrList, searchInput ? searchInput.value : '');
         }
 
         // Collect feedback for rules analysis
@@ -1868,10 +2087,12 @@ prNumberInput.addEventListener('keydown', async (e) => {
 
 async function loadPrByNumber(prNumber, repoKey) {
   prInfo.innerHTML = `<strong>Loading PR #${prNumber}...</strong>`;
+  const loadingToast = showToast('Loading PR…', 'progress', 30000);
   try {
     const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey });
     if (result.error) {
       prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
+      if (loadingToast._dismiss) loadingToast._dismiss();
       return;
     }
     currentFileName = result.fileName || `pr-${prNumber}.diff`;
@@ -1914,8 +2135,10 @@ async function loadPrByNumber(prNumber, repoKey) {
 
     // Load commits for this PR
     loadPrCommits(prNumber);
+    if (loadingToast._dismiss) loadingToast._dismiss();
   } catch (err) {
     prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
+    if (loadingToast._dismiss) loadingToast._dismiss();
   }
 }
 
@@ -2014,7 +2237,9 @@ async function refreshPrList() {
     const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
     if (errors && errors.length > 0) console.warn('[refreshPrList] Repo errors:', errors.map(e => `${e.repo}: ${e.error}`).join('; '));
     if (!prs) return null;
-    cachedPrList = prs;
+    // Filter out PRs recently closed in this session (GitHub API may lag)
+    const filteredPrs = prs.filter(pr => !recentlyClosedPrs.has(pr.number));
+    cachedPrList = filteredPrs;
     cachedPrListTime = Date.now();
     if (prDropdownOpen) {
       const searchInput = document.getElementById('pr-search');
@@ -2371,6 +2596,7 @@ let currentDiffViewMode = 'unified';
 let currentPrTitle = '';
 let cachedPrList = null;
 let cachedPrListTime = 0;
+const recentlyClosedPrs = new Set(); // Track PRs closed in this session
 // PR cache never expires — only invalidated by repo changes or manual refresh
 let currentPrNumber = null;
 let currentPrBody = '';
@@ -2803,7 +3029,7 @@ function updatePrInfoBar(prNumber, prTitle, result) {
   if (prTitle) {
     let compareIcon = '';
     if (beforeAfterPairs && beforeAfterPairs.length > 0) {
-      compareIcon = '<span class="pr-compare-toggle" title="View before/after screenshots"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="8" height="18" rx="1"/><rect x="14" y="3" width="8" height="18" rx="1"/></svg></span>';
+      compareIcon = '<span class="pr-compare-toggle" title="View before/after screenshots"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M2 17l5-5 3 3 4-5 8 7"/><circle cx="8" cy="9" r="1.5" fill="currentColor"/></svg></span>';
     }
     html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
   }
@@ -4173,6 +4399,27 @@ async function closePullRequest() {
     } else {
       showToast(`✓ PR #${prNumber} closed${reviewBodyText ? ' with comment' : ''}`, 'success', 6000);
       prInfo.innerHTML = `<strong style="color:#f85149">PR #${prNumber} closed</strong>`;
+
+      // Remove closed PR from cached list and re-render dropdown if open
+      const prNum = parseInt(prNumber, 10);
+      // Also track as recently closed so background refresh skips it
+      recentlyClosedPrs.add(prNum);
+      if (cachedPrList) {
+        cachedPrList = cachedPrList.filter(pr => pr.number !== prNum);
+      }
+      if (prDropdownOpen) {
+        const searchInput = document.getElementById('pr-search');
+        renderPrList(cachedPrList, searchInput ? searchInput.value : '');
+      }
+
+      // Auto-load next available PR from the list
+      if (cachedPrList && cachedPrList.length > 0) {
+        const nextPr = cachedPrList[0];
+        await loadPrByNumber(nextPr.number, nextPr.repo);
+      } else {
+        // No more PRs to review
+        prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
+      }
     }
   } catch (err) {
     showToast(`Error: ${err.message}`, 'error', 8000);
