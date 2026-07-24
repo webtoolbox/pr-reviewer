@@ -1,4 +1,5 @@
 // State
+let appConfig = {}; // Config from main process (repoOwner, repoName, etc.)
 let currentDiff = '';
 let currentFileName = '';
 let currentFilePath = '';
@@ -1331,10 +1332,11 @@ window.addEventListener('focus', async () => {
 
 // Fetch config from main process
 window.electronAPI.getConfig().then(async (config) => {
+  appConfig = config; // Store for use in openPrDropdown(), refreshPrList(), etc.
   if (config.prNumber) prNumberInput.value = config.prNumber;
   if (config.aiTagPrefix) aiTagPrefix = config.aiTagPrefix;
   if (config.diff && config.diff.viewMode) currentDiffViewMode = config.diff.viewMode;
-  fetchCollaborators();
+  // Note: fetchCollaborators() is called in loadPrByNumber() with the correct repoKey
 
   // Check binaries on startup
   await checkBinariesAndMaybeShowError();
@@ -1346,9 +1348,12 @@ window.electronAPI.getConfig().then(async (config) => {
   try {
     const { repos } = await window.electronAPI.listRepos();
     checkedRepos = (repos || []).filter(r => r.checked);
+    console.log('[Startup] Checked repos:', checkedRepos.map(r => r.name).join(', ') || '(none)');
     if (checkedRepos.length > 0) {
       const reposToFetch = checkedRepos.map(r => ({ owner: r.owner, name: r.name }));
-      const { prs } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
+      const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
+      if (errors && errors.length > 0) console.warn('[Startup] Repo errors:', errors.map(e => `${e.repo}: ${e.error}`).join('; '));
+      console.log('[Startup] Fetched', prs ? prs.length : 0, 'PRs on startup');
       if (prs && prs.length > 0) {
         cachedPrList = prs;
         cachedPrListTime = Date.now();
@@ -1822,24 +1827,48 @@ async function openPrDropdown() {
       </div>
       <div class="pr-dropdown-header">Pull Requests Pending Review</div>
       <div class="pr-loading">Loading...</div>`;
-    // Get checked repos
-    const reposToFetch = checkedRepos.length > 0
-      ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
-      : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
-    const { prs, error } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
-    if (error) {
+    try {
+      // Get checked repos
+      const reposToFetch = checkedRepos.length > 0
+        ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
+        : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
+      console.log('[PR dropdown] Fetching PRs for repos:', JSON.stringify(reposToFetch));
+      const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
+      console.log('[PR dropdown] Got response:', prs ? prs.length : 0, 'PRs,', errors ? errors.length : 0, 'errors');
+      if (errors && errors.length > 0) {
+        const errMsg = errors.map(e => `${e.repo}: ${e.error}`).join('; ');
+        console.error('[PR dropdown] Repo errors:', errMsg);
+        // Show errors but still render any PRs that were fetched
+        if (prs && prs.length > 0) {
+          cachedPrList = prs;
+          cachedPrListTime = Date.now();
+          renderPrList(prs);
+          showToast(`Warning: ${errMsg}`, 'warning');
+        } else {
+          prDropdown.innerHTML = `
+            <div class="pr-search-wrapper">
+              <span class="search-icon"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+              <input type="text" id="pr-search" placeholder="Search PRs by title, author, or number...">
+            </div>
+            <div class="pr-dropdown-header">Pull Requests Pending Review</div>
+            <div class="pr-empty">Error: ${escapeHtml(errMsg)}</div>`;
+          return;
+        }
+      } else {
+        cachedPrList = prs;
+        cachedPrListTime = Date.now();
+        renderPrList(prs);
+      }
+    } catch (err) {
+      console.error('[PR dropdown] Failed to fetch PRs:', err);
       prDropdown.innerHTML = `
         <div class="pr-search-wrapper">
           <span class="search-icon"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
           <input type="text" id="pr-search" placeholder="Search PRs by title, author, or number...">
         </div>
         <div class="pr-dropdown-header">Pull Requests Pending Review</div>
-        <div class="pr-empty">Error: ${escapeHtml(error)}</div>`;
-      return;
+        <div class="pr-empty">Error: ${escapeHtml(err.message || String(err))}</div>`;
     }
-    cachedPrList = prs;
-    cachedPrListTime = Date.now();
-    renderPrList(prs);
   }
 }
 
@@ -1849,8 +1878,9 @@ async function refreshPrList() {
     const reposToFetch = checkedRepos.length > 0
       ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
       : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
-    const { prs, error } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
-    if (error || !prs) return null;
+    const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
+    if (errors && errors.length > 0) console.warn('[refreshPrList] Repo errors:', errors.map(e => `${e.repo}: ${e.error}`).join('; '));
+    if (!prs) return null;
     cachedPrList = prs;
     cachedPrListTime = Date.now();
     if (prDropdownOpen) {

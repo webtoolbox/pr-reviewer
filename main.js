@@ -369,10 +369,12 @@ async function generateDiff(prNumber, repoKey) {
   }
   const diffMode = (appConfig.diff || {}).mode || 'since-review';
 
-  // Get HEAD SHA
-  const headSha = await execPromise(
-    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid --jq '.headRefOid'`
+  // Get HEAD SHA + PR metadata in a single API call (was two separate calls)
+  const prJson = await execPromise(
+    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,title,author,assignees,body --jq '{headRefOid: .headRefOid, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
   );
+  const prData = JSON.parse(prJson || '{}');
+  const headSha = prData.headRefOid;
 
   if (!headSha) {
     throw new Error('Could not get PR HEAD SHA');
@@ -475,7 +477,7 @@ async function generateDiff(prNumber, repoKey) {
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);
   fs.writeFileSync(tmpPath, diffOut);
 
-  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: codeFiles.length };
+  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: codeFiles.length, prData };
 }
 
 // Create application menu with "New Window" option
@@ -750,25 +752,12 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
     const content = fs.readFileSync(result.diffPath, 'utf8');
     const fileName = `pr-${prNumber}-clean.diff`;
 
-    // Fetch PR title, author, and assignees
-    let owner, repoName;
-    if (repo && repo.includes('/')) {
-      [owner, repoName] = repo.split('/');
-    } else {
-      owner = appConfig.repoOwner || 'webtoolbox';
-      repoName = appConfig.repoName || 'Website-Toolbox';
-    }
-    let prTitle = '', prAuthor = '', prAssignees = [], prBody = '';
-    try {
-      const prJson = await execPromise(
-        `gh pr view ${prNumber} --repo ${owner}/${repoName} --json title,author,assignees,body`
-      );
-      const prData = JSON.parse(prJson);
-      prTitle = prData.title || '';
-      prAuthor = prData.author?.login || '';
-      prAssignees = (prData.assignees || []).map(a => a.login).filter(a => a !== prAuthor);
-      prBody = prData.body || '';
-    } catch {}
+    // Use PR metadata from generateDiff() instead of a second API call
+    const prData = result.prData || {};
+    const prTitle = prData.title || '';
+    const prAuthor = prData.author || '';
+    const prAssignees = (prData.assignees || []).filter(a => a !== prAuthor);
+    const prBody = prData.body || '';
 
     return {
       content,
@@ -839,7 +828,16 @@ ipcMain.handle('list-prs', async () => {
 
 // ===================== MULTI-REPO HANDLERS =====================
 
+let reposConfigCache = null;
+let reposConfigCacheTime = 0;
+const REPOS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 function loadReposConfig() {
+  // Return cached result if fresh
+  if (reposConfigCache && (Date.now() - reposConfigCacheTime) < REPOS_CACHE_TTL) {
+    return reposConfigCache;
+  }
+
   // Load checked state from private config
   const privateConfigPath = path.join(app.getPath('home'), '.config', 'pr-reviewer', 'config.json');
   let checkedState = {};
@@ -879,6 +877,10 @@ function loadReposConfig() {
     return `${a.owner}/${a.name}`.localeCompare(`${b.owner}/${b.name}`);
   });
 
+  // Cache the result
+  reposConfigCache = repos;
+  reposConfigCacheTime = Date.now();
+
   return repos;
 }
 
@@ -906,6 +908,10 @@ ipcMain.handle('save-repos', async (event, repos) => {
     // Update in-memory appConfig too
     appConfig.repos = repos;
 
+    // Invalidate repos cache so next loadReposConfig() re-fetches
+    reposConfigCache = null;
+    reposConfigCacheTime = 0;
+
     return { success: true };
   } catch (err) {
     console.error('[save-repos] failed:', err.message);
@@ -914,55 +920,71 @@ ipcMain.handle('save-repos', async (event, repos) => {
 });
 
 ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
-  const filterConfig = filter || appConfig.prFilter || {};
-  const errors = [];
-  const allPrs = [];
+  console.log('[list-all-prs] Called with', repos ? repos.length : 0, 'repos, filter:', JSON.stringify(filter));
+  try {
+    const filterConfig = filter || appConfig.prFilter || {};
+    const errors = [];
+    const allPrs = [];
 
-  for (const repo of repos) {
-    const { owner, name } = repo;
-    if (!owner || !name) continue;
-
-    try {
-      let page = 1;
-      let repoPrs = [];
-      while (true) {
-        const stdout = await execGh(
-          `api 'repos/${owner}/${name}/pulls?state=open&per_page=100&page=${page}' --jq '[.[] | {number, title, author: .user.login, created: .created_at, reviewers: [.requested_reviewers[].login], assignees: [.assignees[].login], draft}]'`,
-          { timeout: 30000 }
-        );
-        let batch = [];
-        try { batch = JSON.parse(stdout); } catch { break; }
-        repoPrs = repoPrs.concat(batch);
-        if (batch.length < 100) break;
-        page++;
-      }
-
-      // Apply filters
-      if (filterConfig.reviewRequested) {
-        // For multi-repo, filter by reviewer login from the repo owner
-        repoPrs = repoPrs.filter(pr => pr.reviewers && pr.reviewers.includes(owner));
-      }
-      if (filterConfig.titleContains) {
-        const needle = filterConfig.titleContains.toLowerCase();
-        repoPrs = repoPrs.filter(pr => pr.title.toLowerCase().includes(needle));
-      }
-
-      // Add repo field to each PR
-      for (const pr of repoPrs) {
-        pr.repo = `${owner}/${name}`;
-      }
-
-      allPrs.push(...repoPrs);
-    } catch (err) {
-      console.error(`[list-all-prs] failed for ${owner}/${name}:`, err.message);
-      errors.push({ repo: `${owner}/${name}`, error: err.message });
+    if (!repos || !Array.isArray(repos)) {
+      console.error('[list-all-prs] repos is not an array:', repos);
+      return { prs: [], errors: [{ repo: '(unknown)', error: 'repos parameter is not an array' }] };
     }
+
+    for (const repo of repos) {
+      const { owner, name } = repo;
+      if (!owner || !name) {
+        console.warn('[list-all-prs] Skipping repo with empty owner/name:', JSON.stringify(repo));
+        continue;
+      }
+
+      try {
+        let page = 1;
+        let repoPrs = [];
+        while (true) {
+          const stdout = await execGh(
+            `api 'repos/${owner}/${name}/pulls?state=open&per_page=100&page=${page}' --jq '[.[] | {number, title, author: .user.login, created: .created_at, reviewers: [.requested_reviewers[].login], assignees: [.assignees[].login], draft}]'`,
+            { timeout: 30000 }
+          );
+          let batch = [];
+          try { batch = JSON.parse(stdout); } catch { break; }
+          repoPrs = repoPrs.concat(batch);
+          if (batch.length < 100) break;
+          page++;
+        }
+
+        console.log(`[list-all-prs] ${owner}/${name}: fetched ${repoPrs.length} PRs`);
+
+        // Apply filters
+        if (filterConfig.reviewRequested) {
+          repoPrs = repoPrs.filter(pr => pr.reviewers && pr.reviewers.includes(owner));
+        }
+        if (filterConfig.titleContains) {
+          const needle = filterConfig.titleContains.toLowerCase();
+          repoPrs = repoPrs.filter(pr => pr.title.toLowerCase().includes(needle));
+        }
+
+        // Add repo field to each PR
+        for (const pr of repoPrs) {
+          pr.repo = `${owner}/${name}`;
+        }
+
+        allPrs.push(...repoPrs);
+      } catch (err) {
+        console.error(`[list-all-prs] failed for ${owner}/${name}:`, err.message);
+        errors.push({ repo: `${owner}/${name}`, error: err.message });
+      }
+    }
+
+    // Sort all PRs by created date descending
+    allPrs.sort((a, b) => new Date(b.created) - new Date(a.created));
+
+    console.log(`[list-all-prs] Returning ${allPrs.length} PRs, ${errors.length} errors`);
+    return { prs: allPrs, errors };
+  } catch (err) {
+    console.error('[list-all-prs] Top-level error:', err);
+    return { prs: [], errors: [{ repo: '(unknown)', error: err.message || String(err) }] };
   }
-
-  // Sort all PRs by created date descending
-  allPrs.sort((a, b) => new Date(b.created) - new Date(a.created));
-
-  return { prs: allPrs, errors };
 });
 
 ipcMain.handle('save-review', async (event, review) => {
@@ -1533,7 +1555,6 @@ ipcMain.handle('get-config', async () => ({
   aiTagPrefix: appConfig.aiTagPrefix || '@Hermes',
   aiCommand: appConfig.aiCommand,
   prFilter: appConfig.prFilter || {},
-  repos: loadReposConfig(),
   repoOwner: appConfig.repoOwner || '',
   repoName: appConfig.repoName || '',
   repoPath: appConfig.repoPath || '',
