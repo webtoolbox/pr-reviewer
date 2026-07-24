@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile, exec, execSync } = require('child_process');
@@ -769,16 +769,17 @@ ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }
   return { localPath: `images/${fileName}`, url: null };
 });
 
-// Open PR in a new window
+// Open PR in system browser
 ipcMain.handle('open-pr-new-window', async (event, prNumber) => {
   try {
-    const result = await generateDiff(prNumber);
-    const content = fs.readFileSync(result.diffPath, 'utf8');
-    const fileName = `pr-${prNumber}-clean.diff`;
-    createWindow({ diffContent: content, fileName, filePath: result.diffPath, prNumber });
+    const owner = appConfig.repoOwner || 'webtoolbox';
+    const repo = appConfig.repoName || 'Website-Toolbox';
+    const url = `https://github.com/${owner}/${repo}/pull/${prNumber}`;
+    shell.openExternal(url);
+    log('INFO', `[pr-open] Opened PR #${prNumber} in browser: ${url}`);
     return { success: true };
   } catch (err) {
-    log('ERROR', '[pr-new-window] failed:', err.message);
+    log('ERROR', '[pr-open] failed:', err.message);
     return { error: err.message };
   }
 });

@@ -2001,7 +2001,7 @@ function renderPrList(prs, filterText) {
       e.stopPropagation();
       const num = parseInt(btn.dataset.pr, 10);
       closePrDropdown();
-      prInfo.innerHTML = `<strong>Loading PR #${num} in new window...</strong>`;
+      prInfo.innerHTML = `<strong>Opening PR #${num} in browser...</strong>`;
       const result = await window.electronAPI.openPrNewWindow(num);
       if (result.error) {
         prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
