@@ -112,7 +112,7 @@ function populateFileSidebar() {
   if (fileListWrapper) fileListWrapper.remove();
 
   // Show sidebar
-  fileSidebar.style.display = '';
+  fileSidebar.style.display = 'block';
   contentDiv.classList.add('diff-loaded');
 }
 
@@ -3831,6 +3831,29 @@ function executeSingleVoiceAction(action) {
 
     case 'close_pr': {
       closePullRequest();
+      break;
+    }
+
+    case 'go_to_file': {
+      const targetFileName = (action.file || action.fileName || '').toLowerCase();
+      if (!targetFileName) break;
+      const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+      for (const wrapper of fileWrappers) {
+        const nameEl = wrapper.querySelector('.d2h-file-name');
+        if (nameEl && nameEl.textContent.trim().toLowerCase().includes(targetFileName)) {
+          const header = wrapper.querySelector('.d2h-file-header');
+          const target = header || wrapper;
+          const toolbarHeight = 52;
+          const rect = target.getBoundingClientRect();
+          const scrollTop = window.pageYOffset + rect.top - toolbarHeight - 8;
+          window.scrollTo({ top: scrollTop, behavior: 'smooth' });
+          // Highlight the file briefly
+          wrapper.style.outline = '2px solid #58a6ff';
+          setTimeout(() => { wrapper.style.outline = ''; }, 2000);
+          showToast(`Navigating to ${nameEl.textContent.trim()}`, 'info', 3000);
+          break;
+        }
+      }
       break;
     }
 
