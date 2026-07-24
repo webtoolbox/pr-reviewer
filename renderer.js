@@ -554,6 +554,12 @@ function addCommentButtons() {
         const isRight = index % 2 === 1;
         const lines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
         lines.forEach(line => {
+          // Only add comment button if line has a valid line number
+          const lineNumEl = line.querySelector('.d2h-code-side-linenumber');
+          if (!lineNumEl) return;
+          const numText = lineNumEl.textContent.trim();
+          if (!numText || !/^\d+$/.test(numText)) return;
+
           const btn = document.createElement('button');
           btn.className = 'line-comment-btn';
           btn.textContent = '+';
@@ -571,6 +577,14 @@ function addCommentButtons() {
       // Unified (line-by-line) mode
       const lines = wrapper.querySelectorAll('.d2h-code-line');
       lines.forEach(line => {
+        // Only add comment button if line has a valid line number
+        const row = line.closest('tr');
+        if (!row) return;
+        const linenumEl = row.querySelector('.d2h-code-linenumber');
+        if (!linenumEl) return;
+        const numText = linenumEl.textContent.trim();
+        if (!numText || !/^\d+$/.test(numText)) return;
+
         const btn = document.createElement('button');
         btn.className = 'line-comment-btn';
         btn.textContent = '+';

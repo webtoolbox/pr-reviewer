@@ -5,7 +5,9 @@
   <meta name="referrer" content="no-referrer">
   <title>PR Reviewer</title>
   <link rel="stylesheet" type="text/css" href="node_modules/diff2html/bundles/css/diff2html.min.css">
+  <link rel="stylesheet" type="text/css" href="node_modules/highlight.js/styles/github-dark.min.css">
   <style>
+    :root { --review-bar-height: 52px; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
 
@@ -15,9 +17,9 @@
       background: #161b22; border-bottom: 1px solid #30363d;
       padding: 10px 20px; display: flex; align-items: center; gap: 10px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-      height: 52px;
+      min-height: 52px;
     }
-    #review-bar .pr-info { flex: 1; font-size: 14px; color: #8b949e; }
+    #review-bar .pr-info { flex: 1; font-size: 14px; color: #8b949e; padding-bottom: 2px; }
     #review-bar .pr-info strong { color: #c9d1d9; }
     #review-bar button {
       padding: 6px 14px; border: 1px solid #30363d; border-radius: 9999px;
@@ -310,7 +312,7 @@
     #pr-dropdown::-webkit-scrollbar-track { background: #161b22; }
 
     /* Main content */
-    #content { margin-top: 52px; padding: 20px; }
+    #content { margin-top: var(--review-bar-height, 52px); padding: 20px; }
     #content.diff-loaded { display: flex; flex-direction: row; }
 
     /* File sidebar */
@@ -318,7 +320,7 @@
       display: none; width: 280px; min-width: 280px;
       border-right: 1px solid #30363d; overflow-y: auto;
       background: #0d1117; flex-shrink: 0;
-      height: calc(100vh - 52px);
+      height: calc(100vh - var(--review-bar-height, 52px));
       transition: width 0.2s ease, min-width 0.2s ease, opacity 0.2s ease, padding 0.2s ease;
     }
     #file-sidebar.collapsed {
@@ -352,7 +354,7 @@
     /* Empty state */
     #empty-state {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: calc(100vh - 52px); color: #8b949e; font-size: 16px; gap: 12px;
+      height: calc(100vh - var(--review-bar-height, 52px)); color: #8b949e; font-size: 16px; gap: 12px;
     }
 
     /* Error screen for missing binaries */
@@ -503,7 +505,7 @@
       color: #c9d1d9;
     }
     .pr-author-line {
-      font-size: 12px; color: #8b949e; margin-top: 1px;
+      font-size: 12px; color: #8b949e; margin-top: 3px;
     }
     .pr-author-line strong { color: #c9d1d9; }
     .pr-subtitle-line {
@@ -879,7 +881,7 @@
 
     /* Drag overlay */
     #drag-overlay {
-      display: none; position: fixed; top: 52px; left: 0; right: 0; bottom: 0;
+      display: none; position: fixed; top: var(--review-bar-height, 52px); left: 0; right: 0; bottom: 0;
       background: rgba(56,139,253,0.1); border: 2px dashed #58a6ff; z-index: 999;
       align-items: center; justify-content: center; font-size: 20px; color: #58a6ff;
     }
@@ -1349,7 +1351,7 @@
       <button id="btn-next-comment" title="Next comment (Cmd+])">▶</button>
     </span>
     <button id="btn-more" title="More actions">⋮</button>
-    <div id="more-menu" style="display:none;position:absolute;right:20px;top:52px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 0;z-index:1001;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
+    <div id="more-menu" style="display:none;position:absolute;right:20px;top:var(--review-bar-height, 52px);background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 0;z-index:1001;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
       <button id="menu-close-pr" style="display:block;width:100%;text-align:left;padding:8px 16px;background:none;border:none;color:#c9d1d9;font-size:13px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#1c2128'" onmouseout="this.style.background='none'">Close Pull Request</button>
       <button id="menu-dismiss" style="display:block;width:100%;text-align:left;padding:8px 16px;background:none;border:none;color:#8b949e;font-size:13px;cursor:pointer;border-top:1px solid #21262d;margin-top:4px;padding-top:10px;border-radius:4px;" onmouseover="this.style.background='#1c2128'" onmouseout="this.style.background='none'">Close</button>
     </div>
@@ -1602,8 +1604,21 @@
   <!-- Three-dot menu -->
 
 
-  <script src="node_modules/diff2html/bundles/js/diff2html.min.js"></script>
+  <script src="node_modules/diff2html/bundles/js/diff2html-ui.min.js"></script>
   <script src="node_modules/marked/lib/marked.umd.js"></script>
   <script src="renderer.js"></script>
+  <script>
+    // Keep --review-bar-height in sync when the bar wraps to multiple lines
+    (function() {
+      const bar = document.getElementById('review-bar');
+      if (!bar || typeof ResizeObserver === 'undefined') return;
+      const update = () => {
+        const h = bar.getBoundingClientRect().height;
+        document.documentElement.style.setProperty('--review-bar-height', h + 'px');
+      };
+      update();
+      new ResizeObserver(update).observe(bar);
+    })();
+  </script>
 </body>
 </html>
