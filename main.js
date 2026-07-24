@@ -1182,43 +1182,6 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     try { fs.unlinkSync(tmpPath); } catch {}
   }
 });
-// Close a pull request via gh CLI
-ipcMain.handle('close-pr', async (event, { prNumber, comment }) => {
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
-  if (!owner || !repo) {
-    return { error: 'repoOwner and repoName must be configured in config.json' };
-  }
-  if (!prNumber) {
-    return { error: 'PR number is required' };
-  }
-
-  try {
-    // Post comment first if provided
-    if (comment && comment.trim()) {
-      const tmpPath = path.join(getGeneratedDir(), `close-comment-${Date.now()}.txt`);
-      fs.writeFileSync(tmpPath, comment.trim());
-      try {
-        await execPromise(
-          `gh pr comment ${prNumber} --repo ${owner}/${repo} --body-file "${tmpPath}"`
-        );
-      } finally {
-        try { fs.unlinkSync(tmpPath); } catch {}
-      }
-    }
-
-    // Close the PR
-    await execPromise(
-      `gh pr close ${prNumber} --repo ${owner}/${repo}`
-    );
-
-    console.log(`[close-pr] PR #${prNumber} closed on ${owner}/${repo}`);
-    return { success: true };
-  } catch (err) {
-    console.error('[close-pr] failed:', err.message);
-    return { error: err.message };
-  }
-});
 
 // Auto-fix with AI: send review comments to Hermes agent to create a fix PR
 let currentUserLogin = null; // Cache for the session
