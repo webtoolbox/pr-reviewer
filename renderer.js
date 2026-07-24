@@ -501,9 +501,11 @@ function addFileCommentButtons() {
         const firstLine = wrapper.querySelector('.d2h-code-linenumber, .d2h-code-side-linenumber');
         let line = 1;
         if (firstLine) {
+          // Get the actual line number from parsedDiff if available
           const num = parseInt(firstLine.textContent.trim());
-          if (!isNaN(num)) line = num;
+          if (!isNaN(num) && num > 0) line = num;
         }
+        console.log(`[editor] Opening ${fileName} at line ${line}`);
         window.electronAPI.openFileInEditor({ filePath: fileName, line });
       });
     }
@@ -588,6 +590,11 @@ function renderFileCommentMarker(comment) {
   const header = targetWrapper.querySelector('.d2h-file-header');
   header.parentNode.insertBefore(marker, header.nextSibling);
 
+  // Remove the comment form (it should have been replaced, not left open)
+  const existingForm = document.getElementById('active-comment-form');
+  if (existingForm) existingForm.remove();
+  commentTarget = null;
+
   marker.querySelector('.btn-edit').addEventListener('click', () => editComment(marker));
   marker.querySelector('.btn-delete').addEventListener('click', () => deleteComment(marker));
   updateFileCommentCount(comment.file);
@@ -621,9 +628,10 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
   formCell.setAttribute('colspan', '2');
 
   const side = isRight ? 'right' : 'left';
+  const lineLabel = lineNum ? `line ${escapeHtml(String(lineNum))}` : '';
   formCell.innerHTML = `
     <div class="comment-form">
-      <div class="comment-label">${escapeHtml(fileName)} line ${lineNum}</div>
+      <div class="comment-label">${escapeHtml(fileName)} ${lineLabel}</div>
       <textarea id="comment-text" placeholder="Write a comment... (${escapeHtml(aiTagPrefix)} to message AI, @ask for inline response)" autofocus></textarea>
       <div class="image-paste-hint">💡 Paste (Cmd+V) or drag & drop an image to attach</div>
       <div class="actions">
@@ -784,9 +792,10 @@ function editComment(marker) {
     const formCell = document.createElement('td');
     formCell.setAttribute('colspan', '2');
     const side = comment.side === 'RIGHT' ? 'right' : 'left';
+    const editLineLabel = comment.line ? `line ${escapeHtml(String(comment.line))}` : '';
     formCell.innerHTML = `
       <div class="comment-form">
-        <div class="comment-label">${escapeHtml(comment.file)} line ${comment.line}</div>
+        <div class="comment-label">${escapeHtml(comment.file)} ${editLineLabel}</div>
         <textarea id="comment-text" placeholder="Write a comment...">${escapeHtml(comment.text)}</textarea>
         <div class="actions">
           <button class="btn-cancel" id="comment-cancel">Cancel</button>
@@ -880,7 +889,8 @@ function resetButtons() {
 }
 
 function updateCommentCount() {
-  const count = comments.length;
+  // Only count comments that will be sent to GitHub (exclude AI-tagged)
+  const count = comments.filter(c => !c.isAiTagged).length;
   if (count > 0) {
     btnRequestChanges.innerHTML = `Request Changes <span class="badge">${count}</span>`;
     btnComment.innerHTML = `Comment <span class="badge">${count}</span>`;

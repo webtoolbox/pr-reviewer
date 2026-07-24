@@ -103,16 +103,18 @@ function sendAiMessage(message, prNumber) {
   if (!aiChatId) {
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
     console.log('[ai] No chat-id configured, sending to new session');
+    console.log('[ai] Command:', appConfig.aiCommand, appConfig.aiSendArgs[0], prefix + message.substring(0, 100));
     const args = [appConfig.aiSendArgs[0], prefix + message];
-    execFile(appConfig.aiCommand, args, (err) => {
-      if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message);
+    execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
+      if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message, stderr);
       else console.log(`[${appConfig.aiCommand}] message sent to new session`);
     });
     return;
   }
   const args = [...appConfig.aiSendArgs, aiChatId, message];
-  execFile(appConfig.aiCommand, args, (err) => {
-    if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message);
+  console.log('[ai] Sending to chat-id:', aiChatId, 'message:', message.substring(0, 100));
+  execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
+    if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message, stderr);
     else console.log(`[${appConfig.aiCommand}] message sent`);
   });
 }
@@ -439,7 +441,14 @@ async function generateDiff(prNumber, repoKey) {
     await execPromise(`git rev-parse --verify ${headSha}`, { cwd: repoPath });
   } catch {
     // Head SHA not in local repo — fetch the PR branch
-    await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
+    console.log(`[generateDiff] Head SHA ${headSha.substring(0,7)} not found locally, fetching PR #${prNumber}`);
+    try {
+      await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
+      console.log(`[generateDiff] Fetch succeeded for PR #${prNumber}`);
+    } catch (fetchErr) {
+      console.error(`[generateDiff] Fetch failed for PR #${prNumber}:`, fetchErr.message);
+      throw new Error(`PR branch not available locally and fetch failed: ${fetchErr.message}`);
+    }
   }
 
   // Get files changed by non-merge commits since the review
@@ -1913,7 +1922,9 @@ ipcMain.handle('open-file-in-editor', async (event, { filePath, line }) => {
   const editor = appConfig.editorCommand || 'code';
   const repoPath = appConfig.repoPath || '';
   const fullPath = repoPath ? path.join(repoPath, filePath) : filePath;
-  
+
+  console.log(`[editor] Opening ${fullPath} at line ${line} with ${editor}`);
+
   try {
     // VS Code: code -g file:line
     // Sublime: subl file:line
