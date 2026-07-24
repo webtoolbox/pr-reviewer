@@ -41,5 +41,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autoDetectAgent: () => ipcRenderer.invoke('auto-detect-agent'),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   applyUpdate: () => ipcRenderer.invoke('apply-update'),
-  setAutoUpdate: (enabled) => ipcRenderer.invoke('set-auto-update', enabled)
+  setAutoUpdate: (enabled) => ipcRenderer.invoke('set-auto-update', enabled),
+  closePr: (data) => ipcRenderer.invoke('close-pr', data)
 });

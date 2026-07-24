@@ -851,6 +851,7 @@ function deleteComment(marker) {
     updateFileCommentCount(deletedComment.file);
   }
   updateCommentCount();
+  updateCommentNav();
   autoSaveDraft();
 }
 
@@ -3695,6 +3696,11 @@ function executeSingleVoiceAction(action) {
       break;
     }
 
+    case 'close_pr': {
+      closePullRequest();
+      break;
+    }
+
     case 'message':
     default: {
       if (action.text) {
@@ -3948,4 +3954,72 @@ document.addEventListener('keydown', (e) => {
     toggleVoice();
   }
 });
+
+// ===================== MORE MENU (⋮) =====================
+
+const btnMore = document.getElementById('btn-more');
+const moreMenu = document.getElementById('more-menu');
+const menuClosePr = document.getElementById('menu-close-pr');
+const menuDismiss = document.getElementById('menu-dismiss');
+
+if (btnMore && moreMenu) {
+  btnMore.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = moreMenu.style.display === 'block';
+    if (!isOpen) {
+      // Position dropdown below the button
+      const rect = btnMore.getBoundingClientRect();
+      moreMenu.style.right = (window.innerWidth - rect.right) + 'px';
+      moreMenu.style.top = (rect.bottom + 4) + 'px';
+    }
+    moreMenu.style.display = isOpen ? 'none' : 'block';
+  });
+
+  // Close menu when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!moreMenu.contains(e.target) && e.target !== btnMore) {
+      moreMenu.style.display = 'none';
+    }
+  });
+}
+
+if (menuClosePr) {
+  menuClosePr.addEventListener('click', async () => {
+    moreMenu.style.display = 'none';
+    await closePullRequest();
+  });
+}
+
+if (menuDismiss) {
+  menuDismiss.addEventListener('click', () => {
+    moreMenu.style.display = 'none';
+  });
+}
+
+async function closePullRequest() {
+  const prNumber = prNumberInput.value.trim();
+  if (!prNumber) {
+    showToast('No PR number loaded', 'error');
+    return;
+  }
+
+  const reviewBodyText = reviewBody.value.trim();
+  if (!confirm(`Close PR #${prNumber}?${reviewBodyText ? '\n\nYour review comment will be posted as a comment.' : ''}`)) {
+    return;
+  }
+
+  showToast('Closing pull request...', 'progress', 10000);
+
+  try {
+    const result = await window.electronAPI.closePr({ prNumber, comment: reviewBodyText });
+    if (result.error) {
+      showToast(`Failed to close PR: ${result.error}`, 'error', 8000);
+    } else {
+      showToast(`✓ PR #${prNumber} closed${reviewBodyText ? ' with comment' : ''}`, 'success', 6000);
+      prInfo.innerHTML = `<strong style="color:#f85149">PR #${prNumber} closed</strong>`;
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error', 8000);
+  }
+}
 

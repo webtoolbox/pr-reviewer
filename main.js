@@ -3,6 +3,26 @@ const path = require('path');
 const fs = require('fs');
 const { execFile, exec, execSync } = require('child_process');
 
+// ── File-based logger ──────────────────────────────────────────────────────────
+const LOG_DIR = path.join(app.getPath('home'), '.config', 'pr-reviewer');
+const LOG_FILE = path.join(LOG_DIR, 'app.log');
+
+function log(level, ...args) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const ts = new Date().toISOString();
+    const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    const line = `[${ts}] [${level}] ${msg}\n`;
+    fs.appendFileSync(LOG_FILE, line);
+  } catch {}
+  // Also echo to terminal
+  if (level === 'ERROR') {
+    console.error(...args);
+  } else {
+    console.log(...args);
+  }
+}
+
 // Track all open windows
 const windows = new Map();
 let windowCounter = 0;
@@ -102,20 +122,20 @@ const positionalArgs = rawArgs.filter((_, i) => {
 function sendAiMessage(message, prNumber) {
   if (!aiChatId) {
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
-    console.log('[ai] No chat-id configured, sending to new session');
-    console.log('[ai] Command:', appConfig.aiCommand, appConfig.aiSendArgs[0], prefix + message.substring(0, 100));
+    log('INFO', '[ai] No chat-id configured, sending to new session');
+    log('INFO', '[ai] Command:', appConfig.aiCommand, appConfig.aiSendArgs[0], prefix + message.substring(0, 100));
     const args = [appConfig.aiSendArgs[0], prefix + message];
     execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
-      if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message, stderr);
-      else console.log(`[${appConfig.aiCommand}] message sent to new session`);
+      if (err) log('ERROR', `[${appConfig.aiCommand}] send failed:`, err.message, stderr);
+      else log('INFO', `[${appConfig.aiCommand}] message sent to new session`);
     });
     return;
   }
   const args = [...appConfig.aiSendArgs, aiChatId, message];
-  console.log('[ai] Sending to chat-id:', aiChatId, 'message:', message.substring(0, 100));
+  log('INFO', '[ai] Sending to chat-id:', aiChatId, 'message:', message.substring(0, 100));
   execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
-    if (err) console.error(`[${appConfig.aiCommand}] send failed:`, err.message, stderr);
-    else console.log(`[${appConfig.aiCommand}] message sent`);
+    if (err) log('ERROR', `[${appConfig.aiCommand}] send failed:`, err.message, stderr);
+    else log('INFO', `[${appConfig.aiCommand}] message sent`);
   });
 }
 
@@ -126,7 +146,7 @@ function askAiQuestion(question, prNumber) {
     const args = ['chat', '-q', prefix + question];
     execFile(appConfig.aiCommand, args, { timeout: 120000 }, (err, stdout) => {
       if (err) {
-        console.error(`[${appConfig.aiCommand}] ask failed:`, err.message);
+        log('ERROR', `[${appConfig.aiCommand}] ask failed:`, err.message);
         resolve({ error: err.message });
       } else {
         resolve({ response: stdout.trim() });
@@ -174,7 +194,7 @@ function getGeneratedDir() {
 function cleanupOldFiles() {
   const cleanup = appConfig.cleanup || {};
   if (!cleanup.enabled) {
-    console.log('[cleanup] Disabled');
+    log('INFO', '[cleanup] Disabled');
     return;
   }
 
@@ -202,15 +222,15 @@ function cleanupOldFiles() {
           deletedCount++;
         }
       } catch (err) {
-        console.error(`[cleanup] Error processing ${filePath}:`, err.message);
+        log('ERROR', `[cleanup] Error processing ${filePath}:`, err.message);
       }
     }
   }
 
   if (deletedCount > 0) {
-    console.log(`[cleanup] Deleted ${deletedCount} files older than ${retentionDays} days`);
+    log('INFO', `[cleanup] Deleted ${deletedCount} files older than ${retentionDays} days`);
   } else {
-    console.log(`[cleanup] No files older than ${retentionDays} days to delete`);
+    log('INFO', `[cleanup] No files older than ${retentionDays} days to delete`);
   }
 }
 
@@ -228,7 +248,7 @@ function saveDraft(diffFilePath, draft) {
     fs.writeFileSync(draftPath, JSON.stringify(draft, null, 2));
     return draftPath;
   } catch (err) {
-    console.error('[draft] save failed:', err.message);
+    log('ERROR', '[draft] save failed:', err.message);
     return null;
   }
 }
@@ -241,7 +261,7 @@ function loadDraft(diffFilePath) {
       return JSON.parse(raw);
     }
   } catch (err) {
-    console.error('[draft] load failed:', err.message);
+    log('ERROR', '[draft] load failed:', err.message);
   }
   return null;
 }
@@ -253,7 +273,7 @@ function deleteDraft(diffFilePath) {
       fs.unlinkSync(draftPath);
     }
   } catch (err) {
-    console.error('[draft] delete failed:', err.message);
+    log('ERROR', '[draft] delete failed:', err.message);
   }
 }
 
@@ -282,12 +302,12 @@ function uploadImageToS3(imageDataUrl, fileName) {
       try { fs.unlinkSync(tmpPath); } catch {}
 
       if (err) {
-        console.error('[s3] upload failed:', err.message);
+        log('ERROR', '[s3] upload failed:', err.message);
         return reject(new Error(`S3 upload failed: ${err.message}`));
       }
 
       const url = `https://${bucket}.s3.amazonaws.com/${encodeURIComponent(fileName)}`;
-      console.log('[s3] uploaded:', url);
+      log('INFO', '[s3] uploaded:', url);
       resolve(url);
     });
   });
@@ -441,10 +461,10 @@ async function generateDiff(prNumber, repoKey) {
     await execPromise(`git rev-parse --verify ${headSha}`, { cwd: repoPath });
   } catch {
     // Head SHA not in local repo — fetch the PR branch
-    console.log(`[generateDiff] Head SHA ${headSha.substring(0,7)} not found locally, fetching PR #${prNumber}`);
+    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} not found locally, fetching PR #${prNumber}`);
     try {
       await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
-      console.log(`[generateDiff] Fetch succeeded for PR #${prNumber}`);
+      log('INFO', `[generateDiff] Fetch succeeded for PR #${prNumber}`);
     } catch (fetchErr) {
       console.error(`[generateDiff] Fetch failed for PR #${prNumber}:`, fetchErr.message);
       throw new Error(`PR branch not available locally and fetch failed: ${fetchErr.message}`);
@@ -732,7 +752,7 @@ ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }
     const filePath = path.join(imagesDir, fileName);
     fs.writeFileSync(filePath, buffer);
   } catch (err) {
-    console.error('[image] local save failed:', err.message);
+    log('ERROR', '[image] local save failed:', err.message);
   }
 
   const upload = appConfig.imageUpload || {};
@@ -741,7 +761,7 @@ ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }
       const url = await uploadImageToS3(imageDataUrl, fileName);
       return { localPath: `images/${fileName}`, url };
     } catch (err) {
-      console.error('[image] S3 upload failed:', err.message);
+      log('ERROR', '[image] S3 upload failed:', err.message);
       return { localPath: `images/${fileName}`, url: null };
     }
   }
@@ -758,7 +778,7 @@ ipcMain.handle('open-pr-new-window', async (event, prNumber) => {
     createWindow({ diffContent: content, fileName, filePath: result.diffPath, prNumber });
     return { success: true };
   } catch (err) {
-    console.error('[pr-new-window] failed:', err.message);
+    log('ERROR', '[pr-new-window] failed:', err.message);
     return { error: err.message };
   }
 });
@@ -789,7 +809,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
       filesChanged: result.filesChanged
     };
   } catch (err) {
-    console.error('[pr] load failed:', err.message);
+    log('ERROR', '[pr] load failed:', err.message);
     return { error: err.message };
   }
 });
@@ -837,7 +857,7 @@ ipcMain.handle('list-prs', async () => {
         resolve({ prs });
       })
       .catch(err => {
-        console.error('[list-prs] failed:', err.message);
+        log('ERROR', '[list-prs] failed:', err.message);
         resolve({ prs: [], error: err.message });
       });
   });
@@ -878,7 +898,7 @@ function loadReposConfig() {
     );
     ghRepos = JSON.parse(stdout || '[]');
   } catch (err) {
-    console.error('[repos] gh repo list failed:', err.message);
+    log('ERROR', '[repos] gh repo list failed:', err.message);
   }
 
   // Merge: apply checked state from config
@@ -931,27 +951,27 @@ ipcMain.handle('save-repos', async (event, repos) => {
 
     return { success: true };
   } catch (err) {
-    console.error('[save-repos] failed:', err.message);
+    log('ERROR', '[save-repos] failed:', err.message);
     return { error: err.message };
   }
 });
 
 ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
-  console.log('[list-all-prs] Called with', repos ? repos.length : 0, 'repos, filter:', JSON.stringify(filter));
+  log('INFO', `[list-all-prs] Called with ${repos ? repos.length : 0} repos, filter:`, JSON.stringify(filter));
   try {
     const filterConfig = filter || appConfig.prFilter || {};
     const errors = [];
     const allPrs = [];
 
     if (!repos || !Array.isArray(repos)) {
-      console.error('[list-all-prs] repos is not an array:', repos);
+      log('ERROR', '[list-all-prs] repos is not an array:', repos);
       return { prs: [], errors: [{ repo: '(unknown)', error: 'repos parameter is not an array' }] };
     }
 
     for (const repo of repos) {
       const { owner, name } = repo;
       if (!owner || !name) {
-        console.warn('[list-all-prs] Skipping repo with empty owner/name:', JSON.stringify(repo));
+        log('WARN', '[list-all-prs] Skipping repo with empty owner/name:', JSON.stringify(repo));
         continue;
       }
 
@@ -970,7 +990,7 @@ ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
           page++;
         }
 
-        console.log(`[list-all-prs] ${owner}/${name}: fetched ${repoPrs.length} PRs`);
+        log('INFO', `[list-all-prs] ${owner}/${name}: fetched ${repoPrs.length} PRs`);
 
         // Apply filters
         if (filterConfig.reviewRequested) {
@@ -988,7 +1008,7 @@ ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
 
         allPrs.push(...repoPrs);
       } catch (err) {
-        console.error(`[list-all-prs] failed for ${owner}/${name}:`, err.message);
+        log('ERROR', `[list-all-prs] failed for ${owner}/${name}:`, err.message);
         errors.push({ repo: `${owner}/${name}`, error: err.message });
       }
     }
@@ -996,10 +1016,10 @@ ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
     // Sort all PRs by created date descending
     allPrs.sort((a, b) => new Date(b.created) - new Date(a.created));
 
-    console.log(`[list-all-prs] Returning ${allPrs.length} PRs, ${errors.length} errors`);
+    log('INFO', `[list-all-prs] Returning ${allPrs.length} PRs, ${errors.length} errors`);
     return { prs: allPrs, errors };
   } catch (err) {
-    console.error('[list-all-prs] Top-level error:', err);
+    log('ERROR', '[list-all-prs] Top-level error:', err);
     return { prs: [], errors: [{ repo: '(unknown)', error: err.message || String(err) }] };
   }
 });
@@ -1073,6 +1093,44 @@ ipcMain.handle('save-review', async (event, review) => {
   return { outputPath, askResponses };
 });
 
+// Close a pull request via gh CLI
+ipcMain.handle('close-pr', async (event, { prNumber, comment }) => {
+  const owner = appConfig.repoOwner;
+  const repo = appConfig.repoName;
+  if (!owner || !repo) {
+    return { error: 'repoOwner and repoName must be configured in config.json' };
+  }
+  if (!prNumber) {
+    return { error: 'PR number is required' };
+  }
+
+  try {
+    // Post comment first if provided
+    if (comment && comment.trim()) {
+      const tmpPath = path.join(getGeneratedDir(), `close-comment-${Date.now()}.txt`);
+      fs.writeFileSync(tmpPath, comment.trim());
+      try {
+        await execPromise(
+          `gh pr comment ${prNumber} --repo ${owner}/${repo} --body-file "${tmpPath}"`
+        );
+      } finally {
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+    }
+
+    // Close the PR
+    await execPromise(
+      `gh pr close ${prNumber} --repo ${owner}/${repo}`
+    );
+
+    console.log(`[close-pr] PR #${prNumber} closed on ${owner}/${repo}`);
+    return { success: true };
+  } catch (err) {
+    console.error('[close-pr] failed:', err.message);
+    return { error: err.message };
+  }
+});
+
 // Submit review directly to GitHub via gh CLI
 ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType, comments }) => {
   const owner = appConfig.repoOwner;
@@ -1122,6 +1180,43 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     return { error: err.message };
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
+  }
+});
+// Close a pull request via gh CLI
+ipcMain.handle('close-pr', async (event, { prNumber, comment }) => {
+  const owner = appConfig.repoOwner;
+  const repo = appConfig.repoName;
+  if (!owner || !repo) {
+    return { error: 'repoOwner and repoName must be configured in config.json' };
+  }
+  if (!prNumber) {
+    return { error: 'PR number is required' };
+  }
+
+  try {
+    // Post comment first if provided
+    if (comment && comment.trim()) {
+      const tmpPath = path.join(getGeneratedDir(), `close-comment-${Date.now()}.txt`);
+      fs.writeFileSync(tmpPath, comment.trim());
+      try {
+        await execPromise(
+          `gh pr comment ${prNumber} --repo ${owner}/${repo} --body-file "${tmpPath}"`
+        );
+      } finally {
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+    }
+
+    // Close the PR
+    await execPromise(
+      `gh pr close ${prNumber} --repo ${owner}/${repo}`
+    );
+
+    console.log(`[close-pr] PR #${prNumber} closed on ${owner}/${repo}`);
+    return { success: true };
+  } catch (err) {
+    console.error('[close-pr] failed:', err.message);
+    return { error: err.message };
   }
 });
 
