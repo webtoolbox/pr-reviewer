@@ -2534,7 +2534,7 @@ function renderFilteredDiff() {
   diff2htmlUi.fileListToggle(false);
 
   // Re-add comment buttons
-  addLineCommentButtons();
+  addCommentButtons();
   addFileCommentButtons();
   populateFileSidebar();
 
