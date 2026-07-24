@@ -123,14 +123,25 @@ function getLineNumber(lineElement, isRight) {
   const fileName = getFileName(lineElement);
   const fileData = parsedDiff[fileName];
   if (!fileData) return '';
+
+  // Side-by-side mode: derive from parsedDiff structure
   const sideDiff = lineElement.closest('.d2h-file-side-diff');
-  if (!sideDiff) return '';
-  const allLines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
-  const lineIndex = Array.from(allLines).indexOf(lineElement);
-  if (lineIndex < 0) return '';
-  const sideData = isRight ? fileData.right : fileData.left;
-  const entry = sideData[lineIndex];
-  return entry ? String(entry.lineNum) : '';
+  if (sideDiff) {
+    const allLines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
+    const lineIndex = Array.from(allLines).indexOf(lineElement);
+    if (lineIndex < 0) return '';
+    const sideData = isRight ? fileData.right : fileData.left;
+    const entry = sideData[lineIndex];
+    return entry ? String(entry.lineNum) : '';
+  }
+
+  // Unified mode: read from .d2h-code-linenumber element
+  const linenumEl = lineElement.querySelector('.d2h-code-linenumber');
+  if (linenumEl) {
+    const num = linenumEl.textContent.trim();
+    if (num && num !== '&nbsp;') return num;
+  }
+  return '';
 }
 
 // ===================== LOAD DIFF =====================
@@ -166,7 +177,7 @@ function loadDiff(content, filePath) {
   const html = Diff2Html.html(content, {
     drawFileList: true,
     matching: 'lines',
-    outputFormat: 'side-by-side',
+    outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
     colorScheme: 'dark',
     synchronisedScroll: true,
   });
@@ -419,9 +430,28 @@ function addCommentButtons() {
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
   fileWrappers.forEach(wrapper => {
     const sideDiffs = wrapper.querySelectorAll('.d2h-file-side-diff');
-    sideDiffs.forEach((sideDiff, index) => {
-      const isRight = index % 2 === 1;
-      const lines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
+    if (sideDiffs.length > 0) {
+      // Side-by-side mode
+      sideDiffs.forEach((sideDiff, index) => {
+        const isRight = index % 2 === 1;
+        const lines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
+        lines.forEach(line => {
+          const btn = document.createElement('button');
+          btn.className = 'line-comment-btn';
+          btn.textContent = '+';
+          btn.title = 'Add comment (Cmd+Enter to submit)';
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            openCommentDialog(line, btn, isRight, e);
+          });
+          line.style.position = 'relative';
+          line.appendChild(btn);
+        });
+      });
+    } else {
+      // Unified (line-by-line) mode
+      const lines = wrapper.querySelectorAll('.d2h-code-line');
       lines.forEach(line => {
         const btn = document.createElement('button');
         btn.className = 'line-comment-btn';
@@ -430,12 +460,14 @@ function addCommentButtons() {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           e.preventDefault();
+          // Determine side from line class: deletion=LEFT, insertion=RIGHT
+          const isRight = line.classList.contains('d2h-code-line-ins');
           openCommentDialog(line, btn, isRight, e);
         });
         line.style.position = 'relative';
         line.appendChild(btn);
       });
-    });
+    }
   });
 }
 
@@ -1292,6 +1324,7 @@ window.addEventListener('focus', async () => {
 window.electronAPI.getConfig().then(async (config) => {
   if (config.prNumber) prNumberInput.value = config.prNumber;
   if (config.aiTagPrefix) aiTagPrefix = config.aiTagPrefix;
+  if (config.diff && config.diff.viewMode) currentDiffViewMode = config.diff.viewMode;
   fetchCollaborators();
 
   // Check binaries on startup
@@ -2152,6 +2185,7 @@ if (origRenderFilteredDiff) {
 // Store current diff content for re-rendering
 let currentDiffContent = null;
 let currentDiffFilePath = null;
+let currentDiffViewMode = 'unified';
 let currentPrTitle = '';
 let cachedPrList = null;
 let cachedPrListTime = 0;
@@ -2311,7 +2345,7 @@ function renderFilteredDiff() {
   const diff2htmlUi = new Diff2HtmlUI(document.getElementById('diff-container'), sortedDiff, {
     drawFileList: true,
     matching: 'lines',
-    outputFormat: 'side-by-side',
+    outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
     colorScheme: 'auto'
   });
   diff2htmlUi.draw();
@@ -3219,6 +3253,7 @@ const prefFields = [
   { id: 'pref-editor-cmd', key: 'editorCommand', type: 'text' },
   { id: 'pref-context-lines', key: 'contextLines', type: 'number' },
   { id: 'pref-diff-mode', key: 'diff.mode', type: 'select' },
+  { id: 'pref-diff-view-mode', key: 'diff.viewMode', type: 'select' },
   { id: 'pref-title-contains', key: 'prFilter.titleContains', type: 'text' },
   { id: 'pref-review-requested', key: 'prFilter.reviewRequested', type: 'checkbox' },
   { id: 'pref-ai-command', key: 'aiCommand', type: 'text' },
@@ -3266,7 +3301,7 @@ async function openPreferences() {
     }
 
     // Reset to first section
-    switchPrefsSection('repository');
+    switchPrefsSection('review');
 
     prefsOverlay.style.display = 'flex';
   } catch (err) {
@@ -3298,6 +3333,10 @@ async function savePreferences() {
 
   const result = await window.electronAPI.savePreferences(prefs);
   if (result && result.success) {
+    // Sync in-memory view mode from saved prefs
+    if (prefs.diff && prefs.diff.viewMode) currentDiffViewMode = prefs.diff.viewMode;
+    // Re-render diff with new view mode
+    if (currentDiffContent && typeof Diff2HtmlUI !== 'undefined') renderFilteredDiff();
     // Show brief "Saved" confirmation
     prefsSaved.classList.add('show');
     setTimeout(() => {

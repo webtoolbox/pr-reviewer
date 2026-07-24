@@ -19,7 +19,8 @@
   "diff": {
     "mode": "since-review",
     "excludeMerges": true,
-    "codeFileExtensions": []
+    "codeFileExtensions": [],
+    "viewMode": "unified"
   },
   "imageUpload": {
     "enabled": false,

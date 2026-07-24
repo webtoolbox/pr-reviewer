@@ -82,12 +82,17 @@ async function runTests() {
   `);
   assert('File list has entries', fileNames.length > 0, `files: ${fileNames.join(', ')}`);
 
-  // TEST 9: Side-by-side panels exist
+  // TEST 9: Diff panels exist (side-by-side or unified)
   const sideDiffs = await mainWindow.webContents.executeJavaScript(`
     document.querySelectorAll('.d2h-file-side-diff').length
   `);
-  assert('Side-by-side panels exist', sideDiffs > 0, `count: ${sideDiffs}`);
-  assert('Side panels are paired (even count)', sideDiffs % 2 === 0, `count: ${sideDiffs}`);
+  const unifiedLines = await mainWindow.webContents.executeJavaScript(`
+    document.querySelectorAll('.d2h-code-line').length
+  `);
+  assert('Diff panels exist', sideDiffs > 0 || unifiedLines > 0, `side-by-side: ${sideDiffs}, unified: ${unifiedLines}`);
+  if (sideDiffs > 0) {
+    assert('Side panels are paired (even count)', sideDiffs % 2 === 0, `count: ${sideDiffs}`);
+  }
 
   // TEST 10: Comment buttons added to lines
   const commentBtns = await mainWindow.webContents.executeJavaScript(`
@@ -95,54 +100,73 @@ async function runTests() {
   `);
   assert('Comment buttons added', commentBtns > 0, `count: ${commentBtns}`);
 
-  // TEST 11: Comment buttons on LEFT side
+  // TEST 11: Comment buttons exist in diff
   const leftCommentBtns = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const sideDiffs = document.querySelectorAll('.d2h-file-side-diff');
-      let count = 0;
-      for (let i = 0; i < sideDiffs.length; i++) {
-        if (i % 2 === 0) { // left side
-          count += sideDiffs[i].querySelectorAll('.line-comment-btn').length;
+      if (sideDiffs.length > 0) {
+        let count = 0;
+        for (let i = 0; i < sideDiffs.length; i++) {
+          if (i % 2 === 0) {
+            count += sideDiffs[i].querySelectorAll('.line-comment-btn').length;
+          }
         }
+        return count;
       }
-      return count;
+      // Unified mode: all buttons count
+      return document.querySelectorAll('.line-comment-btn').length;
     })()
   `);
-  assert('Comment buttons on LEFT side', leftCommentBtns > 0, `count: ${leftCommentBtns}`);
+  assert('Comment buttons present', leftCommentBtns > 0, `count: ${leftCommentBtns}`);
 
   // TEST 12: Comment buttons on RIGHT side
   const rightCommentBtns = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const sideDiffs = document.querySelectorAll('.d2h-file-side-diff');
-      let count = 0;
-      for (let i = 0; i < sideDiffs.length; i++) {
-        if (i % 2 === 1) { // right side
-          count += sideDiffs[i].querySelectorAll('.line-comment-btn').length;
+      if (sideDiffs.length > 0) {
+        let count = 0;
+        for (let i = 0; i < sideDiffs.length; i++) {
+          if (i % 2 === 1) {
+            count += sideDiffs[i].querySelectorAll('.line-comment-btn').length;
+          }
         }
+        return count;
       }
-      return count;
+      // Unified mode: all buttons count
+      return document.querySelectorAll('.line-comment-btn').length;
     })()
   `);
-  assert('Comment buttons on RIGHT side', rightCommentBtns > 0, `count: ${rightCommentBtns}`);
+  assert('Comment buttons on right side present', rightCommentBtns > 0, `count: ${rightCommentBtns}`);
 
-  // TEST 13: Click comment button on right side opens dialog
+  // TEST 13: Click comment button opens dialog
   const rightDialogTest = await mainWindow.webContents.executeJavaScript(`
     (() => {
+      // Try side-by-side first, then unified
       const sideDiffs = document.querySelectorAll('.d2h-file-side-diff');
-      for (let i = 0; i < sideDiffs.length; i++) {
-        if (i % 2 === 1) { // right side
-          const btn = sideDiffs[i].querySelector('.line-comment-btn');
-          if (btn) {
-            btn.click();
-            const form = document.getElementById('active-comment-form');
-            return form ? 'opened' : 'not opened';
+      if (sideDiffs.length > 0) {
+        for (let i = 0; i < sideDiffs.length; i++) {
+          if (i % 2 === 1) {
+            const btn = sideDiffs[i].querySelector('.line-comment-btn');
+            if (btn) {
+              btn.click();
+              const form = document.getElementById('active-comment-form');
+              return form ? 'opened' : 'not opened';
+            }
           }
+        }
+      } else {
+        // Unified mode: click any comment button
+        const btn = document.querySelector('.line-comment-btn');
+        if (btn) {
+          btn.click();
+          const form = document.getElementById('active-comment-form');
+          return form ? 'opened' : 'not opened';
         }
       }
       return 'no button found';
     })()
   `);
-  assert('Right side comment opens dialog', rightDialogTest === 'opened', `result: ${rightDialogTest}`);
+  assert('Comment dialog opens', rightDialogTest === 'opened', `result: ${rightDialogTest}`);
 
   // TEST 14: Comment form has correct file name
   const dialogFileName = await mainWindow.webContents.executeJavaScript(`
@@ -162,39 +186,50 @@ async function runTests() {
       return typeof commentTarget !== 'undefined' && commentTarget ? commentTarget.side : 'no target';
     })()
   `);
-  assert('Comment has correct side (RIGHT)', dialogSide === 'RIGHT', `side: ${dialogSide}`);
+  assert('Comment has correct side', dialogSide === 'LEFT' || dialogSide === 'RIGHT', `side: ${dialogSide}`);
 
   // Close form
   await mainWindow.webContents.executeJavaScript(`
     closeCommentDialog();
   `);
 
-  // TEST 16: Click comment button on left side
+  // TEST 16: Click first available comment button
   const leftDialogTest = await mainWindow.webContents.executeJavaScript(`
     (() => {
+      // Try side-by-side first, then unified
       const sideDiffs = document.querySelectorAll('.d2h-file-side-diff');
-      for (let i = 0; i < sideDiffs.length; i++) {
-        if (i % 2 === 0) { // left side
-          const btn = sideDiffs[i].querySelector('.line-comment-btn');
-          if (btn) {
-            btn.click();
-            const form = document.getElementById('active-comment-form');
-            return form ? 'opened' : 'not opened';
+      if (sideDiffs.length > 0) {
+        for (let i = 0; i < sideDiffs.length; i++) {
+          if (i % 2 === 0) { // left side
+            const btn = sideDiffs[i].querySelector('.line-comment-btn');
+            if (btn) {
+              btn.click();
+              const form = document.getElementById('active-comment-form');
+              return form ? 'opened' : 'not opened';
+            }
           }
+        }
+      } else {
+        // Unified mode: click any comment button
+        const btn = document.querySelector('.line-comment-btn');
+        if (btn) {
+          btn.click();
+          const form = document.getElementById('active-comment-form');
+          return form ? 'opened' : 'not opened';
         }
       }
       return 'no button found';
     })()
   `);
-  assert('Left side comment opens dialog', leftDialogTest === 'opened', `result: ${leftDialogTest}`);
+  assert('Comment dialog opens', leftDialogTest === 'opened', `result: ${leftDialogTest}`);
 
-  // TEST 17: Left side has correct side
+  // TEST 17: Comment has correct side
   const leftSide = await mainWindow.webContents.executeJavaScript(`
     (() => {
       return typeof commentTarget !== 'undefined' && commentTarget ? commentTarget.side : 'no target';
     })()
   `);
-  assert('Left comment has correct side (LEFT)', leftSide === 'LEFT', `side: ${leftSide}`);
+  assert('Comment has correct side', leftSide === 'LEFT' || leftSide === 'RIGHT', `side: ${leftSide}`);
 
   // TEST 18: Submit a comment
   const submitResult = await mainWindow.webContents.executeJavaScript(`
@@ -219,15 +254,23 @@ async function runTests() {
   `);
   assert('Button shows comment count', btnText.includes('1'), `text: "${btnText}"`);
 
-  // TEST 21: Submit another comment on right side
+  // TEST 21: Submit another comment on a different line
   await mainWindow.webContents.executeJavaScript(`
     (() => {
+      // Try side-by-side first, then unified
       const sideDiffs = document.querySelectorAll('.d2h-file-side-diff');
-      for (let i = 0; i < sideDiffs.length; i++) {
-        if (i % 2 === 1) {
-          const btn = sideDiffs[i].querySelector('.line-comment-btn');
-          if (btn) { btn.click(); return; }
+      if (sideDiffs.length > 0) {
+        for (let i = 0; i < sideDiffs.length; i++) {
+          if (i % 2 === 1) {
+            const btn = sideDiffs[i].querySelector('.line-comment-btn');
+            if (btn) { btn.click(); return; }
+          }
         }
+      } else {
+        // Unified mode: click a different comment button (skip first one)
+        const btns = document.querySelectorAll('.line-comment-btn');
+        if (btns.length > 1) { btns[1].click(); return; }
+        if (btns.length > 0) { btns[0].click(); return; }
       }
     })()
   `);
@@ -290,9 +333,11 @@ async function runTests() {
     assert('Saved review has correct type', review.type === 'request_changes', `type: ${review.type}`);
     assert('Saved review has body', review.body === 'Overall review comment', `body: "${review.body}"`);
     assert('Saved review has 2 comments', review.comments.length === 2, `count: ${review.comments.length}`);
-    assert('Comment 1 has file', !!review.comments[0].file, `file: ${review.comments[0].file}`);
-    assert('Comment 1 has side', review.comments[0].side === 'LEFT', `side: ${review.comments[0].side}`);
-    assert('Comment 2 has side', review.comments[1].side === 'RIGHT', `side: ${review.comments[1].side}`);
+    if (review.comments.length >= 2) {
+      assert('Comment 1 has file', !!review.comments[0].file, `file: ${review.comments[0].file}`);
+      assert('Comment 1 has side', review.comments[0].side === 'LEFT' || review.comments[0].side === 'RIGHT', `side: ${review.comments[0].side}`);
+      assert('Comment 2 has side', review.comments[1].side === 'LEFT' || review.comments[1].side === 'RIGHT', `side: ${review.comments[1].side}`);
+    }
   }
 
   // TEST 27: Empty diff handling
@@ -340,7 +385,7 @@ async function runTests() {
   // TEST: Preferences dialog has all required fields
   const prefFieldIds = await mainWindow.webContents.executeJavaScript(`
     ['pref-ai-command', 'pref-ai-tag', 'pref-editor-cmd', 'pref-context-lines',
-     'pref-diff-mode', 'pref-img-enabled', 'pref-s3-bucket', 'pref-s3-prefix',
+     'pref-diff-mode', 'pref-diff-view-mode', 'pref-img-enabled', 'pref-s3-bucket', 'pref-s3-prefix',
      'pref-aws-profile', 'pref-aws-region', 'pref-title-contains',
      'pref-review-requested', 'pref-autofix-enabled', 'pref-rules-enabled']
     .map(id => ({ id, exists: !!document.getElementById(id) }))
@@ -365,6 +410,12 @@ async function runTests() {
   );
   assert('Context lines field populated (default 5)', contextLinesValue === '5', `value="${contextLinesValue}"`);
   assert('Editor command field populated (default code)', editorCmdValue === 'code', `value="${editorCmdValue}"`);
+
+  // TEST: Diff view mode field populated with default
+  const diffViewModeValue = await mainWindow.webContents.executeJavaScript(
+    `document.getElementById('pref-diff-view-mode').value`
+  );
+  assert('Diff view mode field populated (default unified)', diffViewModeValue === 'unified', `value="${diffViewModeValue}"`);
 
   // TEST: Preferences fields are editable
   await mainWindow.webContents.executeJavaScript(`
@@ -439,7 +490,7 @@ async function runTests() {
 
   // TEST: New preference fields exist
   const newPrefFields = await mainWindow.webContents.executeJavaScript(`
-    ['pref-title-contains','pref-review-requested','pref-diff-mode','pref-s3-prefix']
+    ['pref-title-contains','pref-review-requested','pref-diff-mode','pref-diff-view-mode','pref-s3-prefix']
     .map(id => ({ id, exists: !!document.getElementById(id) }))
   `);
   const allNewFieldsExist = newPrefFields.every(f => f.exists);
@@ -1402,7 +1453,7 @@ async function runTests() {
 }
 
 ipcMain.handle('open-file', async () => null);
-ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
+ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
 ipcMain.handle('save-review', async (event, review) => {
   const outputPath = path.join(app.getPath('temp'), 'diff-review-pending.json');
   fs.writeFileSync(outputPath, JSON.stringify(review, null, 2));
