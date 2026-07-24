@@ -2123,6 +2123,16 @@ function openFileFilterDropdown() {
     cb.addEventListener('change', applyExtensionFilter);
   });
 
+  // Normalize: if all diff extensions are checked, treat as "no filter"
+  const allCheckedNow = extensionsToShow.length > 0 &&
+    extensionsToShow.every(ext => {
+      const cb = filterList.querySelector(`input[value="${ext}"]`);
+      return cb && cb.checked;
+    });
+  if (allCheckedNow || extensionsToShow.length === 0) {
+    activeExtensions = null;
+  }
+
   // Update button state
   updateFilterButtonState();
 }

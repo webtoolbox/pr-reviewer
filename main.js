@@ -4,7 +4,7 @@ const fs = require('fs');
 const { execFile, exec, execSync } = require('child_process');
 
 // ── File-based logger ──────────────────────────────────────────────────────────
-const LOG_DIR = path.join(app.getPath('home'), '.config', 'pr-reviewer');
+const LOG_DIR = app.getPath('userData');
 const LOG_FILE = path.join(LOG_DIR, 'app.log');
 
 function log(level, ...args) {
