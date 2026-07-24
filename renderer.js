@@ -613,7 +613,7 @@ function openCommentDialog(lineElement, btnElement, isRight, event) {
   const side = isRight ? 'right' : 'left';
   formCell.innerHTML = `
     <div class="comment-form">
-      <div class="comment-label">${escapeHtml(fileName)} line ${lineNum} (${side} side)</div>
+      <div class="comment-label">${escapeHtml(fileName)} line ${lineNum}</div>
       <textarea id="comment-text" placeholder="Write a comment... (${escapeHtml(aiTagPrefix)} to message AI, @ask for inline response)" autofocus></textarea>
       <div class="image-paste-hint">💡 Paste (Cmd+V) or drag & drop an image to attach</div>
       <div class="actions">
@@ -776,7 +776,7 @@ function editComment(marker) {
     const side = comment.side === 'RIGHT' ? 'right' : 'left';
     formCell.innerHTML = `
       <div class="comment-form">
-        <div class="comment-label">${escapeHtml(comment.file)} line ${comment.line} (${side} side)</div>
+        <div class="comment-label">${escapeHtml(comment.file)} line ${comment.line}</div>
         <textarea id="comment-text" placeholder="Write a comment...">${escapeHtml(comment.text)}</textarea>
         <div class="actions">
           <button class="btn-cancel" id="comment-cancel">Cancel</button>
