@@ -521,6 +521,7 @@ function loadDiff(content, filePath) {
   addCommentButtons();
   addFileCommentButtons();
   populateFileSidebar();
+  addContextButtons();
   showReviewButtons();
 
   // Try to load saved draft
@@ -850,6 +851,158 @@ function addFileCommentButtons() {
     });
     header.appendChild(btn);
   });
+}
+
+// ===================== CONTEXT EXPAND BUTTONS =====================
+
+const CONTEXT_INCREMENT = 3;
+const CONTEXT_INITIAL = 3;
+const CONTEXT_MAX = 60;
+
+function addContextButtons() {
+  const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+
+  fileWrappers.forEach(wrapper => {
+    const fileNameEl = wrapper.querySelector('.d2h-file-name');
+    const fileName = fileNameEl ? fileNameEl.textContent.trim() : 'unknown';
+
+    // Initialize context level if not set
+    if (!fileContextLevels.has(fileName)) {
+      fileContextLevels.set(fileName, CONTEXT_INITIAL);
+    }
+
+    // Get the diff content area (everything after the header)
+    const header = wrapper.querySelector('.d2h-file-header');
+    const diffContent = wrapper.querySelector('.d2h-files-diff') || wrapper.querySelector('.d2h-file-diff');
+
+    // Create "Show more above" button (up chevron)
+    const btnUp = document.createElement('button');
+    btnUp.className = 'context-expand-btn';
+    btnUp.dataset.fileName = fileName;
+    btnUp.dataset.direction = 'up';
+    btnUp.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/></svg> Show more lines above`;
+    btnUp.addEventListener('click', () => handleContextExpand(fileName, wrapper));
+
+    // Create "Show more below" button (down chevron)
+    const btnDown = document.createElement('button');
+    btnDown.className = 'context-expand-btn';
+    btnDown.dataset.fileName = fileName;
+    btnDown.dataset.direction = 'down';
+    btnDown.innerHTML = `Show more lines below <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
+    btnDown.addEventListener('click', () => handleContextExpand(fileName, wrapper));
+
+    // Insert "Expand up" as the first child of the wrapper
+    wrapper.insertBefore(btnUp, wrapper.firstChild);
+
+    // Insert "Expand down" as the last child of the wrapper
+    wrapper.appendChild(btnDown);
+
+    // Update disabled state
+    updateContextButtonStates(fileName, wrapper);
+  });
+}
+
+function updateContextButtonStates(fileName, wrapper) {
+  const ctxLevel = fileContextLevels.get(fileName) || CONTEXT_INITIAL;
+  const maxReached = ctxLevel >= CONTEXT_MAX;
+
+  const btnUp = wrapper.querySelector('.context-expand-btn[data-direction="up"]');
+  const btnDown = wrapper.querySelector('.context-expand-btn[data-direction="down"]');
+
+  if (maxReached) {
+    if (btnUp) {
+      btnUp.disabled = true;
+      btnUp.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/></svg> No more lines`;
+    }
+    if (btnDown) {
+      btnDown.disabled = true;
+      btnDown.innerHTML = `No more lines <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
+    }
+  } else {
+    if (btnUp) {
+      btnUp.disabled = false;
+      btnUp.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/></svg> Show more lines above`;
+    }
+    if (btnDown) {
+      btnDown.disabled = false;
+      btnDown.innerHTML = `Show more lines below <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
+    }
+  }
+}
+
+async function handleContextExpand(fileName) {
+  // Increase context for this file
+  const current = fileContextLevels.get(fileName) || CONTEXT_INITIAL;
+  if (current >= CONTEXT_MAX) return;
+
+  const newContext = Math.min(current + CONTEXT_INCREMENT, CONTEXT_MAX);
+  fileContextLevels.set(fileName, newContext);
+
+  // If no repo path available, we can't fetch from git — just re-render with default
+  if (!currentRepoPath) {
+    console.warn('[context-expand] No repoPath available, cannot fetch expanded diff');
+    return;
+  }
+
+  // Fetch expanded diff for this file from git
+  try {
+    const result = await window.electronAPI.expandDiffContext({
+      repoPath: currentRepoPath,
+      filePath: fileName,
+      contextLines: newContext
+    });
+
+    if (result.error) {
+      console.error('[context-expand] Failed:', result.error);
+      return;
+    }
+
+    // Replace this file's section in currentDiffContent
+    if (result.content && currentDiffContent) {
+      currentDiffContent = replaceFileInDiff(currentDiffContent, fileName, result.content);
+
+      // Re-render the entire diff
+      renderFilteredDiff();
+
+      // Re-apply comments
+      for (const c of comments) {
+        if (c.level === 'file') {
+          renderFileCommentMarker(c);
+        } else {
+          renderLineCommentMarker(c);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[context-expand] Error:', err);
+  }
+}
+
+function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
+  // Split the full diff into per-file sections
+  const sections = fullDiff.split(/(?=^diff --git )/m);
+  const result = [];
+
+  for (const section of sections) {
+    if (!section.trim()) continue;
+
+    // Check if this section is for the target file
+    const match = section.match(/^diff --git a\/(.+?) b\/(.+)/m);
+    if (match) {
+      const bPath = match[2];
+      if (bPath === targetFile) {
+        // Replace with the new expanded diff, but preserve the original diff --git header
+        // The new diff from git diff starts with diff --git too, so use it directly
+        if (newFileDiff.trim()) {
+          result.push(newFileDiff.trim());
+        }
+        continue;
+      }
+    }
+    result.push(section);
+  }
+
+  return result.join('');
 }
 
 function openFileCommentDialog(wrapper, fileName) {
@@ -2098,6 +2251,7 @@ async function loadPrByNumber(prNumber, repoKey) {
     currentFileName = result.fileName || `pr-${prNumber}.diff`;
     currentDiffContent = result.content;
     currentDiffFilePath = result.filePath;
+    currentRepoPath = result.repoPath || null;
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
@@ -2172,59 +2326,34 @@ async function openPrDropdown() {
   const searchInput = document.getElementById('pr-search');
   if (searchInput) searchInput.value = '';
 
-  // Show cached results immediately if available, else fetch
+  // Show cached results immediately, then fetch fresh data in background
   if (cachedPrList) {
     renderPrList(cachedPrList);
-  } else {
-    prDropdown.innerHTML = `
-      <div class="pr-search-wrapper">
-        <span class="search-icon"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
-        <input type="text" id="pr-search" placeholder="Search PRs by title, author, or number...">
-      </div>
-      <div class="pr-dropdown-header">Pull Requests Pending Review</div>
-      <div class="pr-loading">Loading...</div>`;
-    try {
-      // Get checked repos
-      const reposToFetch = checkedRepos.length > 0
-        ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
-        : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
-      console.log('[PR dropdown] Fetching PRs for repos:', JSON.stringify(reposToFetch));
-      const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
-      console.log('[PR dropdown] Got response:', prs ? prs.length : 0, 'PRs,', errors ? errors.length : 0, 'errors');
-      if (errors && errors.length > 0) {
-        const errMsg = errors.map(e => `${e.repo}: ${e.error}`).join('; ');
-        console.error('[PR dropdown] Repo errors:', errMsg);
-        // Show errors but still render any PRs that were fetched
-        if (prs && prs.length > 0) {
-          cachedPrList = prs;
-          cachedPrListTime = Date.now();
-          renderPrList(prs);
-          showToast(`Warning: ${errMsg}`, 'warning');
-        } else {
-          prDropdown.innerHTML = `
-            <div class="pr-search-wrapper">
-              <span class="search-icon"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
-              <input type="text" id="pr-search" placeholder="Search PRs by title, author, or number...">
-            </div>
-            <div class="pr-dropdown-header">Pull Requests Pending Review</div>
-            <div class="pr-empty">Error: ${escapeHtml(errMsg)}</div>`;
-          return;
-        }
-      } else {
-        cachedPrList = prs;
-        cachedPrListTime = Date.now();
-        renderPrList(prs);
-      }
-    } catch (err) {
-      console.error('[PR dropdown] Failed to fetch PRs:', err);
-      prDropdown.innerHTML = `
-        <div class="pr-search-wrapper">
-          <span class="search-icon"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
-          <input type="text" id="pr-search" placeholder="Search PRs by title, author, or number...">
-        </div>
-        <div class="pr-dropdown-header">Pull Requests Pending Review</div>
-        <div class="pr-empty">Error: ${escapeHtml(err.message || String(err))}</div>`;
+  }
+
+  // Always fetch fresh data in background and update
+  try {
+    const reposToFetch = checkedRepos.length > 0
+      ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
+      : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
+    const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
+    if (errors && errors.length > 0) {
+      console.warn('[PR dropdown] Repo errors:', errors.map(e => `${e.repo}: ${e.error}`).join('; '));
     }
+    if (prs && prs.length > 0) {
+      cachedPrList = prs;
+      cachedPrListTime = Date.now();
+    } else if (prs && prs.length === 0) {
+      cachedPrList = [];
+      cachedPrListTime = Date.now();
+    }
+    // Re-render with fresh data if dropdown is still open
+    if (prDropdownOpen) {
+      const currentSearch = document.getElementById('pr-search')?.value || '';
+      renderPrList(cachedPrList, currentSearch);
+    }
+  } catch (err) {
+    console.error('[PR dropdown] Fetch error:', err);
   }
 }
 
@@ -2237,9 +2366,7 @@ async function refreshPrList() {
     const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
     if (errors && errors.length > 0) console.warn('[refreshPrList] Repo errors:', errors.map(e => `${e.repo}: ${e.error}`).join('; '));
     if (!prs) return null;
-    // Filter out PRs recently closed in this session (GitHub API may lag)
-    const filteredPrs = prs.filter(pr => !recentlyClosedPrs.has(pr.number));
-    cachedPrList = filteredPrs;
+    cachedPrList = prs;
     cachedPrListTime = Date.now();
     if (prDropdownOpen) {
       const searchInput = document.getElementById('pr-search');
@@ -2600,6 +2727,8 @@ const recentlyClosedPrs = new Set(); // Track PRs closed in this session
 // PR cache never expires — only invalidated by repo changes or manual refresh
 let currentPrNumber = null;
 let currentPrBody = '';
+let currentRepoPath = null;
+const fileContextLevels = new Map(); // filename -> current context lines count
 
 // ===================== MULTI-REPO STATE =====================
 
@@ -2763,6 +2892,7 @@ function renderFilteredDiff() {
   addCommentButtons();
   addFileCommentButtons();
   populateFileSidebar();
+  addContextButtons();
 
   // Determine which extensions are excluded
   const allExts = extractExtensionsFromDiff(currentDiffContent);

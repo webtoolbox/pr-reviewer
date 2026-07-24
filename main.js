@@ -807,7 +807,8 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
       prAssignees,
       prBody,
       reviewInfo: result.reviewInfo,
-      filesChanged: result.filesChanged
+      filesChanged: result.filesChanged,
+      repoPath: path.join(app.getPath('home'), 'Website-Toolbox')
     };
   } catch (err) {
     log('ERROR', '[pr] load failed:', err.message);
@@ -2194,5 +2195,19 @@ ipcMain.handle('get-next-pr', async (event, currentPrNumber) => {
     return { pr: null };
   } catch (err) {
     return { error: err.message };
+  }
+});
+
+// Expand diff context for a single file
+ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines }) => {
+  try {
+    const diffOut = await execPromise(
+      `git diff -U${contextLines} -- "${filePath}"`,
+      { cwd: repoPath, timeout: 15000 }
+    );
+    return { content: diffOut };
+  } catch (err) {
+    log('ERROR', '[expand-diff-context] failed:', err.message);
+    return { error: err.message, content: '' };
   }
 });

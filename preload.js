@@ -42,5 +42,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   applyUpdate: () => ipcRenderer.invoke('apply-update'),
   setAutoUpdate: (enabled) => ipcRenderer.invoke('set-auto-update', enabled),
-  closePr: (data) => ipcRenderer.invoke('close-pr', data)
+  closePr: (data) => ipcRenderer.invoke('close-pr', data),
+  expandDiffContext: (data) => ipcRenderer.invoke('expand-diff-context', data)
 });
