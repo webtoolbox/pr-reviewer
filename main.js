@@ -434,6 +434,14 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No new commits since last review');
   }
 
+  // Ensure both SHAs exist in the local repo (fetch PR branch if needed)
+  try {
+    await execPromise(`git rev-parse --verify ${headSha}`, { cwd: repoPath });
+  } catch {
+    // Head SHA not in local repo — fetch the PR branch
+    await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
+  }
+
   // Get files changed by non-merge commits since the review
   let files = '';
   try {
