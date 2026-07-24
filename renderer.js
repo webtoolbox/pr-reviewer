@@ -135,11 +135,20 @@ function getLineNumber(lineElement, isRight) {
     return entry ? String(entry.lineNum) : '';
   }
 
-  // Unified mode: read from .d2h-code-linenumber element
-  const linenumEl = lineElement.querySelector('.d2h-code-linenumber');
-  if (linenumEl) {
-    const num = linenumEl.textContent.trim();
-    if (num && num !== '&nbsp;') return num;
+  // Unified mode: pick the correct line number from the cell's child divs
+  const row = lineElement.closest('tr');
+  if (row) {
+    const linenumEl = row.querySelector('.d2h-code-linenumber');
+    if (linenumEl) {
+      // .line-num1 = old (left), .line-num2 = new (right)
+      const numEl = isRight
+        ? linenumEl.querySelector('.line-num2') || linenumEl.querySelector('.line-num1')
+        : linenumEl.querySelector('.line-num1') || linenumEl.querySelector('.line-num2');
+      if (numEl) {
+        const num = numEl.textContent.trim();
+        if (num) return num;
+      }
+    }
   }
   return '';
 }
