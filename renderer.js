@@ -27,6 +27,113 @@ const btnPrevComment = document.getElementById('btn-prev-comment');
 const btnNextComment = document.getElementById('btn-next-comment');
 const prNumberInput = document.getElementById('pr-number');
 const prNumberWrapper = document.getElementById('pr-number-wrapper');
+const fileSidebar = document.getElementById('file-sidebar');
+const fileSidebarList = document.getElementById('file-sidebar-list');
+const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
+const contentDiv = document.getElementById('content');
+
+// ===================== FILE SIDEBAR =====================
+
+function populateFileSidebar() {
+  if (!diffContainer || !fileSidebarList) return;
+  fileSidebarList.innerHTML = '';
+
+  const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+  if (fileWrappers.length === 0) return;
+
+  fileWrappers.forEach((wrapper, index) => {
+    const nameEl = wrapper.querySelector('.d2h-file-name');
+    if (!nameEl) return;
+    const fileName = nameEl.textContent.trim();
+
+    // Extract +/- counts from the file header if available
+    const header = wrapper.querySelector('.d2h-file-header');
+    let additions = 0, deletions = 0;
+    if (header) {
+      const addedEl = header.querySelector('.d2h-tag.d2h-added-tag, .d2h-added-tag');
+      const deletedEl = header.querySelector('.d2h-tag.d2h-deleted-tag, .d2h-deleted-tag');
+      const changedEl = header.querySelector('.d2h-tag.d2h-changed-tag, .d2h-changed-tag');
+      if (addedEl) additions = parseInt(addedEl.textContent.replace(/[^0-9]/g, ''), 10) || 0;
+      if (deletedEl) deletions = parseInt(deletedEl.textContent.replace(/[^0-9]/g, ''), 10) || 0;
+      if (changedEl) {
+        const changed = parseInt(changedEl.textContent.replace(/[^0-9]/g, ''), 10) || 0;
+        additions += changed;
+      }
+    }
+
+    const item = document.createElement('div');
+    item.className = 'sidebar-file-item';
+    item.dataset.fileIndex = index;
+    item.title = fileName;
+
+    // Build item content with name and counts
+    const nameSpan = document.createElement('span');
+    nameSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+    nameSpan.textContent = fileName;
+
+    const countsSpan = document.createElement('span');
+    countsSpan.style.cssText = 'flex-shrink:0;margin-left:8px;font-size:11px;font-family:monospace;';
+
+    if (additions > 0) {
+      const addSpan = document.createElement('span');
+      addSpan.style.color = '#3fb950';
+      addSpan.textContent = '+' + additions;
+      countsSpan.appendChild(addSpan);
+    }
+    if (deletions > 0) {
+      const delSpan = document.createElement('span');
+      delSpan.style.color = '#f85149';
+      delSpan.textContent = ' -' + deletions;
+      countsSpan.appendChild(delSpan);
+    }
+
+    item.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;color:#8b949e;border-bottom:1px solid #21262d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background 0.1s,color 0.1s;display:flex;align-items:center;';
+    item.appendChild(nameSpan);
+    item.appendChild(countsSpan);
+
+    item.addEventListener('click', () => {
+      // Scroll to the file header (not the first code line) and offset for the fixed toolbar
+      const header = wrapper.querySelector('.d2h-file-header');
+      const target = header || wrapper;
+      const toolbarHeight = 52; // #review-bar height
+      const rect = target.getBoundingClientRect();
+      const scrollTop = window.pageYOffset + rect.top - toolbarHeight - 8;
+      window.scrollTo({ top: scrollTop, behavior: 'smooth' });
+      // Highlight active item
+      fileSidebarList.querySelectorAll('.sidebar-file-item').forEach(el => el.classList.remove('active'));
+      item.classList.add('active');
+    });
+
+    fileSidebarList.appendChild(item);
+  });
+
+  // Remove the original file list from diff container
+  const fileListWrapper = diffContainer.querySelector('.d2h-file-list-wrapper');
+  if (fileListWrapper) fileListWrapper.remove();
+
+  // Show sidebar
+  fileSidebar.style.display = '';
+  contentDiv.classList.add('diff-loaded');
+}
+
+function hideFileSidebar() {
+  if (fileSidebar) fileSidebar.style.display = 'none';
+  contentDiv.classList.remove('diff-loaded');
+}
+
+// Sidebar toggle handler
+if (btnToggleSidebar && fileSidebar) {
+  btnToggleSidebar.addEventListener('click', () => {
+    const collapsed = fileSidebar.classList.contains('collapsed');
+    if (collapsed) {
+      fileSidebar.classList.remove('collapsed');
+      btnToggleSidebar.textContent = '◀';
+    } else {
+      fileSidebar.classList.add('collapsed');
+      btnToggleSidebar.textContent = '▶';
+    }
+  });
+}
 
 // ===================== AUTO-SAVE =====================
 
@@ -207,6 +314,7 @@ function loadDiff(content, filePath) {
 
   addCommentButtons();
   addFileCommentButtons();
+  populateFileSidebar();
   showReviewButtons();
 
   // Try to load saved draft
@@ -2414,6 +2522,7 @@ function renderFilteredDiff() {
   // Re-add comment buttons
   addLineCommentButtons();
   addFileCommentButtons();
+  populateFileSidebar();
 
   // Determine which extensions are excluded
   const allExts = extractExtensionsFromDiff(currentDiffContent);

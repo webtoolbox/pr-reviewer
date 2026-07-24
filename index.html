@@ -311,7 +311,7 @@
 
     /* Main content */
     #content { margin-top: 52px; padding: 20px; }
-    #content.diff-loaded { display: flex; }
+    #content.diff-loaded { display: flex; flex-direction: row; }
 
     /* File sidebar */
     #file-sidebar {
@@ -346,8 +346,8 @@
     .sidebar-file-item:hover { background: #1c2128; color: #c9d1d9; }
     .sidebar-file-item.active { background: #1c2128; color: #58a6ff; }
 
-    #diff-container { flex: 1; min-width: 0; }
-    #review-body-container { flex: 1; min-width: 0; }
+    #diff-container { flex: 1; min-width: 0; overflow-y: auto; }
+    #review-body-container { padding: 20px 0; }
 
     /* Empty state */
     #empty-state {
@@ -1423,10 +1423,12 @@
       </div>
       <div id="file-sidebar-list"></div>
     </div>
-    <div id="diff-container"></div>
-    <div id="review-body-container">
-      <h3>Review Summary <span class="shortcut-hint">(Cmd+Shift+Enter to submit)</span></h3>
-      <textarea id="review-body" placeholder="Add an overall review comment (optional)..." title="Cmd+Shift+Enter to submit review"></textarea>
+    <div id="main-content" style="flex:1;min-width:0;display:flex;flex-direction:column;">
+      <div id="diff-container"></div>
+      <div id="review-body-container">
+        <h3>Review Summary <span class="shortcut-hint">(Cmd+Shift+Enter to submit)</span></h3>
+        <textarea id="review-body" placeholder="Add an overall review comment (optional)..." title="Cmd+Shift+Enter to submit review"></textarea>
+      </div>
     </div>
   </div>
 
