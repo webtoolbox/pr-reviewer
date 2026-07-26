@@ -3,12 +3,13 @@ let appConfig = {}; // Config from main process (repoOwner, repoName, etc.)
 let currentDiff = '';
 let currentFileName = '';
 let currentFilePath = '';
-let comments = []; // { file, line, side, text, isAiTagged, level, codeContext, imageDataUrl }
+let comments = []; // { _uid, file, line, side, text, isAiTagged, level, codeContext, imageDataUrl }
 let commentTarget = null; // { file, line, side, element, level, codeContext }
 let parsedDiff = null;
 let aiTagPrefix = '@Hermes';
 let fileCommentCounts = {};
 let currentCommentIndex = -1; // For batch navigation
+let commentUidCounter = 0; // Unique ID counter for stable comment references
 let collaborators = []; // GitHub collaborators for @mentions
 
 // DOM elements
@@ -541,6 +542,7 @@ function restoreDraft(draft) {
   if (draft.reviewBody) reviewBody.value = draft.reviewBody;
 
   for (const c of draft.comments || []) {
+    if (!c._uid) c._uid = ++commentUidCounter;
     comments.push(c);
     if (c.level === 'file') {
       // Restore file-level comment marker
@@ -1055,10 +1057,9 @@ function renderFileCommentMarker(comment) {
   }
   if (!targetWrapper) return;
 
-  const idx = comments.indexOf(comment);
   const marker = document.createElement('div');
   marker.className = 'file-comment-marker' + (comment.isAiTagged ? ' ai-tagged' : '');
-  marker.dataset.commentIndex = idx;
+  marker.dataset.commentUid = comment._uid || (comment._uid = ++commentUidCounter);
 
   const displayText = comment.isAiTagged ? comment.text.slice(aiTagPrefix.length).trim() : comment.text;
   const tagLabel = comment.isAiTagged ? `<span class="ai-tag">${escapeHtml(aiTagPrefix)}</span> ` : '';
@@ -1162,6 +1163,7 @@ function submitComment() {
   const level = commentTarget.level || 'line';
 
   const comment = {
+    _uid: ++commentUidCounter,
     file: commentTarget.file,
     line: commentTarget.line,
     side: commentTarget.side,
@@ -1188,7 +1190,7 @@ function submitComment() {
 function renderLineCommentMarker(comment) {
   const marker = document.createElement('tr');
   marker.className = 'line-comment-marker' + (comment.isAiTagged ? ' ai-tagged' : '');
-  marker.dataset.commentIndex = comments.indexOf(comment);
+  marker.dataset.commentUid = comment._uid || (comment._uid = ++commentUidCounter);
   const markerCell = document.createElement('td');
   markerCell.setAttribute('colspan', '2');
 
@@ -1245,8 +1247,9 @@ function findDiffLineRow(fileName, lineNum, side) {
 // ===================== EDIT / DELETE =====================
 
 function editComment(marker) {
-  const idx = parseInt(marker.dataset.commentIndex, 10);
-  if (isNaN(idx) || !comments[idx]) return;
+  const uid = parseInt(marker.dataset.commentUid, 10);
+  const idx = comments.findIndex(c => c._uid === uid);
+  if (idx < 0 || !comments[idx]) return;
 
   const comment = comments[idx];
   closeCommentDialog();
@@ -1351,15 +1354,12 @@ function editComment(marker) {
 }
 
 function deleteComment(marker) {
-  const idx = parseInt(marker.dataset.commentIndex, 10);
-  if (isNaN(idx)) return;
+  const uid = parseInt(marker.dataset.commentUid, 10);
+  const idx = comments.findIndex(c => c._uid === uid);
+  if (idx < 0) return;
   const deletedComment = comments[idx];
   comments.splice(idx, 1);
-  // Reindex remaining markers (all levels)
-  document.querySelectorAll('[data-comment-index]').forEach(m => {
-    const i = parseInt(m.dataset.commentIndex, 10);
-    if (i > idx) m.dataset.commentIndex = i - 1;
-  });
+  // No need to reindex — markers use stable _uid, not array indices
   marker.remove();
   if (deletedComment && deletedComment.file) {
     updateFileCommentCount(deletedComment.file);
@@ -1396,6 +1396,11 @@ function showToast(message, type = 'info', duration = 8000) {
     setTimeout(() => toast.remove(), 300);
   };
   return toast;
+}
+
+// XSS-safe toast: escapes HTML in message (use for user-controlled content)
+function showSafeToast(message, type = 'info', duration = 8000) {
+  return showToast(escapeHtml(message), type, duration);
 }
 
 function resetButtons() {
@@ -1607,24 +1612,24 @@ async function submitReview(eventType) {
             if (autoFixEnabled) {
               showToast('🤖 Auto-fixing with AI...', 'progress', 30000);
               const autoFixComments = comments
-                .filter(c => !c.isAiTagged && c.text && c.file)
-                .map(c => ({ file: c.file, line: c.line, text: c.text }));
+              .filter(c => !c.isAiTagged && c.text && c.file)
+              .map(c => ({ file: c.file, line: c.line, text: c.text }));
               const autoFixResult = await window.electronAPI.autoFixWithAi({
-                prNumber: review.prNumber,
-                comments: autoFixComments,
-                reviewBody: review.body,
-                repo: currentRepoKey
+              prNumber: review.prNumber,
+              comments: autoFixComments,
+              reviewBody: review.body,
+              repo: currentRepoKey
               });
               if (autoFixResult.error) {
-                showToast(`⚠ Auto-fix failed: ${escapeHtml(autoFixResult.error)}`, 'error', 10000);
+              showSafeToast(`⚠ Auto-fix failed: ${autoFixResult.error}`, 'error', 10000);
               } else if (autoFixResult.success && autoFixResult.prUrl) {
-                const prLink = autoFixResult.prUrl;
-                const prNum = autoFixResult.prNumber || '';
-                showToast(`✓ Auto-fix PR #${escapeHtml(prNum)} created — <a href="${escapeHtml(prLink)}" style="color:#58a6ff" class="pr-url-link">View PR</a>`, 'success', 10000);
+              const prLink = autoFixResult.prUrl;
+              const prNum = autoFixResult.prNumber || '';
+              showToast(`✓ Auto-fix PR #${escapeHtml(prNum)} created — <a href="${escapeHtml(prLink)}" style="color:#58a6ff" class="pr-url-link">View PR</a>`, 'success', 10000);
               }
             }
           } catch (autoFixErr) {
-            showToast(`⚠ Auto-fix error: ${escapeHtml(autoFixErr.message)}`, 'error', 10000);
+            showSafeToast(`⚠ Auto-fix error: ${autoFixErr.message}`, 'error', 10000);
           }
         }
       }
@@ -2153,9 +2158,11 @@ function navigateToComment(direction) {
   updateCommentNav();
 
   // Find and scroll to the marker
-  const markers = document.querySelectorAll('[data-comment-index]');
+  const currentComment = comments[currentCommentIndex];
+  if (!currentComment) return;
+  const markers = document.querySelectorAll('[data-comment-uid]');
   for (const m of markers) {
-    if (parseInt(m.dataset.commentIndex, 10) === currentCommentIndex) {
+    if (parseInt(m.dataset.commentUid, 10) === currentComment._uid) {
       m.scrollIntoView({ behavior: 'instant', block: 'center' });
       // Brief highlight
       m.style.outline = '2px solid #58a6ff';
@@ -3229,12 +3236,25 @@ function togglePrDescDropdown() {
     document.body.appendChild(dropdown);
   }
 
-  // Render markdown
+  // Render markdown with sanitization (strip raw HTML from PR body to prevent XSS)
   const body = currentPrBody || '';
   let rendered = '';
   if (body) {
     try {
-      rendered = marked.parse(body);
+      // Configure marked to strip dangerous HTML
+      const cleanRenderer = new marked.Renderer();
+      // Override HTML rendering to escape it entirely
+      cleanRenderer.html = (token) => escapeHtml(typeof token === 'string' ? token : (token.text || token.raw || ''));
+      // Disable image URLs that aren't http/https/file
+      const origImage = cleanRenderer.image;
+      cleanRenderer.image = (token) => {
+        const href = typeof token === 'string' ? token : (token.href || '');
+        if (href && !/^https?:\/\//i.test(href) && !/^file:\/\//i.test(href)) {
+          return '';
+        }
+        return origImage.call(cleanRenderer, token);
+      };
+      rendered = marked.parse(body, { renderer: cleanRenderer });
     } catch {
       rendered = `<p>${escapeHtml(body)}</p>`;
     }

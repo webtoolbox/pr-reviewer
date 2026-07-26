@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "test": "electron test.js",
+    "test:unit": "npx jest --no-coverage",
     "build": "electron-builder --mac",
     "build:dir": "electron-builder --mac --dir",
     "postbuild": "cp -R 'dist/mac-arm64/PR Reviewer.app' /Applications/ 2>/dev/null || true"
@@ -36,6 +37,10 @@
     "url": "https://github.com/webtoolbox/pr-reviewer/issues"
   },
   "homepage": "https://github.com/webtoolbox/pr-reviewer#readme",
+  "jest": {
+    "testMatch": ["**/unit.test.js"],
+    "testPathIgnorePatterns": ["/node_modules/", "/test\\.js$", "/test-.+\\.js$"]
+  },
   "build": {
     "appId": "com.webtoolbox.pr-reviewer",
     "productName": "PR Reviewer",

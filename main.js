@@ -45,6 +45,23 @@ function execGh(args, opts = {}) {
   });
 }
 
+// Validate and coerce a PR number to a safe integer string (prevents shell injection)
+function safePrNumber(prNumber) {
+  if (prNumber === null || prNumber === undefined) return null;
+  const str = String(prNumber).trim();
+  if (!/^\d+$/.test(str)) return null;
+  const num = parseInt(str, 10);
+  if (isNaN(num) || num <= 0) return null;
+  return String(num);
+}
+
+// Atomic file write: write to tmp file then rename (prevents corruption on concurrent writes)
+function atomicWriteFileSync(filePath, data) {
+  const tmpPath = filePath + '.tmp.' + process.pid;
+  fs.writeFileSync(tmpPath, data);
+  fs.renameSync(tmpPath, filePath);
+}
+
 // Load config: private (~/.config/pr-reviewer/config.json) overrides public (./config.json)
 function loadConfig() {
   const publicConfigPath = path.join(__dirname, 'config.json');
@@ -170,9 +187,17 @@ function expandPath(p) {
 function getLocalRepoPath(repoKey) {
   if (repoKey && repoKey.includes('/')) {
     const repoName = repoKey.split('/')[1];
+    // Check ~/Repos/ first (conventional location), then ~/
+    const reposPath = path.join(app.getPath('home'), 'Repos', repoName);
+    if (fs.existsSync(reposPath)) return reposPath;
+    // If this is the default repo and repoPath is configured, use it
+    const defaultRepoKey = `${appConfig.repoOwner}/${appConfig.repoName}`;
+    if (repoKey === defaultRepoKey && appConfig.repoPath) {
+      return expandPath(appConfig.repoPath);
+    }
     return path.join(app.getPath('home'), repoName);
   }
-  return appConfig.repoPath || path.join(app.getPath('home'), appConfig.repoName || 'Website-Toolbox');
+  return appConfig.repoPath ? expandPath(appConfig.repoPath) : path.join(app.getPath('home'), appConfig.repoName || 'Website-Toolbox');
 }
 
 // Get the app's data directory for reviews, drafts, images, etc.
@@ -395,6 +420,9 @@ async function findLastCommitBefore(owner, repo, prNumber, targetDate) {
 
 // Generate diff for a PR — supports full diff or since-last-review
 async function generateDiff(prNumber, repoKey) {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) throw new Error(`Invalid PR number: ${prNumber}`);
+  prNumber = safePr;
   const repoPath = getLocalRepoPath(repoKey);
   let owner, repo;
   if (repoKey && repoKey.includes('/')) {
@@ -795,6 +823,8 @@ ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }
 
 // Open PR in system browser
 ipcMain.handle('open-pr-new-window', async (event, prNumber) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { error: 'Invalid PR number' };
   try {
     const owner = appConfig.repoOwner || 'webtoolbox';
     const repo = appConfig.repoName || 'Website-Toolbox';
@@ -971,7 +1001,7 @@ ipcMain.handle('save-repos', async (event, repos) => {
 
     // Update repos
     existing.repos = repos;
-    fs.writeFileSync(privateConfigPath, JSON.stringify(existing, null, 2));
+    atomicWriteFileSync(privateConfigPath, JSON.stringify(existing, null, 2));
 
     // Update in-memory appConfig too
     appConfig.repos = repos;
@@ -1126,6 +1156,8 @@ ipcMain.handle('save-review', async (event, review) => {
 
 // Close a pull request via gh CLI
 ipcMain.handle('close-pr', async (event, { prNumber, comment, repo: repoKey }) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { error: 'Valid PR number is required' };
   let owner, repo;
   if (repoKey && repoKey.includes('/')) {
     [owner, repo] = repoKey.split('/');
@@ -1135,9 +1167,6 @@ ipcMain.handle('close-pr', async (event, { prNumber, comment, repo: repoKey }) =
   }
   if (!owner || !repo) {
     return { error: 'repoOwner and repoName must be configured in config.json' };
-  }
-  if (!prNumber) {
-    return { error: 'PR number is required' };
   }
 
   try {
@@ -1169,6 +1198,8 @@ ipcMain.handle('close-pr', async (event, { prNumber, comment, repo: repoKey }) =
 
 // Submit review directly to GitHub via gh CLI
 ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType, comments, repo: repoKey }) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { error: 'Valid PR number is required' };
   let owner, repo;
   if (repoKey && repoKey.includes('/')) {
     [owner, repo] = repoKey.split('/');
@@ -1178,9 +1209,6 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
   }
   if (!owner || !repo) {
     return { error: 'repoOwner and repoName must be configured in config.json' };
-  }
-  if (!prNumber) {
-    return { error: 'PR number is required' };
   }
 
   // Map event types to GitHub API values
@@ -1228,6 +1256,8 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
 let currentUserLogin = null; // Cache for the session
 
 ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBody, repo: repoKey }) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { error: 'Valid PR number is required' };
   let owner, repo;
   if (repoKey && repoKey.includes('/')) {
     [owner, repo] = repoKey.split('/');
@@ -1237,9 +1267,6 @@ ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBod
   }
   if (!owner || !repo) {
     return { error: 'repoOwner and repoName must be configured in config.json' };
-  }
-  if (!prNumber) {
-    return { error: 'PR number is required' };
   }
 
   try {
@@ -1541,6 +1568,8 @@ ipcMain.handle('download-github-images', async (event, { prBody }) => {
 
 // Get commits for a PR
 ipcMain.handle('get-pr-commits', async (event, prNumber) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { commits: [], error: 'Invalid PR number' };
   const owner = appConfig.repoOwner || 'webtoolbox';
   const repo = appConfig.repoName || 'Website-Toolbox';
   try {
@@ -1568,6 +1597,8 @@ ipcMain.handle('get-pr-commits', async (event, prNumber) => {
 
 // Get inline review comments for a PR
 ipcMain.handle('get-review-comments', async (event, { prNumber, repo }) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { comments: [], error: 'Invalid PR number' };
   let owner, repoName;
   if (repo && repo.includes('/')) {
     [owner, repoName] = repo.split('/');
@@ -1617,6 +1648,8 @@ ipcMain.handle('get-review-comments', async (event, { prNumber, repo }) => {
 
 // Get blame/annotation for a file to map lines to commits
 ipcMain.handle('get-file-blame', async (event, { prNumber, filePath, repo }) => {
+  prNumber = safePrNumber(prNumber);
+  if (!prNumber) return { error: 'Invalid PR number' };
   const repoPath = getLocalRepoPath(repo);
   // Validate filePath: reject shell metacharacters
   if (!filePath || /[;&|`$(){}!<>\n]/.test(filePath)) {
@@ -1736,7 +1769,7 @@ ipcMain.handle('save-preferences', async (event, prefs) => {
     const privateDir = path.join(app.getPath('home'), '.config', 'pr-reviewer');
     const privateConfigPath = path.join(privateDir, 'config.json');
     fs.mkdirSync(privateDir, { recursive: true });
-    fs.writeFileSync(privateConfigPath, JSON.stringify(appConfig, null, 2));
+    atomicWriteFileSync(privateConfigPath, JSON.stringify(appConfig, null, 2));
     return { success: true };
   } catch (err) {
     console.error('[preferences] save failed:', err.message);
@@ -1809,7 +1842,7 @@ ipcMain.handle('auto-detect-agent', async () => {
         const privateDir = path.join(app.getPath('home'), '.config', 'pr-reviewer');
         const privateConfigPath = path.join(privateDir, 'config.json');
         fs.mkdirSync(privateDir, { recursive: true });
-        fs.writeFileSync(privateConfigPath, JSON.stringify(appConfig, null, 2));
+        atomicWriteFileSync(privateConfigPath, JSON.stringify(appConfig, null, 2));
       } catch {}
       return { detected: true, agent: agent.command };
     }
@@ -1923,7 +1956,7 @@ function updateLastCheckTime() {
     } catch {}
     config.lastUpdateCheck = lastUpdateCheck;
     fs.mkdirSync(privateDir, { recursive: true });
-    fs.writeFileSync(privateConfigPath, JSON.stringify(config, null, 2));
+    atomicWriteFileSync(privateConfigPath, JSON.stringify(config, null, 2));
   } catch {}
 }
 
@@ -2028,7 +2061,7 @@ ipcMain.handle('set-auto-update', async (event, enabled) => {
     } catch {}
     config.autoUpdate = enabled;
     fs.mkdirSync(privateDir, { recursive: true });
-    fs.writeFileSync(privateConfigPath, JSON.stringify(config, null, 2));
+    atomicWriteFileSync(privateConfigPath, JSON.stringify(config, null, 2));
 
     if (enabled) {
       startAutoUpdate();
@@ -2129,7 +2162,7 @@ Rules should be generalized, not specific to this one PR.
 Keep rules concise — one sentence each when possible.`;
 
   return new Promise((resolve) => {
-    const args = ['send', prompt];
+    const args = ['chat', '-q', '-p', rulesConfig.aiProfile || 'wt', prompt];
     const proc = require('child_process').execFile(aiCmd, args, { timeout: 120000 }, (err, stdout) => {
       if (err) { resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: err.message }); return; }
       try {
@@ -2239,6 +2272,7 @@ ipcMain.handle('delete-pr-files', async (event, prNumber) => {
 // Get next PR to review from the list
 ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: repoKey } = {}) => {
   try {
+    const safeCurrentPr = safePrNumber(currentPrNumber);
     let owner, repo;
     if (repoKey && repoKey.includes('/')) {
       [owner, repo] = repoKey.split('/');
@@ -2276,10 +2310,10 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
     }
     
     // Find next PR after current
-    const currentIdx = prs.findIndex(pr => pr.number == currentPrNumber);
+    const currentIdx = prs.findIndex(pr => String(pr.number) === safeCurrentPr);
     if (currentIdx >= 0 && currentIdx < prs.length - 1) {
       return { pr: prs[currentIdx + 1] };
-    } else if (prs.length > 0 && prs[0].number !== currentPrNumber) {
+    } else if (prs.length > 0 && String(prs[0].number) !== safeCurrentPr) {
       return { pr: prs[0] };
     }
     
