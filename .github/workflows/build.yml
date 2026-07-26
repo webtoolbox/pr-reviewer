@@ -7,47 +7,45 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-
+  test:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - run: npm ci
-
       - run: npm test
 
-      - run: npm run build
-        if: matrix.os == 'macos-latest'
+  build:
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            build_cmd: npm run build
+            artifact: macos-build
+            path: dist/*.dmg
+          - os: ubuntu-latest
+            build_cmd: npx electron-builder --linux
+            artifact: linux-build
+            path: dist/*.deb
+          - os: windows-latest
+            build_cmd: npx electron-builder --win
+            artifact: windows-build
+            path: dist/*.exe
 
-      - run: npx electron-builder --linux
-        if: matrix.os == 'ubuntu-latest'
-
-      - run: npx electron-builder --win
-        if: matrix.os == 'windows-latest'
-
-      - uses: actions/upload-artifact@v4
-        if: matrix.os == 'macos-latest'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          name: macos-build
-          path: dist/*.dmg
-
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.build_cmd }}
       - uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest'
         with:
-          name: linux-build
-          path: dist/*.deb
-
-      - uses: actions/upload-artifact@v4
-        if: matrix.os == 'windows-latest'
-        with:
-          name: windows-build
-          path: dist/*.exe
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
