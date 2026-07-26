@@ -283,7 +283,7 @@ function getDraftPath(diffFilePath) {
 function saveDraft(diffFilePath, draft) {
   try {
     const draftPath = getDraftPath(diffFilePath);
-    fs.writeFileSync(draftPath, JSON.stringify(draft, null, 2));
+    atomicWriteFileSync(draftPath, JSON.stringify(draft, null, 2));
     return draftPath;
   } catch (err) {
     log('ERROR', '[draft] save failed:', err.message);
@@ -709,11 +709,13 @@ function createWindow(options = {}) {
   win.loadFile('index.html');
 
   win.webContents.on('did-finish-load', () => {
-    // Load file from options or CLI args
-    if (options.filePath && fs.existsSync(options.filePath)) {
-      const diffContent = fs.readFileSync(options.filePath, 'utf8');
-      const fileName = path.basename(options.filePath);
-      win.webContents.send('load-diff', { content: diffContent, fileName, filePath: path.resolve(options.filePath) });
+    // Load file from options, CLI args, or pending open-file (macOS double-click before ready)
+    const filePath = options.filePath || pendingOpenFile;
+    if (filePath && fs.existsSync(filePath)) {
+      const diffContent = fs.readFileSync(filePath, 'utf8');
+      const fileName = path.basename(filePath);
+      win.webContents.send('load-diff', { content: diffContent, fileName, filePath: path.resolve(filePath) });
+      if (pendingOpenFile === filePath) pendingOpenFile = null; // Clear consumed pending file
     } else if (options.diffContent) {
       win.webContents.send('load-diff', { content: options.diffContent, fileName: options.fileName || '', filePath: options.filePath || '' });
     }
@@ -1651,8 +1653,8 @@ ipcMain.handle('get-file-blame', async (event, { prNumber, filePath, repo }) => 
   prNumber = safePrNumber(prNumber);
   if (!prNumber) return { error: 'Invalid PR number' };
   const repoPath = getLocalRepoPath(repo);
-  // Validate filePath: reject shell metacharacters
-  if (!filePath || /[;&|`$(){}!<>\n]/.test(filePath)) {
+  // Validate filePath: reject shell metacharacters (including double-quote)
+  if (!filePath || /[;&|`$(){}!<>"\n]/.test(filePath)) {
     return { error: 'Invalid file path' };
   }
   try {
@@ -2244,7 +2246,8 @@ ipcMain.handle('delete-pr-files', async (event, prNumber) => {
   try {
     const files = fs.readdirSync(generatedDir);
     for (const f of files) {
-      if (f.includes(`-${prNumber}-`) || f.includes(`pr-${prNumber}`)) {
+      // Use boundary-aware matching to avoid PR #1 matching PR #10, #100, etc.
+      if (f.includes(`-${prNumber}-`) || f === `pr-${prNumber}-clean.diff` || f.startsWith(`pr-${prNumber}-`)) {
         fs.unlinkSync(path.join(generatedDir, f));
         deleted++;
       }
@@ -2331,7 +2334,7 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
     if (isNaN(ctxLines) || ctxLines < 0 || ctxLines > 9999) {
       return { error: 'Invalid contextLines value', content: '' };
     }
-    if (!filePath || /[;&|`$(){}!<>\n]/.test(filePath)) {
+    if (!filePath || /[;&|`$(){}!<>"\n]/.test(filePath)) {
       return { error: 'Invalid file path', content: '' };
     }
     const diffOut = await execPromise(

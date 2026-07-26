@@ -277,10 +277,11 @@ function populateFileSidebar() {
   fileSidebar.style.display = 'block';
   contentDiv.classList.add('diff-loaded');
 
-  // Set up filter input
+  // Set up filter input (only once — use a flag to avoid duplicate listeners)
   const filterInput = document.getElementById('file-sidebar-filter');
-  if (filterInput) {
+  if (filterInput && !filterInput._sidebarFilterBound) {
     filterInput.value = '';
+    filterInput._sidebarFilterBound = true;
     filterInput.addEventListener('input', () => {
       const query = filterInput.value.toLowerCase().trim();
       const allFileRows = fileSidebarList.querySelectorAll('.sidebar-file-row');
@@ -567,6 +568,9 @@ async function fetchAndDisplayReviewComments(prNumber, repoKey) {
   try {
     const { comments, error } = await window.electronAPI.getReviewComments({ prNumber, repo: repoKey });
     if (error || !comments || comments.length === 0) return;
+
+    // Guard: if user loaded a different PR while we were fetching, discard results
+    if (currentPrNumber !== prNumber) return;
 
     // Group comments by file and line
     const commentsByFileLine = {};
@@ -1635,7 +1639,7 @@ async function submitReview(eventType) {
       }
     }
   } catch (err) {
-    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
+    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(err.message)}`;
     resetButtons();
   }
 }
@@ -2283,7 +2287,7 @@ async function loadPrByNumber(prNumber, repoKey) {
   try {
     const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey });
     if (result.error) {
-      prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
+      prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
       if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
       return;
     }
@@ -2294,9 +2298,9 @@ async function loadPrByNumber(prNumber, repoKey) {
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
-    // Fetch and display inline review comments
-    fetchAndDisplayReviewComments(prNumber, repoKey);
-
+    // Fetch and display inline review comments (guard against race if user loads another PR)
+    const prForComments = prNumber;
+    fetchAndDisplayReviewComments(prNumber, repoKey).catch(() => {});
     // Store PR title for later use
     currentPrTitle = result.prTitle || '';
     currentPrNumber = prNumber;
@@ -2331,7 +2335,7 @@ async function loadPrByNumber(prNumber, repoKey) {
     loadPrCommits(prNumber);
     if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
   } catch (err) {
-    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
+    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(err.message)}`;
     if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
   }
 }
@@ -2518,7 +2522,7 @@ function renderPrList(prs, filterText) {
       prInfo.innerHTML = `<strong>Opening PR #${num} in browser...</strong>`;
       const result = await window.electronAPI.openPrNewWindow(num);
       if (result.error) {
-        prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
+        prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
       } else {
         prInfo.textContent = '';
       }
@@ -3053,14 +3057,14 @@ document.addEventListener('click', async (e) => {
   try {
     const result = await window.electronAPI.openPrNewWindow(parseInt(prNumber, 10));
     if (result && result.error) {
-      prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
+      prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
     }
   } catch (err) {
-    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
+    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(err.message)}`;
   }
 });
 
-btnCommits.addEventListener('click', (e) => {
+if (btnCommits) btnCommits.addEventListener('click', (e) => {
   e.stopPropagation();
   if (commitsPanelOpen) {
     closeCommitsPanel();
@@ -3098,7 +3102,7 @@ function renderCommitsList() {
       <div class="commit-item" data-sha="${commit.sha}" title="${escapeHtml(commit.fullMessage)}">
         <div style="display:flex;align-items:center;gap:8px">
           <span class="commit-sha">${commit.sha}</span>
-          <span style="font-size:11px;color:#8b949e">${commit.author} · ${date}</span>
+          <span style="font-size:11px;color:#8b949e">${escapeHtml(commit.author)} · ${date}</span>
         </div>
         <div class="commit-message">${escapeHtml(commit.message)}</div>
       </div>`;
@@ -3592,9 +3596,10 @@ async function loadBlameData(prNumber) {
 
 // Add hover tooltips to line numbers showing commit info
 function addCommitTooltipsToLineNumbers() {
-  // Remove existing listeners
+  // Remove existing listeners to prevent duplicates
   document.querySelectorAll('.d2h-code-side-linenumber').forEach(el => {
     el.removeEventListener('mouseenter', handleLineNumberHover);
+    el.removeEventListener('mouseleave', handleLineNumberLeave);
     el.addEventListener('mouseenter', handleLineNumberHover);
     el.addEventListener('mouseleave', handleLineNumberLeave);
   });
@@ -4087,7 +4092,7 @@ function executeSingleVoiceAction(action) {
         }
       }
       if (!targetWrapper) {
-        showToast(`⚠ File "${action.file}" not found in diff`, 'error', 5000);
+        showSafeToast(`⚠ File "${action.file}" not found in diff`, 'error', 5000);
         return;
       }
 
@@ -4248,7 +4253,7 @@ function addVoiceFileComment(fileName, text) {
     }
   }
   if (!targetWrapper) {
-    showToast(`⚠ File "${fileName}" not found in diff`, 'error', 5000);
+    showSafeToast(`⚠ File "${fileName}" not found in diff`, 'error', 5000);
     return;
   }
 
