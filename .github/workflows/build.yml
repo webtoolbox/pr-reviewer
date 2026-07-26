@@ -1,25 +1,10 @@
 name: Build App
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm test
-
   build:
-    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -44,6 +29,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: npm test
+        if: matrix.os == 'macos-latest'
       - run: ${{ matrix.build_cmd }}
       - uses: actions/upload-artifact@v4
         with:
