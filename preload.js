@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onTriggerOpenFile: (callback) => ipcRenderer.on('trigger-open-file', () => callback()),
   onOpenPreferences: (callback) => ipcRenderer.on('open-preferences', () => callback()),
   onCheckUpdateMenu: (callback) => ipcRenderer.on('check-update-menu', () => callback()),
-  getCollaborators: () => ipcRenderer.invoke('get-collaborators'),
+  getCollaborators: (repoKey) => ipcRenderer.invoke('get-collaborators', repoKey),
   getReviewComments: (data) => ipcRenderer.invoke('get-review-comments', data),
   autoFixWithAi: (data) => ipcRenderer.invoke('auto-fix-with-ai', data),
   processVoiceCommand: (data) => ipcRenderer.invoke('process-voice-command', data),
@@ -43,5 +43,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   applyUpdate: () => ipcRenderer.invoke('apply-update'),
   setAutoUpdate: (enabled) => ipcRenderer.invoke('set-auto-update', enabled),
   closePr: (data) => ipcRenderer.invoke('close-pr', data),
-  expandDiffContext: (data) => ipcRenderer.invoke('expand-diff-context', data)
+  expandDiffContext: (data) => ipcRenderer.invoke('expand-diff-context', data),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url)
 });

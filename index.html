@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="referrer" content="no-referrer">
@@ -1261,8 +1261,8 @@
       .sidebar-file-item.active { background: #ddf4ff; color: #0969da; }
 
       /* PR info */
-      #pr-info { background: #f6f8fa; border-bottom: 1px solid #d0d7de; color: #24292f; }
-      #pr-info a { color: #0969da; }
+      #review-bar #pr-info { background: #f6f8fa; border-bottom: 1px solid #d0d7de; color: #24292f; }
+      #review-bar #pr-info a { color: #0969da; }
       .pr-title-line .pr-desc-toggle,
       .pr-title-line .pr-new-window-inline,
       .pr-title-line .pr-compare-toggle { color: #656d76; }
@@ -1318,12 +1318,12 @@
       #review-body:focus { border-color: #0969da; }
 
       /* Buttons */
-      .btn-approve { background: #2da44e; color: #ffffff; }
-      .btn-approve:hover { background: #218838; }
-      .btn-request-changes { background: #cf222e; color: #ffffff; }
-      .btn-request-changes:hover { background: #a40e26; }
-      .btn-comment { background: #0969da; color: #ffffff; }
-      .btn-comment:hover { background: #0550ae; }
+      #btn-approve { background: #2da44e; color: #ffffff; }
+      #btn-approve:hover { background: #218838; }
+      #btn-request-changes { background: #cf222e; color: #ffffff; }
+      #btn-request-changes:hover { background: #a40e26; }
+      #btn-comment { background: #0969da; color: #ffffff; }
+      #btn-comment:hover { background: #0550ae; }
 
       /* Inline review comments */
       .inline-review-comments { background: #f6f8fa; border-left-color: #0969da; }
@@ -1343,11 +1343,11 @@
 
       /* Commits panel */
       #commits-panel { background: #f6f8fa; border: 1px solid #d0d7de; }
-      .commit-item { border-bottom: 1px solid #d0d7de; }
-      .commit-item:hover { background: #ffffff; }
-      .commit-sha { color: #0969da; }
-      .commit-message { color: #24292f; }
-      .commit-author { color: #656d76; }
+      #commits-panel .commit-item { border-bottom: 1px solid #d0d7de; }
+      #commits-panel .commit-item:hover { background: #ffffff; }
+      #commits-panel .commit-sha { color: #0969da; }
+      #commits-panel .commit-message { color: #24292f; }
+      #commits-panel .commit-author { color: #656d76; }
 
       /* Review buttons container */
       #review-body-container { background: #f6f8fa; border-top: 1px solid #d0d7de; }

@@ -85,7 +85,9 @@ function loadConfig() {
     if (parsed.imageUpload) config.imageUpload = { ...config.imageUpload, ...parsed.imageUpload };
     if (parsed.prFilter) config.prFilter = { ...config.prFilter, ...parsed.prFilter };
     if (parsed.autoFix) config.autoFix = { ...config.autoFix, ...parsed.autoFix };
-  } catch {}
+  } catch (err) {
+    console.error('[loadConfig] Public config not loaded:', err.message);
+  }
 
   try {
     const raw = fs.readFileSync(privateConfigPath, 'utf8');
@@ -94,7 +96,9 @@ function loadConfig() {
     if (parsed.imageUpload) config.imageUpload = { ...config.imageUpload, ...parsed.imageUpload };
     if (parsed.prFilter) config.prFilter = { ...config.prFilter, ...parsed.prFilter };
     if (parsed.autoFix) config.autoFix = { ...config.autoFix, ...parsed.autoFix };
-  } catch {}
+  } catch (err) {
+    console.error('[loadConfig] Private config not loaded:', err.message);
+  }
 
   return config;
 }
@@ -160,6 +164,15 @@ function expandPath(p) {
     return path.join(app.getPath('home'), p.slice(1));
   }
   return p;
+}
+
+// Derive local repo path from repoKey (owner/repo) or appConfig
+function getLocalRepoPath(repoKey) {
+  if (repoKey && repoKey.includes('/')) {
+    const repoName = repoKey.split('/')[1];
+    return path.join(app.getPath('home'), repoName);
+  }
+  return appConfig.repoPath || path.join(app.getPath('home'), appConfig.repoName || 'Website-Toolbox');
 }
 
 // Get the app's data directory for reviews, drafts, images, etc.
@@ -306,7 +319,8 @@ function uploadImageToS3(imageDataUrl, fileName) {
         return reject(new Error(`S3 upload failed: ${err.message}`));
       }
 
-      const url = `https://${bucket}.s3.amazonaws.com/${encodeURIComponent(fileName)}`;
+      const urlPath = prefix ? `${prefix}/${fileName}` : fileName;
+      const url = `https://${bucket}.s3.amazonaws.com/${urlPath.split('/').map(encodeURIComponent).join('/')}`;
       log('INFO', '[s3] uploaded:', url);
       resolve(url);
     });
@@ -346,6 +360,7 @@ async function getAllReviews(owner, repo, prNumber) {
 // Helper: find last commit before a date
 async function findLastCommitBefore(owner, repo, prNumber, targetDate) {
   let page = 1;
+  let result = null;
 
   while (true) {
     const stdout = await execPromise(
@@ -355,33 +370,32 @@ async function findLastCommitBefore(owner, repo, prNumber, targetDate) {
     if (commits.length === 0) break;
 
     // Find last commit with date <= targetDate
-    let lastBefore = null;
     for (const commit of commits) {
       if (commit.commit.committer.date <= targetDate) {
-        lastBefore = commit.sha;
+        result = commit.sha;
       }
     }
 
-    // If all commits are after target date, we've gone too far
+    // If all commits are after target date, we've gone past the boundary
     if (commits[0].commit.committer.date > targetDate) {
       break;
     }
 
     // If the last commit in this page is after target date, we found our boundary
-    if (commits[commits.length - 1].commit.committer.date > targetDate && lastBefore) {
-      return lastBefore;
+    if (commits[commits.length - 1].commit.committer.date > targetDate && result) {
+      return result;
     }
 
     if (commits.length < 100) break;
     page++;
   }
 
-  return null;
+  return result;
 }
 
 // Generate diff for a PR — supports full diff or since-last-review
 async function generateDiff(prNumber, repoKey) {
-  const repoPath = path.join(app.getPath('home'), 'Website-Toolbox');
+  const repoPath = getLocalRepoPath(repoKey);
   let owner, repo;
   if (repoKey && repoKey.includes('/')) {
     [owner, repo] = repoKey.split('/');
@@ -649,7 +663,7 @@ function createWindow(options = {}) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false
+      webSecurity: false  // Required for loading local diff files and temp images via file:// protocol
     }
   });
 
@@ -738,9 +752,19 @@ ipcMain.handle('open-file', async (event) => {
   return null;
 });
 
-ipcMain.handle('save-draft', async (event, { filePath, draft }) => saveDraft(filePath, draft));
-ipcMain.handle('load-draft', async (event, filePath) => loadDraft(filePath));
-ipcMain.handle('delete-draft', async (event, filePath) => { deleteDraft(filePath); return true; });
+ipcMain.handle('save-draft', async (event, data) => {
+  if (!data || !data.draft) return null;
+  return saveDraft(data.filePath, data.draft);
+});
+ipcMain.handle('load-draft', async (event, filePath) => {
+  if (!filePath) return null;
+  return loadDraft(filePath);
+});
+ipcMain.handle('delete-draft', async (event, filePath) => {
+  if (!filePath) return false;
+  deleteDraft(filePath);
+  return true;
+});
 
 ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }) => {
   try {
@@ -808,7 +832,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
       prBody,
       reviewInfo: result.reviewInfo,
       filesChanged: result.filesChanged,
-      repoPath: path.join(app.getPath('home'), 'Website-Toolbox')
+      repoPath: getLocalRepoPath(repo)
     };
   } catch (err) {
     log('ERROR', '[pr] load failed:', err.message);
@@ -924,7 +948,12 @@ function loadReposConfig() {
 }
 
 ipcMain.handle('list-repos', async () => {
-  return { repos: loadReposConfig() };
+  try {
+    return { repos: loadReposConfig() };
+  } catch (err) {
+    log('ERROR', '[list-repos] failed:', err.message);
+    return { repos: [], error: err.message };
+  }
 });
 
 ipcMain.handle('save-repos', async (event, repos) => {
@@ -1096,9 +1125,14 @@ ipcMain.handle('save-review', async (event, review) => {
 });
 
 // Close a pull request via gh CLI
-ipcMain.handle('close-pr', async (event, { prNumber, comment }) => {
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
+ipcMain.handle('close-pr', async (event, { prNumber, comment, repo: repoKey }) => {
+  let owner, repo;
+  if (repoKey && repoKey.includes('/')) {
+    [owner, repo] = repoKey.split('/');
+  } else {
+    owner = appConfig.repoOwner;
+    repo = appConfig.repoName;
+  }
   if (!owner || !repo) {
     return { error: 'repoOwner and repoName must be configured in config.json' };
   }
@@ -1134,9 +1168,14 @@ ipcMain.handle('close-pr', async (event, { prNumber, comment }) => {
 });
 
 // Submit review directly to GitHub via gh CLI
-ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType, comments }) => {
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
+ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType, comments, repo: repoKey }) => {
+  let owner, repo;
+  if (repoKey && repoKey.includes('/')) {
+    [owner, repo] = repoKey.split('/');
+  } else {
+    owner = appConfig.repoOwner;
+    repo = appConfig.repoName;
+  }
   if (!owner || !repo) {
     return { error: 'repoOwner and repoName must be configured in config.json' };
   }
@@ -1188,9 +1227,14 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
 // Auto-fix with AI: send review comments to Hermes agent to create a fix PR
 let currentUserLogin = null; // Cache for the session
 
-ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBody }) => {
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
+ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBody, repo: repoKey }) => {
+  let owner, repo;
+  if (repoKey && repoKey.includes('/')) {
+    [owner, repo] = repoKey.split('/');
+  } else {
+    owner = appConfig.repoOwner;
+    repo = appConfig.repoName;
+  }
   if (!owner || !repo) {
     return { error: 'repoOwner and repoName must be configured in config.json' };
   }
@@ -1461,13 +1505,15 @@ ipcMain.handle('download-github-images', async (event, { prBody }) => {
   
   let modifiedBody = prBody;
   
+  const downloadedPaths = [];
   for (const url of urls) {
+    let localPath = null;
     try {
       const ext = '.png';
-      const localPath = path.join(app.getPath('temp'), `pr-img-${Date.now()}${ext}`);
+      localPath = path.join(app.getPath('temp'), `pr-img-${Date.now()}${ext}`);
       
       // Download using gh api with authentication
-      const token = execSync('gh auth token', { encoding: 'utf8' }).trim();
+      const token = await execPromise('gh auth token');
       const response = await fetch(url, {
         headers: { 'Authorization': `token ${token}` }
       });
@@ -1475,11 +1521,18 @@ ipcMain.handle('download-github-images', async (event, { prBody }) => {
       if (response.ok) {
         const buffer = Buffer.from(await response.arrayBuffer());
         fs.writeFileSync(localPath, buffer);
+        downloadedPaths.push(localPath);
         // Replace URL with local file path
         modifiedBody = modifiedBody.split(url).join(`file://${localPath}`);
+        localPath = null; // Don't cleanup - it's referenced in the body
       }
     } catch (err) {
       console.error('[image-download] Failed:', url, err.message);
+    } finally {
+      // Cleanup temp file if download failed and file was created
+      if (localPath) {
+        try { fs.unlinkSync(localPath); } catch {}
+      }
     }
   }
   
@@ -1563,11 +1616,17 @@ ipcMain.handle('get-review-comments', async (event, { prNumber, repo }) => {
 });
 
 // Get blame/annotation for a file to map lines to commits
-ipcMain.handle('get-file-blame', async (event, { prNumber, filePath }) => {
-  const repoPath = path.join(app.getPath('home'), 'Website-Toolbox');
+ipcMain.handle('get-file-blame', async (event, { prNumber, filePath, repo }) => {
+  const repoPath = getLocalRepoPath(repo);
+  // Validate filePath: reject shell metacharacters
+  if (!filePath || /[;&|`$(){}!<>\n]/.test(filePath)) {
+    return { error: 'Invalid file path' };
+  }
   try {
+    const owner = (repo && repo.includes('/')) ? repo.split('/')[0] : (appConfig.repoOwner || 'webtoolbox');
+    const repoName = (repo && repo.includes('/')) ? repo.split('/')[1] : (appConfig.repoName || 'Website-Toolbox');
     const headSha = await execPromise(
-      `gh pr view ${prNumber} --repo ${appConfig.repoOwner || 'webtoolbox'}/${appConfig.repoName || 'Website-Toolbox'} --json headRefOid --jq '.headRefOid'`
+      `gh pr view ${prNumber} --repo ${owner}/${repoName} --json headRefOid --jq '.headRefOid'`
     );
     const stdout = await execPromise(
       `git blame --porcelain ${headSha} -- "${filePath}"`,
@@ -1644,6 +1703,19 @@ ipcMain.handle('get-config', async () => ({
   rules: appConfig.rules || { enabled: false },
   autoFix: appConfig.autoFix || { enabled: true }
 }));
+
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+      await shell.openExternal(url);
+      return { success: true };
+    }
+    return { error: 'Invalid URL' };
+  } catch (err) {
+    log('ERROR', '[open-external] failed:', err.message);
+    return { error: err.message };
+  }
+});
 
 ipcMain.handle('save-preferences', async (event, prefs) => {
   try {
@@ -1898,13 +1970,13 @@ ipcMain.handle('check-update', async () => {
     }
 
     // Get commit log between local and remote
-    const { stdout: log } = await new Promise((resolve, reject) => {
+    const { stdout: logOutput } = await new Promise((resolve, reject) => {
       exec(`git log HEAD..origin/main --oneline`, { cwd: repoDir, encoding: 'utf8' }, (err, stdout, stderr) => {
         if (err) reject(err); else resolve({ stdout, stderr });
       });
     });
 
-    return { upToDate: false, commits: log.trim() };
+    return { upToDate: false, commits: logOutput.trim() };
   } catch (err) {
     return { error: err.message };
   }
@@ -1938,8 +2010,7 @@ ipcMain.handle('apply-update', async () => {
     // Restart the app
     app.relaunch();
     app.exit(0);
-
-    return { success: true };
+    // Note: code after app.exit() is unreachable
   } catch (err) {
     return { error: err.message };
   }
@@ -2114,9 +2185,15 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
         ...(sha ? { sha } : {})
       });
       
-      await execPromise(
-        `echo '${payload.replace(/'/g, "'\\''")}' | gh api repos/${owner}/${repo}/contents/${file} --method PUT --input -`
-      );
+      const rulesTmpPath = path.join(getGeneratedDir(), `rules-payload-${Date.now()}.json`);
+      fs.writeFileSync(rulesTmpPath, payload);
+      try {
+        await execPromise(
+          `gh api repos/${owner}/${repo}/contents/${file} --method PUT --input "${rulesTmpPath}"`
+        );
+      } finally {
+        try { fs.unlinkSync(rulesTmpPath); } catch {}
+      }
       
       results.push({ file, success: true, count: newRules.length });
     } catch (err) {
@@ -2160,10 +2237,18 @@ ipcMain.handle('delete-pr-files', async (event, prNumber) => {
 });
 
 // Get next PR to review from the list
-ipcMain.handle('get-next-pr', async (event, currentPrNumber) => {
+ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: repoKey } = {}) => {
   try {
-    const owner = appConfig.repoOwner;
-    const repo = appConfig.repoName;
+    let owner, repo;
+    if (repoKey && repoKey.includes('/')) {
+      [owner, repo] = repoKey.split('/');
+    } else {
+      owner = appConfig.repoOwner;
+      repo = appConfig.repoName;
+    }
+    if (!owner || !repo) {
+      return { error: 'repoOwner and repoName must be configured' };
+    }
     const filter = appConfig.prFilter || {};
     
     let cmd = `gh pr list --repo ${owner}/${repo} --state open --json number,title,author,createdAt,headRefName,isDraft`;
@@ -2173,10 +2258,23 @@ ipcMain.handle('get-next-pr', async (event, currentPrNumber) => {
     
     if (filter.reviewRequested) {
       const viewer = await execPromise('gh api user --jq .login');
-      prs = prs.filter(pr => {
-        // PRs where the viewer is requested as reviewer
-        return true; // gh pr list with --json doesn't include review requests, filter client-side
-      });
+      // Fetch review requests for each PR using gh api
+      const prsNeedingReview = [];
+      for (const pr of prs) {
+        try {
+          const reviewersJson = await execPromise(
+            `gh api repos/${owner}/${repo}/pulls/${pr.number}/requested_reviewers --jq '[.users[].login]'`
+          );
+          const reviewers = JSON.parse(reviewersJson || '[]');
+          if (reviewers.includes(viewer)) {
+            prsNeedingReview.push(pr);
+          }
+        } catch {
+          // If we can't check, include the PR
+          prsNeedingReview.push(pr);
+        }
+      }
+      prs = prsNeedingReview;
     }
     
     if (filter.titleContains) {
@@ -2185,7 +2283,7 @@ ipcMain.handle('get-next-pr', async (event, currentPrNumber) => {
     }
     
     // Find next PR after current
-    const currentIdx = prs.findIndex(pr => pr.number === currentPrNumber);
+    const currentIdx = prs.findIndex(pr => pr.number == currentPrNumber);
     if (currentIdx >= 0 && currentIdx < prs.length - 1) {
       return { pr: prs[currentIdx + 1] };
     } else if (prs.length > 0 && prs[0].number !== currentPrNumber) {
@@ -2201,8 +2299,16 @@ ipcMain.handle('get-next-pr', async (event, currentPrNumber) => {
 // Expand diff context for a single file
 ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines }) => {
   try {
+    // Validate inputs to prevent shell injection
+    const ctxLines = parseInt(contextLines, 10);
+    if (isNaN(ctxLines) || ctxLines < 0 || ctxLines > 9999) {
+      return { error: 'Invalid contextLines value', content: '' };
+    }
+    if (!filePath || /[;&|`$(){}!<>\n]/.test(filePath)) {
+      return { error: 'Invalid file path', content: '' };
+    }
     const diffOut = await execPromise(
-      `git diff -U${contextLines} -- "${filePath}"`,
+      `git diff -U${ctxLines} -- "${filePath}"`,
       { cwd: repoPath, timeout: 15000 }
     );
     return { content: diffOut };

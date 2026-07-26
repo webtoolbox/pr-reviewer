@@ -551,6 +551,7 @@ function restoreDraft(draft) {
     }
   }
   updateCommentCount();
+  updateCommentNav();
   autoSaveDraft(); // Save immediately to confirm draft is valid
 }
 
@@ -1203,10 +1204,42 @@ function renderLineCommentMarker(comment) {
   const formRow = document.getElementById('active-comment-form');
   if (formRow) {
     formRow.parentNode.replaceChild(marker, formRow);
+  } else {
+    // Find the correct diff line and insert the marker after it
+    const lineRow = findDiffLineRow(comment.file, comment.line, comment.side);
+    if (lineRow) {
+      lineRow.parentNode.insertBefore(marker, lineRow.nextSibling);
+    }
   }
 
   marker.querySelector('.btn-edit').addEventListener('click', () => editComment(marker));
   marker.querySelector('.btn-delete').addEventListener('click', () => deleteComment(marker));
+}
+
+function findDiffLineRow(fileName, lineNum, side) {
+  if (!diffContainer || !fileName || !lineNum) return null;
+  const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+  for (const wrapper of fileWrappers) {
+    const nameEl = wrapper.querySelector('.d2h-file-name');
+    if (!nameEl || nameEl.textContent.trim() !== fileName) continue;
+    const rows = wrapper.querySelectorAll('tr');
+    for (const row of rows) {
+      const leftLine = row.querySelector('.d2h-code-linenumber.d2h-del');
+      const rightLine = row.querySelector('.d2h-code-linenumber.d2h-ins');
+      const lineCell = row.querySelector('.d2h-code-linenumber');
+      if (side === 'RIGHT' && rightLine) {
+        const num = parseInt(rightLine.textContent.trim(), 10);
+        if (num === lineNum) return row;
+      } else if (side === 'LEFT' && leftLine) {
+        const num = parseInt(leftLine.textContent.trim(), 10);
+        if (num === lineNum) return row;
+      } else if (lineCell) {
+        const num = parseInt(lineCell.textContent.trim(), 10);
+        if (num === lineNum) return row;
+      }
+    }
+  }
+  return null;
 }
 
 // ===================== EDIT / DELETE =====================
@@ -1525,12 +1558,14 @@ async function submitReview(eventType) {
         prNumber: review.prNumber,
         body: review.body,
         eventType: eventType,
-        comments: githubComments
+        comments: githubComments,
+        repo: currentRepoKey
       });
 
       if (result.error) {
         showToast(`⚠ GitHub submission failed: ${escapeHtml(result.error)}`, 'error', 10000);
         prInfo.innerHTML = `<strong style="color:#f85149">GitHub submission failed:</strong> ${escapeHtml(result.error)}`;
+        resetButtons();
       } else {
         const ghMsg = eventType === 'approve' ? '✓ Review approved on GitHub' :
                       eventType === 'request_changes' ? '✓ Changes requested on GitHub' :
@@ -1577,7 +1612,8 @@ async function submitReview(eventType) {
               const autoFixResult = await window.electronAPI.autoFixWithAi({
                 prNumber: review.prNumber,
                 comments: autoFixComments,
-                reviewBody: review.body
+                reviewBody: review.body,
+                repo: currentRepoKey
               });
               if (autoFixResult.error) {
                 showToast(`⚠ Auto-fix failed: ${escapeHtml(autoFixResult.error)}`, 'error', 10000);
@@ -1595,6 +1631,7 @@ async function submitReview(eventType) {
     }
   } catch (err) {
     prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
+    resetButtons();
   }
 }
 
@@ -2210,16 +2247,11 @@ async function exportAsMarkdown() {
 
 // ===================== SHOW/HIDE BUTTONS =====================
 
-// Override showReviewButtons to also show nav
-const _originalShowReviewButtons = showReviewButtons;
 function showReviewButtons() {
   btnApprove.style.display = 'inline-block';
   btnRequestChanges.style.display = 'inline-block';
   btnComment.style.display = 'inline-block';
 }
-
-// Override updateCommentCount to also update nav
-const _originalUpdateCommentCount = updateCommentCount;
 
 // ===================== PR LOADING =====================
 
@@ -2245,7 +2277,7 @@ async function loadPrByNumber(prNumber, repoKey) {
     const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey });
     if (result.error) {
       prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${result.error}`;
-      if (loadingToast._dismiss) loadingToast._dismiss();
+      if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
       return;
     }
     currentFileName = result.fileName || `pr-${prNumber}.diff`;
@@ -2261,6 +2293,7 @@ async function loadPrByNumber(prNumber, repoKey) {
     // Store PR title for later use
     currentPrTitle = result.prTitle || '';
     currentPrNumber = prNumber;
+    currentRepoKey = repoKey || null;
     currentPrBody = result.prBody || '';
 
     // Download GitHub-attached images to local files (they need auth to access)
@@ -2289,10 +2322,10 @@ async function loadPrByNumber(prNumber, repoKey) {
 
     // Load commits for this PR
     loadPrCommits(prNumber);
-    if (loadingToast._dismiss) loadingToast._dismiss();
+    if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
   } catch (err) {
     prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${err.message}`;
-    if (loadingToast._dismiss) loadingToast._dismiss();
+    if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
   }
 }
 
@@ -2703,19 +2736,6 @@ function applyFileNameFilter() {
   });
 }
 
-// Apply name filter after extension filter renders
-const origRenderFilteredDiff = typeof renderFilteredDiff === 'function' ? renderFilteredDiff : null;
-if (origRenderFilteredDiff) {
-  const _origRenderFilteredDiff = renderFilteredDiff;
-  renderFilteredDiff = function() {
-    _origRenderFilteredDiff.call(this);
-    // Re-apply name filter after re-render
-    if (currentNameFilter) {
-      applyFileNameFilter();
-    }
-  };
-}
-
 // Store current diff content for re-rendering
 let currentDiffContent = null;
 let currentDiffFilePath = null;
@@ -2723,9 +2743,9 @@ let currentDiffViewMode = 'unified';
 let currentPrTitle = '';
 let cachedPrList = null;
 let cachedPrListTime = 0;
-const recentlyClosedPrs = new Set(); // Track PRs closed in this session
 // PR cache never expires — only invalidated by repo changes or manual refresh
 let currentPrNumber = null;
+let currentRepoKey = null;
 let currentPrBody = '';
 let currentRepoPath = null;
 const fileContextLevels = new Map(); // filename -> current context lines count
@@ -2904,6 +2924,19 @@ function renderFilteredDiff() {
   }
 }
 
+// Apply name filter after extension filter renders
+const origRenderFilteredDiff = typeof renderFilteredDiff === 'function' ? renderFilteredDiff : null;
+if (origRenderFilteredDiff) {
+  const _origRenderFilteredDiff = renderFilteredDiff;
+  renderFilteredDiff = function() {
+    _origRenderFilteredDiff.call(this);
+    // Re-apply name filter after re-render
+    if (currentNameFilter) {
+      applyFileNameFilter();
+    }
+  };
+}
+
 // Collapse files matching excluded extensions — same diff2html rendering,
 // just hidden by default with a toggle icon on the header
 function collapseFilteredFiles(excludedExts) {
@@ -2945,41 +2978,6 @@ function collapseFilteredFiles(excludedExts) {
       if (badge) badge.style.display = isHidden ? 'none' : '';
     });
   }
-}
-
-// Filter diff content by file extensions
-function filterDiffByExtensions(diffContent, extensions) {
-  if (!extensions || extensions.length === 0) return { filtered: sortDiffByExtension(diffContent), excluded: [] };
-
-  const files = diffContent.split(/^diff --git /m);
-  const includedFiles = [];
-  const excludedFiles = [];
-
-  for (const file of files) {
-    if (!file.trim()) return false;
-    const firstLine = file.split('\n')[0];
-    const filePath = firstLine.match(/a\/(.+?) b\//);
-    if (!filePath) continue;
-    const ext = filePath[1].includes('.') ? '.' + filePath[1].split('.').pop() : '';
-    if (extensions.includes(ext)) {
-      includedFiles.push(file);
-    } else {
-      excludedFiles.push({ name: filePath[1], ext, diff: 'diff --git ' + file });
-    }
-  }
-
-  // Sort included files by extension, then by name
-  includedFiles.sort((a, b) => {
-    const extA = getExt(a);
-    const extB = getExt(b);
-    if (extA !== extB) return extA.localeCompare(extB);
-    return getName(a).localeCompare(getName(b));
-  });
-
-  return {
-    filtered: includedFiles.map(file => 'diff --git ' + file).join(''),
-    excluded: excludedFiles
-  };
 }
 
 // Extract file extension from diff file block
@@ -3106,7 +3104,7 @@ function renderCommitsList() {
       const sha = item.dataset.sha;
       const commit = commitMap[sha];
       if (commit && commit.url) {
-        require('electron').shell.openExternal(commit.url);
+        window.electronAPI.openExternal(commit.url);
       }
     });
   });
@@ -3539,8 +3537,7 @@ document.addEventListener('click', (e) => {
   const link = e.target.closest('.pr-url-link');
   if (link) {
     e.preventDefault();
-    const { shell } = require('electron');
-    shell.openExternal(link.href);
+    window.electronAPI.openExternal(link.href);
   }
 });
 
@@ -3795,12 +3792,9 @@ const prefFields = [
   { id: 'pref-diff-view-mode', key: 'diff.viewMode', type: 'select' },
   { id: 'pref-title-contains', key: 'prFilter.titleContains', type: 'text' },
   { id: 'pref-review-requested', key: 'prFilter.reviewRequested', type: 'checkbox' },
-  { id: 'pref-ai-command', key: 'aiCommand', type: 'text' },
-  { id: 'pref-ai-tag', key: 'aiTagPrefix', type: 'text' },
   { id: 'pref-autofix-enabled', key: 'autoFix.enabled', type: 'checkbox' },
   { id: 'pref-rules-enabled', key: 'rules.enabled', type: 'checkbox' },
   { id: 'pref-auto-update', key: 'autoUpdate', type: 'checkbox' },
-  { id: 'pref-editor-cmd', key: 'editorCommand', type: 'text' },
   { id: 'pref-img-enabled', key: 'imageUpload.enabled', type: 'checkbox' },
   { id: 'pref-s3-bucket', key: 'imageUpload.s3Bucket', type: 'text' },
   { id: 'pref-s3-prefix', key: 'imageUpload.s3Prefix', type: 'text' },
@@ -4523,7 +4517,7 @@ async function closePullRequest() {
   showToast('Closing pull request...', 'progress', 10000);
 
   try {
-    const result = await window.electronAPI.closePr({ prNumber, comment: reviewBodyText });
+    const result = await window.electronAPI.closePr({ prNumber, comment: reviewBodyText, repo: currentRepoKey });
     if (result.error) {
       showToast(`Failed to close PR: ${result.error}`, 'error', 8000);
     } else {
@@ -4532,8 +4526,6 @@ async function closePullRequest() {
 
       // Remove closed PR from cached list and re-render dropdown if open
       const prNum = parseInt(prNumber, 10);
-      // Also track as recently closed so background refresh skips it
-      recentlyClosedPrs.add(prNum);
       if (cachedPrList) {
         cachedPrList = cachedPrList.filter(pr => pr.number !== prNum);
       }
