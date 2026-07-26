@@ -895,7 +895,7 @@ let reposConfigCache = null;
 let reposConfigCacheTime = 0;
 const REPOS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-function loadReposConfig() {
+async function loadReposConfig() {
   // Return cached result if fresh
   if (reposConfigCache && (Date.now() - reposConfigCacheTime) < REPOS_CACHE_TTL) {
     return reposConfigCache;
@@ -918,9 +918,9 @@ function loadReposConfig() {
   // Fetch all repos from gh for the default owner
   let ghRepos = [];
   try {
-    const stdout = require('child_process').execSync(
+    const stdout = await execPromise(
       `gh repo list ${defaultOwner} --limit 100 --json name,isPrivate --jq '[.[] | {owner: "${defaultOwner}", name: .name}]'`,
-      { encoding: 'utf8', timeout: 15000 }
+      { timeout: 15000 }
     );
     ghRepos = JSON.parse(stdout || '[]');
   } catch (err) {
@@ -949,7 +949,7 @@ function loadReposConfig() {
 
 ipcMain.handle('list-repos', async () => {
   try {
-    return { repos: loadReposConfig() };
+    return { repos: await loadReposConfig() };
   } catch (err) {
     log('ERROR', '[list-repos] failed:', err.message);
     return { repos: [], error: err.message };
@@ -2257,24 +2257,17 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
     let prs = JSON.parse(output);
     
     if (filter.reviewRequested) {
+      // Use gh search to filter server-side (single API call instead of N+1)
       const viewer = await execPromise('gh api user --jq .login');
-      // Fetch review requests for each PR using gh api
-      const prsNeedingReview = [];
-      for (const pr of prs) {
-        try {
-          const reviewersJson = await execPromise(
-            `gh api repos/${owner}/${repo}/pulls/${pr.number}/requested_reviewers --jq '[.users[].login]'`
-          );
-          const reviewers = JSON.parse(reviewersJson || '[]');
-          if (reviewers.includes(viewer)) {
-            prsNeedingReview.push(pr);
-          }
-        } catch {
-          // If we can't check, include the PR
-          prsNeedingReview.push(pr);
-        }
+      try {
+        const searchCmd = `gh search prs --repo ${owner}/${repo} --state open --review-requested ${viewer.trim()} --json number --limit 100`;
+        const searchOutput = await execPromise(searchCmd, { timeout: 15000 });
+        const reviewPrNumbers = new Set(JSON.parse(searchOutput || '[]').map(r => r.number));
+        prs = prs.filter(pr => reviewPrNumbers.has(pr.number));
+      } catch {
+        // If search fails, fall back to showing all PRs
+        log('WARN', '[get-next-pr] review-requested search failed, showing all PRs');
       }
-      prs = prsNeedingReview;
     }
     
     if (filter.titleContains) {
