@@ -1,26 +1,32 @@
-name: Build App
+name: Test and Build
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  test-and-build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - os: macos-latest
-            build_cmd: npm run build
-            artifact: macos-build
-            path: dist/*.dmg
           - os: ubuntu-latest
+            test_cmd: xvfb-run npx jest --no-coverage && xvfb-run npx electron test.js
             build_cmd: npx electron-builder --linux
             artifact: linux-build
             path: dist/*.deb
           - os: windows-latest
+            test_cmd: echo "Skipping tests on Windows"
             build_cmd: npx electron-builder --win
             artifact: windows-build
             path: dist/*.exe
+          - os: macos-latest
+            test_cmd: echo "Skipping tests on macOS (run locally)"
+            build_cmd: npm run build
+            artifact: macos-build
+            path: dist/*.dmg
+
+    env:
+      ELECTRON_DISABLE_SANDBOX: 1
 
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +35,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm test
-        if: matrix.os == 'macos-latest'
+      - run: ${{ matrix.test_cmd }}
       - run: ${{ matrix.build_cmd }}
       - uses: actions/upload-artifact@v4
         with:
