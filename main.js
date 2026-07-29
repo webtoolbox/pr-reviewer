@@ -187,9 +187,9 @@ function expandPath(p) {
 function getLocalRepoPath(repoKey) {
   if (repoKey && repoKey.includes('/')) {
     const repoName = repoKey.split('/')[1];
-    // Prefer the pr-reviewer worktree (always on master) over the main repo
-    const worktreePath = path.join(app.getPath('home'), repoName + '-pr-reviewer');
-    if (fs.existsSync(worktreePath)) return worktreePath;
+    // Prefer shallow clone in app data directory (always on master, independent of main repo)
+    const dataReposPath = path.join(app.getPath('userData'), 'repos', repoName);
+    if (fs.existsSync(dataReposPath)) return dataReposPath;
     // Check ~/Repos/ first (conventional location), then ~/
     const reposPath = path.join(app.getPath('home'), 'Repos', repoName);
     if (fs.existsSync(reposPath)) return reposPath;
@@ -556,6 +556,14 @@ async function generateDiff(prNumber, repoKey) {
 
   if (baseSha === headSha) {
     throw new Error('No new commits since last review');
+  }
+
+  // Always fetch latest to keep shallow clone up to date
+  log('INFO', '[generateDiff] Fetching latest from origin in', repoPath);
+  try {
+    await execPromise('git fetch origin master --depth=1', { cwd: repoPath, timeout: 30000 });
+  } catch (fetchErr) {
+    log('ERROR', '[generateDiff] Fetch failed:', fetchErr.message);
   }
 
   // Ensure both SHAs exist in the local repo
@@ -1459,6 +1467,10 @@ ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBod
       : '(No inline comments)';
 
     const bodySummary = reviewBody ? `\n\nReview body:\n${reviewBody}` : '';
+
+    // Worktree path in app data directory (avoids polluting main repo)
+    const worktreePath = path.join(app.getPath('userData'), 'worktrees', `pr-${prNumber}`);
+    const repoPath = getLocalRepoPath(repoKey);
 
     // Build the prompt for Hermes
     const prompt = `You are an AI code reviewer and fixer. A code review was submitted for PR #${prNumber} in ${owner}/${repo} requesting changes. Your job is to create a PR with fixes.
