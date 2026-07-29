@@ -1076,6 +1076,9 @@ const CONTEXT_INITIAL = 3;
 const CONTEXT_MAX = 60;
 
 function addContextButtons() {
+  // Remove all existing context expand buttons first to prevent accumulation
+  diffContainer.querySelectorAll('.context-expand-btn').forEach(b => b.remove());
+
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
 
   fileWrappers.forEach(wrapper => {
