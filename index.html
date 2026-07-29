@@ -322,13 +322,17 @@
 
     /* Main content */
     #content { margin-top: var(--review-bar-height, 52px); padding: 20px; }
-    #content.diff-loaded { display: flex; flex-direction: row; }
+    #content.diff-loaded {
+      display: flex; flex-direction: row;
+      min-height: calc(100vh - var(--review-bar-height, 52px));
+    }
 
     /* File sidebar */
     #file-sidebar {
       display: none; width: 280px; min-width: 280px;
       border-right: 1px solid #30363d; overflow-y: auto;
       background: #0d1117; flex-shrink: 0;
+      position: sticky; top: var(--review-bar-height, 52px);
       height: calc(100vh - var(--review-bar-height, 52px));
       transition: width 0.2s ease, min-width 0.2s ease, opacity 0.2s ease, padding 0.2s ease;
     }
@@ -402,7 +406,7 @@
     .sidebar-file-row .file-counts .additions { color: #3fb950; }
     .sidebar-file-row .file-counts .deletions { color: #f85149; margin-left: 4px; }
 
-    #diff-container { flex: 1; min-width: 0; overflow-y: auto; }
+    #diff-container { flex: 1; min-width: 0; }
     #review-body-container { padding: 20px 0; }
 
     /* Empty state */
@@ -515,7 +519,16 @@
 
     /* File-level comment button */
     .d2h-file-header { display: flex; align-items: center; overflow: hidden; border-radius: 8px 8px 0 0; }
-    .d2h-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .d2h-file-name-wrapper { flex: 1; min-width: 0; width: auto !important; display: flex; align-items: center; gap: 6px; }
+    .d2h-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .d2h-file-name-wrapper .d2h-tag { margin-left: auto; flex-shrink: 0; }
+
+    /* Tighten diff line spacing — reduce line number column and code padding */
+    .d2h-code-linenumber { width: 5.5em !important; }
+    .d2h-code-line { padding: 0 6em !important; width: calc(100% - 12em) !important; }
+    .line-num1, .line-num2 { width: 2.5em !important; }
+    .d2h-code-side-linenumber { width: 3em !important; padding: 0 .3em !important; }
+    .d2h-code-side-line { padding: 0 3.5em !important; width: calc(100% - 7em) !important; }
     .file-comment-btn {
       background: #21262d; color: #8b949e; border: 1px solid #30363d;
       padding: 2px 8px; border-radius: 9999px; cursor: pointer; font-size: 11px;
@@ -527,6 +540,26 @@
       background: #58a6ff; color: #0d1117; border-radius: 8px;
       padding: 0 5px; font-size: 10px; margin-left: 3px;
     }
+
+    /* Copy file name button */
+    .copy-file-name-btn {
+      background: none; border: none; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 2px; margin-left: 6px; flex-shrink: 0;
+      position: relative; vertical-align: middle;
+    }
+    .copy-file-name-btn svg {
+      width: 14px; height: 14px; stroke: #8b949e; fill: none;
+      transition: stroke 0.15s;
+    }
+    .copy-file-name-btn:hover svg { stroke: #c9d1d9; }
+    .copy-file-name-btn .copy-feedback {
+      position: absolute; top: -28px; left: 50%; transform: translateX(-50%);
+      background: #238636; color: #fff; font-size: 11px; padding: 3px 8px;
+      border-radius: 6px; white-space: nowrap; pointer-events: none;
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .copy-file-name-btn .copy-feedback.show { opacity: 1; }
 
     /* File-level comment marker */
     .file-comment-marker {
@@ -814,18 +847,18 @@
       border-radius: 0;
     }
 
-    /* Line comment buttons */
+    /* Line comment buttons — positioned in the line number gutter */
     .line-comment-btn {
-      display: none; position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
-      width: 22px; height: 22px;
+      display: none; position: absolute; right: -24px; top: 50%; transform: translateY(-50%);
+      width: 20px; height: 20px;
       background: #238636; color: #fff; border: none; border-radius: 50%;
-      font-size: 14px; cursor: pointer; line-height: 22px; text-align: center;
+      font-size: 13px; cursor: pointer; line-height: 20px; text-align: center;
       z-index: 10; padding: 0;
     }
-    .line-comment-btn:hover { background: #2ea043; transform: translateY(-50%) scale(1.1); }
-    .d2h-code-side-line:hover .line-comment-btn { display: block; }
-    .d2h-code-line:hover .line-comment-btn { display: block; }
-    .d2h-code-side-line, .d2h-code-line { position: relative; }
+    .line-comment-btn:hover { background: #2ea043; transform: translateY(-50%) scale(1.15); }
+    .d2h-code-side-linenumber, .d2h-code-linenumber { overflow: visible; }
+    /* Show button on hover of the line number cell */
+    .d2h-diff-tbody tr:hover .line-comment-btn { display: block; }
 
     /* Inline review comments */
     .inline-review-comments {
@@ -920,6 +953,21 @@
 
     /* Dark theme overrides for diff2html */
     .d2h-dark-color-scheme { background-color: #0d1117; }
+
+    /* Ensure diff line backgrounds (green/red) take precedence over
+       highlight.js token backgrounds. Without this, hljs adds background
+       colors to syntax tokens that override the .d2h-ins/.d2h-del lines. */
+    .d2h-code-line-ctn.hljs,
+    .d2h-ins [class^="hljs-"],
+    .d2h-ins [class*=" hljs-"],
+    .d2h-del [class^="hljs-"],
+    .d2h-del [class*=" hljs-"],
+    .d2h-ins-side-diff [class^="hljs-"],
+    .d2h-ins-side-diff [class*=" hljs-"],
+    .d2h-del-side-diff [class^="hljs-"],
+    .d2h-del-side-diff [class*=" hljs-"] {
+      background: transparent !important;
+    }
 
     /* File list */
     .d2h-file-list-wrapper { margin-bottom: 10px; }
@@ -1281,6 +1329,8 @@
       /* File headers */
       .d2h-file-header { background: #f6f8fa; border-bottom: 1px solid #d0d7de; color: #24292f; }
       .d2h-file-name { color: #24292f; }
+      .copy-file-name-btn svg { stroke: #656d76; }
+      .copy-file-name-btn:hover svg { stroke: #24292f; }
 
       /* Code lines */
       .d2h-code-side-line { background: #ffffff; }

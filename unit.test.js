@@ -118,7 +118,10 @@ function computeDiffPositions(diffContent) {
         position++;
         map[`${currentFile}:${rightLine}:RIGHT`] = position;
         rightLine++;
-      } else if (line.startsWith(' ') || line === '' || line.startsWith('\\')) {
+      } else if (line.startsWith('\\')) {
+        // \\ No newline at end of file — counts for position but not line numbers
+        position++;
+      } else if (line.startsWith(' ')) {
         position++;
         map[`${currentFile}:${leftLine}:LEFT`] = position;
         map[`${currentFile}:${rightLine}:RIGHT`] = position;
@@ -1454,8 +1457,52 @@ rename to new-name.js`;
 +added
  line3`;
     const positions = computeDiffPositions(diff);
-    expect(positions['test.js:1:LEFT']).toBeDefined();
-    expect(positions['test.js:2:RIGHT']).toBeDefined(); // +added
+    // Empty lines in diff should NOT be counted as positions
+    expect(positions['test.js:1:LEFT']).toBe(1);   // line1 context
+    expect(positions['test.js:1:RIGHT']).toBe(1);   // line1 context
+    expect(positions['test.js:2:RIGHT']).toBe(2);   // +added (not inflated by empty line)
+    expect(positions['test.js:2:LEFT']).toBe(3);    // line3 context
+  });
+
+  test('computeDiffPositions does not count empty lines between files', () => {
+    const diff = `diff --git a/a.js b/a.js
+--- a/a.js
++++ b/a.js
+@@ -1 +1 @@
+-old
++new
+
+diff --git a/b.js b/b.js
+--- a/b.js
++++ b/b.js
+@@ -1 +1 @@
+-oldb
++newb`;
+    const positions = computeDiffPositions(diff);
+    // Position should reset per file; empty line between files must not inflate a.js positions
+    expect(positions['a.js:1:LEFT']).toBe(1);
+    expect(positions['a.js:1:RIGHT']).toBe(2);
+    expect(positions['b.js:1:LEFT']).toBe(1);
+    expect(positions['b.js:1:RIGHT']).toBe(2);
+  });
+
+  test('computeDiffPositions counts \\ No newline at end of file for position but not line numbers', () => {
+    const diff = `diff --git a/f.js b/f.js
+--- a/f.js
++++ b/f.js
+@@ -1,2 +1,2 @@
+ line1
+-old
+\\ No newline at end of file
++new`;
+    const positions = computeDiffPositions(diff);
+    expect(positions['f.js:1:LEFT']).toBe(1);   // line1 context at position 1
+    expect(positions['f.js:1:RIGHT']).toBe(1);   // line1 context at position 1
+    expect(positions['f.js:2:LEFT']).toBe(2);    // -old at position 2
+    // \ No newline at end of file takes position 3 but does NOT map to a line or change line numbers
+    expect(positions['f.js:2:RIGHT']).toBe(4);   // +new at position 4 (position 3 was the \ marker)
+    // Verify no spurious entry from the \ marker line
+    expect(positions['f.js:3:LEFT']).toBeUndefined();
   });
 
   test('extractExtensionsFromDiff handles binary files', () => {
@@ -2287,5 +2334,620 @@ describe('Export filename generation', () => {
   test('export filename with unknown PR', () => {
     const prNum = 'unknown';
     expect(`pr-${prNum}-review.md`).toBe('pr-unknown-review.md');
+  });
+});
+
+// ── Dark color scheme consistency (renderer.js) ──
+// After context expand, renderFilteredDiff() must use 'dark' colorScheme
+// (not 'auto') so that the d2h-dark-color-scheme class is always applied.
+// See: https://github.com/rtfpessoa/diff2html — colorSchemeToCss('auto')
+// returns 'd2h-auto-color-scheme', whose dark styles are behind
+// @media (prefers-color-scheme: dark). In Electron, nativeTheme may not
+// be dark even when the app UI is dark (background: #0d1117).
+
+describe('Dark color scheme consistency', () => {
+  let rendererSource;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(
+      path.join(__dirname, 'renderer.js'),
+      'utf8'
+    );
+  });
+
+  test('loadDiff uses colorScheme: dark', () => {
+    // loadDiff should use colorScheme: 'dark' for unconditional dark styling
+    const loadDiffMatch = rendererSource.match(
+      /Diff2Html\.html\([\s\S]*?colorScheme:\s*'([^']+)'/
+    );
+    expect(loadDiffMatch).not.toBeNull();
+    expect(loadDiffMatch[1]).toBe('dark');
+  });
+
+  test('renderFilteredDiff uses colorScheme: dark (not auto)', () => {
+    // renderFilteredDiff must also use 'dark' — 'auto' produces
+    // d2h-auto-color-scheme which only works with prefers-color-scheme: dark
+    const renderFilteredMatch = rendererSource.match(
+      /function renderFilteredDiff\(\)\s*\{[\s\S]*?colorScheme:\s*'([^']+)'/
+    );
+    expect(renderFilteredMatch).not.toBeNull();
+    expect(renderFilteredMatch[1]).toBe('dark');
+  });
+
+  test('both render paths use the same colorScheme value', () => {
+    // Extract all colorScheme values from Diff2Html calls
+    const colorSchemes = [...rendererSource.matchAll(
+      /colorScheme:\s*'([^']+)'/g
+    )].map(m => m[1]);
+
+    // All should be 'dark' — no 'auto' or 'light' in the diff render paths
+    for (const cs of colorSchemes) {
+      expect(cs).toBe('dark');
+    }
+  });
+
+  test('diff2html colorSchemeToCss maps dark to d2h-dark-color-scheme', () => {
+    // Verify the CSS class that diff2html generates for 'dark' scheme
+    // matches the selectors in index.html (.d2h-dark-color-scheme .d2h-ins, etc.)
+    const colorSchemeToCss = (colorScheme) => {
+      switch (colorScheme) {
+        case 'dark': return 'd2h-dark-color-scheme';
+        case 'auto': return 'd2h-auto-color-scheme';
+        case 'light':
+        default: return 'd2h-light-color-scheme';
+      }
+    };
+
+    expect(colorSchemeToCss('dark')).toBe('d2h-dark-color-scheme');
+    expect(colorSchemeToCss('auto')).toBe('d2h-auto-color-scheme');
+    // The auto variant only works with @media (prefers-color-scheme: dark)
+    expect(colorSchemeToCss('auto')).not.toBe('d2h-dark-color-scheme');
+  });
+
+  test('index.html styles d2h-dark-color-scheme but not d2h-auto-color-scheme directly', () => {
+    const indexHtml = fs.readFileSync(
+      path.join(__dirname, 'index.html'),
+      'utf8'
+    );
+
+    // index.html has custom dark theme overrides for .d2h-dark-color-scheme
+    expect(indexHtml).toContain('.d2h-dark-color-scheme');
+
+    // The base diff2html CSS has d2h-auto-color-scheme inside @media queries,
+    // but index.html custom overrides use .d2h-dark-color-scheme directly.
+    // So renderFilteredDiff must produce d2h-dark-color-scheme (not auto)
+    // to pick up both the library CSS and the app's custom overrides.
+    const darkOverrides = (indexHtml.match(/\.d2h-dark-color-scheme/g) || []).length;
+    expect(darkOverrides).toBeGreaterThan(0);
+  });
+
+  test('handleContextExpand finds target file header by name (not first file)', () => {
+    // Before the fix, the scroll restoration code used:
+    //   diffContainer.querySelector(`.d2h-file-wrapper .d2h-file-name`)
+    // which always returns the FIRST file's header, not the target file.
+    // This caused incorrect scroll delta when expanding context on non-first files.
+    // The fix uses: Array.from(querySelectorAll('.d2h-file-name'))
+    //   .find(el => el.textContent.trim() === fileName)
+    const contextExpandSection = rendererSource.substring(
+      rendererSource.indexOf('async function handleContextExpand'),
+      rendererSource.indexOf('function replaceFileInDiff')
+    );
+
+    // Should NOT use querySelector (returns first match only)
+    expect(contextExpandSection).not.toContain(
+      "querySelector(`.d2h-file-wrapper .d2h-file-name`)"
+    );
+    // Should use querySelectorAll + find to match the target file by name
+    expect(contextExpandSection).toContain('querySelectorAll');
+    expect(contextExpandSection).toContain('fileName');
+  });
+});
+
+// ── Auto-advance after approve ──
+
+describe('Auto-advance after approve', () => {
+  let rendererSource;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(
+      path.join(__dirname, 'renderer.js'),
+      'utf8'
+    );
+  });
+
+  test('loadDiff calls resetButtons() on empty content early return', () => {
+    // loadDiff has early returns for invalid content — they must call
+    // resetButtons() so buttons are re-enabled if the diff is empty/invalid
+    const loadDiffStart = rendererSource.indexOf('function loadDiff(content, filePath)');
+    const loadDiffBody = rendererSource.substring(loadDiffStart, loadDiffStart + 600);
+
+    // Find the empty-content check block
+    const emptyCheck = loadDiffBody.match(
+      /if \(!content \|\| !content\.trim\(\)\)\s*\{[^}]*\}/
+    );
+    expect(emptyCheck).not.toBeNull();
+    expect(emptyCheck[0]).toContain('resetButtons()');
+  });
+
+  test('loadDiff calls resetButtons() on invalid diff early return', () => {
+    const loadDiffStart = rendererSource.indexOf('function loadDiff(content, filePath)');
+    const loadDiffBody = rendererSource.substring(loadDiffStart, loadDiffStart + 800);
+
+    // Find the "not a valid diff" check block
+    const invalidCheck = loadDiffBody.match(
+      /if \(!content\.includes\('diff --git'\)[^}]*\{[^}]*\}/
+    );
+    expect(invalidCheck).not.toBeNull();
+    expect(invalidCheck[0]).toContain('resetButtons()');
+  });
+
+  test('loadPrByNumber calls resetButtons() on IPC error path', () => {
+    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey)');
+    // Find the result.error block — use a broader search for the block
+    const errorIdx = rendererSource.indexOf('if (result.error)', loadPrStart);
+    expect(errorIdx).toBeGreaterThan(-1);
+    // Look for resetButtons() between here and the next 'return;'
+    const returnIdx = rendererSource.indexOf('return;', errorIdx);
+    const errorBlock = rendererSource.substring(errorIdx, returnIdx);
+    expect(errorBlock).toContain('resetButtons()');
+  });
+
+  test('loadPrByNumber calls resetButtons() in catch block', () => {
+    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey)');
+    // Find the function's own catch block (after loadPr IPC call), not nested ones.
+    // The outer catch is after loadPrCommits and before the closing of the function.
+    const loadPrCommitsIdx = rendererSource.indexOf('loadPrCommits(prNumber)', loadPrStart);
+    expect(loadPrCommitsIdx).toBeGreaterThan(-1);
+    // The catch block comes after loadPrCommits
+    const catchIdx = rendererSource.indexOf('} catch (err)', loadPrCommitsIdx);
+    expect(catchIdx).toBeGreaterThan(-1);
+    const catchEnd = rendererSource.indexOf('\n  }', catchIdx + 10);
+    const catchBlock = rendererSource.substring(catchIdx, catchEnd + 4);
+
+    expect(catchBlock).toContain('resetButtons()');
+  });
+
+  test('submitReview auto-advance clears reviewBody before loading next PR', () => {
+    // submitReview is not available in Node context — inspect the source directly
+    const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
+    const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
+    const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
+    // After removing the approved PR from cachedPrList, the auto-advance
+    // block should clear reviewBody.value before calling loadPrByNumber
+    expect(submitSrc).toContain("reviewBody.value = ''");
+  });
+
+  test('submitReview auto-advance has try/catch around loadPrByNumber', () => {
+    const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
+    const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
+    const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
+    // The auto-advance call to loadPrByNumber should be wrapped in try/catch
+    // so that a failure doesn't leave buttons permanently disabled
+    expect(submitSrc).toContain('catch (advanceErr)');
+  });
+
+  test('submitReview "no more PRs" path calls resetButtons()', () => {
+    const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
+    const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
+    const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
+    // The else branch (no more PRs) should reset buttons so the UI
+    // isn't left in a disabled state
+    // Find the "No more PRs" section
+    const noMoreIdx = submitSrc.indexOf('No more PRs to review');
+    expect(noMoreIdx).toBeGreaterThan(-1);
+    // The resetButtons() call should appear shortly after
+    const afterNoMore = submitSrc.substring(noMoreIdx, noMoreIdx + 200);
+    expect(afterNoMore).toContain('resetButtons()');
+  });
+
+  test('closePullRequest auto-advance clears reviewBody and has error handling', () => {
+    const closeSrc = rendererSource.substring(
+      rendererSource.indexOf('async function closePullRequest()'),
+      rendererSource.indexOf('async function closePullRequest()') + 2000
+    );
+    // Should clear reviewBody before loading next PR
+    expect(closeSrc).toContain("reviewBody.value = ''");
+    // Should have try/catch around loadPrByNumber
+    expect(closeSrc).toContain('catch (advanceErr)');
+    // "No more PRs" path should reset buttons
+    const noMoreIdx = closeSrc.indexOf('No more PRs to review');
+    expect(noMoreIdx).toBeGreaterThan(-1);
+    expect(closeSrc.substring(noMoreIdx, noMoreIdx + 200)).toContain('resetButtons()');
+  });
+});
+
+// ── Rules dialog auto-advance fix ──
+
+describe('Rules dialog auto-advance fix', () => {
+  let rendererSource;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(
+      path.join(__dirname, 'renderer.js'),
+      'utf8'
+    );
+  });
+
+  test('showRulesDialog returns false when rules are disabled', () => {
+    const src = rendererSource;
+    // After checking config.rules.enabled, should return false (not undefined)
+    const disabledCheck = src.substring(
+      src.indexOf('async function showRulesDialog'),
+      src.indexOf('async function showRulesDialog') + 300
+    );
+    expect(disabledCheck).toContain('return false');
+  });
+
+  test('showRulesDialog returns true when overlay is displayed', () => {
+    // The function should return true only when proposals are shown
+    const funcStart = rendererSource.indexOf('async function showRulesDialog(reviewFeedback)');
+    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 100);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
+    // Should have exactly one 'return true' (proposals rendered path)
+    const trueReturns = (funcSrc.match(/return true/g) || []).length;
+    expect(trueReturns).toBe(1);
+    // Should have 'return false' for errors/no-proposals
+    const falseReturns = (funcSrc.match(/return false/g) || []).length;
+    expect(falseReturns).toBeGreaterThanOrEqual(1);
+  });
+
+  test('submitReview skips auto-advance when rules dialog was shown', () => {
+    const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
+    const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
+    const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
+    // Should check rulesDialogShown before auto-advancing
+    expect(submitSrc).toContain('rulesDialogShown');
+    expect(submitSrc).toContain('if (!rulesDialogShown)');
+  });
+
+  test('cleanupAndLoadNext passes {prNumber, repo} to getNextPr', () => {
+    const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
+    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
+    // Should pass an object with prNumber and repo, not a bare number
+    expect(funcSrc).toContain('getNextPr({ prNumber:');
+    expect(funcSrc).toContain('repo: currentRepoKey');
+    // Should NOT pass a bare number (old bug)
+    expect(funcSrc).not.toMatch(/getNextPr\(prNum\)/);
+  });
+
+  test('cleanupAndLoadNext clears reviewBody before loading next PR', () => {
+    const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
+    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
+    expect(funcSrc).toContain("reviewBody.value = ''");
+  });
+
+  test('cleanupAndLoadNext has try/catch around loadPrByNumber', () => {
+    const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
+    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
+    expect(funcSrc).toContain('catch (advanceErr)');
+  });
+
+  test('cleanupAndLoadNext handles "no more PRs" case', () => {
+    const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
+    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
+    expect(funcSrc).toContain('No more PRs to review');
+    expect(funcSrc).toContain('resetButtons()');
+  });
+});
+
+// ── buildFileTree (extracted from populateFileSidebar tree logic) ──
+
+/**
+ * Pure function that replicates the tree-building logic from populateFileSidebar().
+ * Given a flat list of {name, index} objects, builds a folder tree where each
+ * folder node has { _files: [], _children: {} }.
+ */
+function buildFileTree(files) {
+  const tree = {};
+  for (const file of files) {
+    const parts = file.name.split('/');
+    const fileName = parts.pop();
+    let target = tree;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!target[part]) target[part] = { _files: [], _children: {} };
+      target = (i < parts.length - 1) ? target[part]._children : target[part];
+    }
+    target._files = target._files || [];
+    target._files.push({ ...file, displayName: fileName });
+  }
+  return tree;
+}
+
+describe('buildFileTree (populateFileSidebar tree logic)', () => {
+  test('places root-level files directly in tree._files', () => {
+    const files = [{ name: 'README.md', index: 0 }];
+    const tree = buildFileTree(files);
+    expect(tree._files).toBeDefined();
+    expect(tree._files).toHaveLength(1);
+    expect(tree._files[0].displayName).toBe('README.md');
+  });
+
+  test('places files in the correct folder node', () => {
+    const files = [{ name: 'src/main.js', index: 0 }];
+    const tree = buildFileTree(files);
+    expect(tree.src).toBeDefined();
+    expect(tree.src._files).toHaveLength(1);
+    expect(tree.src._files[0].displayName).toBe('main.js');
+  });
+
+  test('places deeply nested files in the correct folder node', () => {
+    const files = [{ name: 'src/utils/helpers.js', index: 0 }];
+    const tree = buildFileTree(files);
+    expect(tree.src._children.utils).toBeDefined();
+    expect(tree.src._children.utils._files).toHaveLength(1);
+    expect(tree.src._children.utils._files[0].displayName).toBe('helpers.js');
+    // The file should NOT be in utils._children (the old bug)
+    expect(tree.src._children.utils._children._files).toBeUndefined();
+  });
+
+  test('groups multiple files in the same folder', () => {
+    const files = [
+      { name: 'src/a.js', index: 0 },
+      { name: 'src/b.js', index: 1 },
+      { name: 'src/c.css', index: 2 },
+    ];
+    const tree = buildFileTree(files);
+    expect(tree.src._files).toHaveLength(3);
+  });
+
+  test('handles mixed depth files', () => {
+    const files = [
+      { name: 'README.md', index: 0 },
+      { name: 'src/main.js', index: 1 },
+      { name: 'src/lib/util.js', index: 2 },
+      { name: 'tests/unit/test.js', index: 3 },
+    ];
+    const tree = buildFileTree(files);
+
+    // Root file
+    expect(tree._files).toHaveLength(1);
+    expect(tree._files[0].displayName).toBe('README.md');
+
+    // src folder
+    expect(tree.src._files).toHaveLength(1);
+    expect(tree.src._files[0].displayName).toBe('main.js');
+
+    // src/lib subfolder
+    expect(tree.src._children.lib._files).toHaveLength(1);
+    expect(tree.src._children.lib._files[0].displayName).toBe('util.js');
+
+    // tests/unit folder
+    expect(tree.tests._children.unit._files).toHaveLength(1);
+    expect(tree.tests._children.unit._files[0].displayName).toBe('test.js');
+  });
+
+  test('preserves file metadata (index, status)', () => {
+    const files = [
+      { name: 'src/new.js', index: 3, status: 'added' },
+      { name: 'src/old.js', index: 1, status: 'removed' },
+    ];
+    const tree = buildFileTree(files);
+    const newFile = tree.src._files.find(f => f.displayName === 'new.js');
+    const oldFile = tree.src._files.find(f => f.displayName === 'old.js');
+    expect(newFile.index).toBe(3);
+    expect(newFile.status).toBe('added');
+    expect(oldFile.index).toBe(1);
+    expect(oldFile.status).toBe('removed');
+  });
+
+  test('empty file list produces empty tree', () => {
+    const tree = buildFileTree([]);
+    expect(Object.keys(tree)).toHaveLength(0);
+  });
+});
+
+// ── extractExtensionsFromDiff should extract ALL extensions ──
+
+describe('extractExtensionsFromDiff — no extension whitelist', () => {
+  test('extracts non-code extensions like .svg and .yaml', () => {
+    const diff = `diff --git a/icon.svg b/icon.svg
+--- a/icon.svg
++++ b/icon.svg
+@@ -1 +1 @@
+-old
++new
+diff --git a/config.yaml b/config.yaml
+--- a/config.yaml
++++ b/config.yaml
+@@ -1 +1 @@
+-old
++new`;
+    const exts = extractExtensionsFromDiff(diff);
+    expect(exts).toContain('.svg');
+    expect(exts).toContain('.yaml');
+  });
+
+  test('extracts any extension, not just those in a hardcoded list', () => {
+    const diff = `--- a/file.weirdext
++++ b/file.weirdext
+--- a/file.anotherext
++++ b/file.anotherext`;
+    const exts = extractExtensionsFromDiff(diff);
+    expect(exts).toContain('.weirdext');
+    expect(exts).toContain('.anotherext');
+  });
+});
+
+// ── Source-code inspection: main.js no longer filters to code files ──
+
+describe('generateDiff — no code file extension filter', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(
+      path.join(__dirname, 'main.js'),
+      'utf8'
+    );
+  });
+
+  test('generateDiff does not filter files by extension regex', () => {
+    // The old code had: .filter(f => f && /\.(pm|cgi|js|tpl|css|less|json)$/.test(f))
+    // This should no longer exist
+    const funcStart = mainSource.indexOf('async function generateDiff(');
+    const funcEnd = mainSource.indexOf('\n// Create application menu', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).not.toMatch(/\.filter\(f\s*=>\s*f\s*&&\s*\/\\.pm\|cgi/);
+  });
+
+  test('generateDiff uses "changedFiles" not "codeFiles"', () => {
+    const funcStart = mainSource.indexOf('async function generateDiff(');
+    const funcEnd = mainSource.indexOf('\n// Create application menu', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toContain('changedFiles');
+    expect(funcSrc).not.toContain('codeFiles');
+  });
+
+  test('error message says "No files changed" not "No code files"', () => {
+    const funcStart = mainSource.indexOf('async function generateDiff(');
+    const funcEnd = mainSource.indexOf('\n// Create application menu', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toContain('No files changed since last review');
+    expect(funcSrc).not.toContain('No code files changed');
+  });
+});
+
+// ── Source-code inspection: renderer.js localStorage persistence ──
+
+describe('activeExtensions localStorage persistence', () => {
+  let rendererSource;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(
+      path.join(__dirname, 'renderer.js'),
+      'utf8'
+    );
+  });
+
+  test('activeExtensions loads from localStorage on init', () => {
+    expect(rendererSource).toContain("localStorage.getItem('pr-reviewer-active-extensions')");
+  });
+
+  test('saveActiveExtensions function exists and writes to localStorage', () => {
+    expect(rendererSource).toContain('function saveActiveExtensions()');
+    expect(rendererSource).toContain("localStorage.setItem('pr-reviewer-active-extensions'");
+  });
+
+  test('saveActiveExtensions is called when activeExtensions changes', () => {
+    // There should be at least 2 calls to saveActiveExtensions (openFileFilterDropdown + applyExtensionFilter)
+    const saveMatches = rendererSource.match(/saveActiveExtensions\(\)/g);
+    expect(saveMatches).not.toBeNull();
+    expect(saveMatches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('no codeFileExtensions config reference in initFileFilter', () => {
+    // initFileFilter should be removed entirely
+    expect(rendererSource).not.toContain('function initFileFilter()');
+    expect(rendererSource).not.toContain('diffConfig.codeFileExtensions');
+  });
+
+  test('ALL_EXTENSIONS constant is removed', () => {
+    expect(rendererSource).not.toContain('const ALL_EXTENSIONS');
+  });
+
+  test('extractExtensionsFromDiff does not filter by ALL_EXTENSIONS', () => {
+    // The function should not reference ALL_EXTENSIONS
+    const funcStart = rendererSource.indexOf('function extractExtensionsFromDiff(');
+    const funcEnd = rendererSource.indexOf('\n// Open/close file filter', funcStart);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd);
+    expect(funcSrc).not.toContain('ALL_EXTENSIONS');
+  });
+});
+
+// ── Source-code inspection: comment button positioning & side-by-side fix ──
+
+describe('comment button positioning and side-by-side fix', () => {
+  let rendererSource;
+  let htmlSource;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(
+      path.join(__dirname, 'renderer.js'),
+      'utf8'
+    );
+    htmlSource = fs.readFileSync(
+      path.join(__dirname, 'index.html'),
+      'utf8'
+    );
+  });
+
+  test('addCommentButtons side-by-side uses closest(tr) to find linenumber', () => {
+    // Extract the side-by-side branch of addCommentButtons
+    const funcStart = rendererSource.indexOf('function addCommentButtons()');
+    const funcEnd = rendererSource.indexOf('\n// ===================== FILE-LEVEL COMMENT BUTTONS', funcStart);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd);
+
+    // Side-by-side branch should use closest('tr') to navigate from the div to the sibling td
+    expect(funcSrc).toContain("line.closest('tr')");
+    // Should NOT use line.querySelector for side-by-side linenumber (the old broken pattern)
+    // The old code had: const lineNumEl = line.querySelector('.d2h-code-side-linenumber');
+    // Now it uses: const row = line.closest('tr'); ... row.querySelector('.d2h-code-side-linenumber');
+    expect(funcSrc).toContain("row.querySelector('.d2h-code-side-linenumber')");
+  });
+
+  test('addCommentButtons appends buttons to line number cells, not code line divs', () => {
+    const funcStart = rendererSource.indexOf('function addCommentButtons()');
+    const funcEnd = rendererSource.indexOf('\n// ===================== FILE-LEVEL COMMENT BUTTONS', funcStart);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd);
+
+    // Buttons should be appended to line number elements
+    expect(funcSrc).toContain('lineNumEl.appendChild(btn)');
+    expect(funcSrc).toContain('linenumEl.appendChild(btn)');
+    // Should NOT append to line/code-line elements
+    expect(funcSrc).not.toContain('line.appendChild(btn)');
+    // Line number elements use CSS overflow:visible (not position:relative) to allow comment buttons
+    expect(funcSrc).not.toContain("lineNumEl.style.position = 'relative'");
+    expect(funcSrc).not.toContain("linenumEl.style.position = 'relative'");
+  });
+
+  test('addCommentButtons prevents duplicate buttons', () => {
+    const funcStart = rendererSource.indexOf('function addCommentButtons()');
+    const funcEnd = rendererSource.indexOf('\n// ===================== FILE-LEVEL COMMENT BUTTONS', funcStart);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd);
+
+    // Should check for existing button before adding
+    expect(funcSrc).toContain("querySelector('.line-comment-btn')");
+    expect(funcSrc).toContain('return');
+  });
+
+  test('CSS positions comment button at right edge of line number column', () => {
+    // The line-comment-btn style should use right positioning (between numbers and code)
+    expect(htmlSource).toMatch(/\.line-comment-btn\s*\{[^}]*right:\s*-24px/);
+    expect(htmlSource).not.toMatch(/\.line-comment-btn\s*\{[^}]*left:\s*4px/);
+  });
+
+  test('CSS hover rule triggers on tr:hover for row-level hover', () => {
+    // Should use tr:hover for showing the button on row hover
+    expect(htmlSource).toContain('.d2h-diff-tbody tr:hover .line-comment-btn');
+    // Should NOT use the old code-line hover selectors
+    expect(htmlSource).not.toContain('.d2h-code-side-line:hover .line-comment-btn');
+    expect(htmlSource).not.toContain('.d2h-code-line:hover .line-comment-btn');
+  });
+
+  test('CSS sets overflow:visible on line number cells', () => {
+    expect(htmlSource).toContain('.d2h-code-side-linenumber');
+    expect(htmlSource).toContain('.d2h-code-linenumber');
+    expect(htmlSource).toMatch(/\.d2h-code-side-linenumber[^}]*overflow:\s*visible/);
+    expect(htmlSource).toMatch(/\.d2h-code-linenumber[^}]*overflow:\s*visible/);
+  });
+
+  test('addCommentButtons handles both side-by-side and unified modes', () => {
+    const funcStart = rendererSource.indexOf('function addCommentButtons()');
+    const funcEnd = rendererSource.indexOf('\n// ===================== FILE-LEVEL COMMENT BUTTONS', funcStart);
+    const funcSrc = rendererSource.substring(funcStart, funcEnd);
+
+    // Should check for side-by-side mode
+    expect(funcSrc).toContain("'.d2h-file-side-diff'");
+    // Should have unified mode fallback
+    expect(funcSrc).toContain("'.d2h-code-line'");
+    // Both modes should use closest('tr') pattern
+    const closestTrMatches = funcSrc.match(/\.closest\('tr'\)/g);
+    expect(closestTrMatches).not.toBeNull();
+    expect(closestTrMatches.length).toBeGreaterThanOrEqual(2);
   });
 });

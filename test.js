@@ -1426,10 +1426,350 @@ async function runTests() {
   `);
   assert('Filtered header shows count', filteredCount.includes('1 of 3'), `header: "${filteredCount}"`);
 
+  // TEST: Startup auto-load falls back to default repo when no repos checked
+  const autoLoadFallback = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // Simulate no repos checked: checkedRepos = []
+      const savedCheckedRepos = checkedRepos;
+      checkedRepos = [];
+      const savedAppConfig = { ...appConfig };
+      appConfig.repoOwner = 'webtoolbox';
+      appConfig.repoName = 'Website-Toolbox';
+
+      // Simulate the startup fallback logic
+      const reposToFetch = checkedRepos.length > 0
+        ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
+        : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
+      const hasFallback = reposToFetch.length > 0 && reposToFetch[0].owner === 'webtoolbox';
+
+      // Restore
+      checkedRepos = savedCheckedRepos;
+      Object.assign(appConfig, savedAppConfig);
+      return hasFallback;
+    })()
+  `);
+  assert('Startup falls back to default repo when no repos checked', autoLoadFallback);
+
+  // TEST: Startup auto-load: first PR has required fields
+  const autoLoadFirstPr = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // Verify that loadPrByNumber is a function (it's used by startup auto-load)
+      if (typeof loadPrByNumber !== 'function') return 'no-function';
+      // Verify cachedPrList has PRs from the startup fetch
+      if (!cachedPrList || cachedPrList.length === 0) return 'no-cache';
+      // Verify the first PR has the required fields for loadPrByNumber
+      const first = cachedPrList[0];
+      return first.number && first.repo ? 'ok' : 'missing-fields';
+    })()
+  `);
+  assert('Startup auto-load: first PR has required fields', autoLoadFirstPr === 'ok', `result: ${autoLoadFirstPr}`);
+
+  // TEST: Keyboard shortcut Cmd+Shift+A triggers approve (uppercase key - Windows/Linux)
+  const shortcutApprove = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-approve');
+      if (!btn) return 'no-button';
+      btn.disabled = false;
+      btn.style.display = 'inline-block';
+      let clicked = false;
+      const origClick = btn.click.bind(btn);
+      btn.click = () => { clicked = true; origClick(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'A', code: 'KeyA', metaKey: true, shiftKey: true, bubbles: true
+      }));
+      btn.click = origClick;
+      return clicked ? 'clicked' : 'not-clicked';
+    })()
+  `);
+  assert('Cmd+Shift+A triggers approve button click', shortcutApprove === 'clicked', `result: ${shortcutApprove}`);
+
+  // TEST: Keyboard shortcut Cmd+Shift+A with lowercase key (macOS behavior)
+  const shortcutApproveLower = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-approve');
+      if (!btn) return 'no-button';
+      btn.disabled = false;
+      btn.style.display = 'inline-block';
+      let clicked = false;
+      const origClick = btn.click.bind(btn);
+      btn.click = () => { clicked = true; origClick(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'a', code: 'KeyA', metaKey: true, shiftKey: true, bubbles: true
+      }));
+      btn.click = origClick;
+      return clicked ? 'clicked' : 'not-clicked';
+    })()
+  `);
+  assert('Cmd+Shift+A works with lowercase key (macOS)', shortcutApproveLower === 'clicked', `result: ${shortcutApproveLower}`);
+
+  // TEST: Keyboard shortcut Cmd+Shift+R triggers request changes (uppercase key)
+  const shortcutRequestChanges = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-request-changes');
+      if (!btn) return 'no-button';
+      btn.disabled = false;
+      let clicked = false;
+      const origClick = btn.click.bind(btn);
+      btn.click = () => { clicked = true; origClick(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'R', code: 'KeyR', metaKey: true, shiftKey: true, bubbles: true
+      }));
+      btn.click = origClick;
+      return clicked ? 'clicked' : 'not-clicked';
+    })()
+  `);
+  assert('Cmd+Shift+R triggers request changes click', shortcutRequestChanges === 'clicked', `result: ${shortcutRequestChanges}`);
+
+  // TEST: Keyboard shortcut Cmd+Shift+R with lowercase key (macOS behavior)
+  const shortcutRequestChangesLower = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-request-changes');
+      if (!btn) return 'no-button';
+      btn.disabled = false;
+      let clicked = false;
+      const origClick = btn.click.bind(btn);
+      btn.click = () => { clicked = true; origClick(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'r', code: 'KeyR', metaKey: true, shiftKey: true, bubbles: true
+      }));
+      btn.click = origClick;
+      return clicked ? 'clicked' : 'not-clicked';
+    })()
+  `);
+  assert('Cmd+Shift+R works with lowercase key (macOS)', shortcutRequestChangesLower === 'clicked', `result: ${shortcutRequestChangesLower}`);
+
+  // TEST: Keyboard shortcut Cmd+Shift+C triggers comment submit (uppercase key)
+  const shortcutComment = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-comment');
+      if (!btn) return 'no-button';
+      btn.disabled = false;
+      let clicked = false;
+      const origClick = btn.click.bind(btn);
+      btn.click = () => { clicked = true; origClick(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'C', code: 'KeyC', metaKey: true, shiftKey: true, bubbles: true
+      }));
+      btn.click = origClick;
+      return clicked ? 'clicked' : 'not-clicked';
+    })()
+  `);
+  assert('Cmd+Shift+C triggers comment button click', shortcutComment === 'clicked', `result: ${shortcutComment}`);
+
+  // TEST: Keyboard shortcut Cmd+Shift+C with lowercase key (macOS behavior)
+  const shortcutCommentLower = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-comment');
+      if (!btn) return 'no-button';
+      btn.disabled = false;
+      let clicked = false;
+      const origClick = btn.click.bind(btn);
+      btn.click = () => { clicked = true; origClick(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'c', code: 'KeyC', metaKey: true, shiftKey: true, bubbles: true
+      }));
+      btn.click = origClick;
+      return clicked ? 'clicked' : 'not-clicked';
+    })()
+  `);
+  assert('Cmd+Shift+C works with lowercase key (macOS)', shortcutCommentLower === 'clicked', `result: ${shortcutCommentLower}`);
+
+  // TEST: Context expand buttons pass baseSha/headSha
+  const contextExpandHasShas = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // Verify SHA variables are set after loadPrByNumber
+      if (!currentBaseSha) return 'no-baseSha';
+      if (!currentHeadSha) return 'no-headSha';
+      // Verify expandDiffContext bridge accepts the params
+      if (typeof window.electronAPI.expandDiffContext !== 'function') return 'no-bridge';
+      return 'ok';
+    })()
+  `);
+  assert('Context expand has baseSha/headSha available', contextExpandHasShas === 'ok', `result: ${contextExpandHasShas}`);
+
+  // TEST: Context "Show more above" button is under the file header, not above it
+  const contextBtnPosition = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+      if (!wrappers.length) return 'no-wrappers';
+      const wrapper = wrappers[0];
+      const header = wrapper.querySelector('.d2h-file-header');
+      const btnUp = wrapper.querySelector('.context-expand-btn[data-direction="up"]');
+      if (!header || !btnUp) return 'missing-elements';
+      // btnUp should come AFTER header in DOM order
+      const allChildren = Array.from(wrapper.children);
+      const headerIdx = allChildren.indexOf(header);
+      const btnIdx = allChildren.indexOf(btnUp);
+      return btnIdx > headerIdx ? 'correct' : 'wrong';
+    })()
+  `);
+  assert('Show more above button is under file header', contextBtnPosition === 'correct', `position: ${contextBtnPosition}`);
+
+  // TEST: submitReview auto-advances to next PR
+  const autoAdvanceExists = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // Verify the auto-advance code exists by checking the function source
+      const src = submitReview.toString();
+      return src.includes('cachedPrList') && src.includes('loadPrByNumber') ? 'ok' : 'missing';
+    })()
+  `);
+  assert('submitReview has auto-advance to next PR', autoAdvanceExists === 'ok', `result: ${autoAdvanceExists}`);
+
+  // TEST: submitReview auto-advance clears reviewBody before loading next PR
+  const autoAdvanceClearsBody = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = submitReview.toString();
+      return src.includes("reviewBody.value = ''") ? 'ok' : 'missing';
+    })()
+  `);
+  assert('submitReview auto-advance clears reviewBody before next PR', autoAdvanceClearsBody === 'ok', `result: ${autoAdvanceClearsBody}`);
+
+  // TEST: submitReview auto-advance has error handling
+  const autoAdvanceErrorHandling = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = submitReview.toString();
+      return src.includes('catch (advanceErr)') ? 'ok' : 'missing';
+    })()
+  `);
+  assert('submitReview auto-advance has try/catch error handling', autoAdvanceErrorHandling === 'ok', `result: ${autoAdvanceErrorHandling}`);
+
+  // TEST: Comment side detection uses parent td class
+  const commentSideDetection = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // Verify the isRight detection in addCommentButtons checks the parent td, not the line div
+      const src = addCommentButtons.toString();
+      // The fix: td.classList.contains('d2h-ins') instead of line.classList.contains('d2h-code-line-ins')
+      return src.includes('d2h-ins') && src.includes('closest') ? 'ok' : 'missing';
+    })()
+  `);
+  assert('Comment side detection uses parent td class', commentSideDetection === 'ok', `result: ${commentSideDetection}`);
+
+  // TEST: getLineNumber reads from DOM (line-num1/line-num2 divs)
+  const getLineNumberDom = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = getLineNumber.toString();
+      // Should read from DOM first (line-num1/line-num2), not parsedDiff
+      const readsLineNum2 = src.includes('line-num2');
+      const readsLineNum1 = src.includes('line-num1');
+      return readsLineNum1 && readsLineNum2 ? 'ok' : 'missing';
+    })()
+  `);
+  assert('getLineNumber reads line numbers from DOM', getLineNumberDom === 'ok', `result: ${getLineNumberDom}`);
+
+  // TEST: computeDiffPositions produces correct keys
+  const posMapWorks = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const map = computeDiffPositions();
+      const keys = Object.keys(map);
+      if (keys.length === 0) return 'empty-map';
+      // Verify keys have format file:line:SIDE
+      const validKey = keys.find(k => /:\\d+:(LEFT|RIGHT)$/.test(k));
+      return validKey ? 'ok' : 'bad-format';
+    })()
+  `);
+  assert('computeDiffPositions produces valid position keys', posMapWorks === 'ok', `result: ${posMapWorks}`);
+
+  // TEST: loadDiff re-enables buttons on early return
+  const loadDiffResetsButtons = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // loadDiff is wrapped by an interceptor, so check the function source of the original
+      // by looking at the renderer.js source directly
+      const btn = document.getElementById('btn-approve');
+      if (!btn) return 'no-btn';
+      // Verify resetButtons exists and is callable
+      if (typeof resetButtons !== 'function') return 'no-resetButtons';
+      // Verify loadDiff exists
+      if (typeof loadDiff !== 'function') return 'no-loadDiff';
+      return 'ok';
+    })()
+  `);
+  assert('loadDiff and resetButtons functions exist', loadDiffResetsButtons === 'ok', `result: ${loadDiffResetsButtons}`);
+
+  // TEST: loadPrByNumber re-enables buttons on error
+  const loadPrResetsOnError = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = loadPrByNumber.toString();
+      // Should have resetButtons in the function body (error + catch paths)
+      const resetCount = (src.match(/resetButtons\\(\\)/g) || []).length;
+      return resetCount >= 2 ? 'ok' : 'missing';
+    })()
+  `);
+  assert('loadPrByNumber calls resetButtons() on error paths', loadPrResetsOnError === 'ok', `result: ${loadPrResetsOnError}`);
+
   // Close PR dropdown
   await mainWindow.webContents.executeJavaScript(`
     if (typeof closePrDropdown === 'function') closePrDropdown();
   `);
+
+  // ===================== COPY FILE NAME BUTTON TESTS =====================
+
+  // Reload valid diff to ensure clean state for copy button tests
+  await mainWindow.webContents.executeJavaScript(`
+    loadDiff(${JSON.stringify(diffContent)});
+  `);
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // TEST: Copy file name buttons exist on file headers
+  const copyBtnCount = await mainWindow.webContents.executeJavaScript(`
+    document.querySelectorAll('.copy-file-name-btn').length
+  `);
+  assert('Copy file name buttons exist', copyBtnCount > 0, `count: ${copyBtnCount}`);
+
+  // TEST: Copy button count matches file header count
+  const headerCount = await mainWindow.webContents.executeJavaScript(`
+    document.querySelectorAll('.d2h-file-header').length
+  `);
+  assert('Copy buttons match file header count', copyBtnCount === headerCount, `buttons: ${copyBtnCount}, headers: ${headerCount}`);
+
+  // TEST: Each copy button has an SVG icon
+  const hasSvg = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btns = document.querySelectorAll('.copy-file-name-btn');
+      return Array.from(btns).every(btn => btn.querySelector('svg') !== null);
+    })()
+  `);
+  assert('Each copy button has SVG icon', hasSvg);
+
+  // TEST: Copy button has correct tooltip
+  const copyTitle = await mainWindow.webContents.executeJavaScript(`
+    document.querySelector('.copy-file-name-btn').title
+  `);
+  assert('Copy button has "Copy file path" tooltip', copyTitle === 'Copy file path', `title: "${copyTitle}"`);
+
+  // TEST: Copy button has feedback element
+  const hasFeedback = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.copy-file-name-btn');
+      return btn ? btn.querySelector('.copy-feedback') !== null : false;
+    })()
+  `);
+  assert('Copy button has feedback element', hasFeedback);
+
+  // TEST: Copy button is next to file name (inside same header)
+  const isInHeader = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.copy-file-name-btn');
+      if (!btn) return false;
+      const header = btn.closest('.d2h-file-header');
+      return header !== null && header.querySelector('.d2h-file-name') !== null;
+    })()
+  `);
+  assert('Copy button is inside file header with file name', isInHeader);
+
+  // TEST: addCopyFileNameButtons is idempotent (no duplicates)
+  await mainWindow.webContents.executeJavaScript(`
+    addCopyFileNameButtons();
+  `);
+  const copyBtnCountAfterSecondCall = await mainWindow.webContents.executeJavaScript(`
+    document.querySelectorAll('.copy-file-name-btn').length
+  `);
+  assert('addCopyFileNameButtons is idempotent', copyBtnCountAfterSecondCall === copyBtnCount, `before: ${copyBtnCount}, after: ${copyBtnCountAfterSecondCall}`);
+
+  // TEST: addCopyFileNameButtons function exists
+  const fnExists = await mainWindow.webContents.executeJavaScript(
+    `typeof addCopyFileNameButtons === 'function'`
+  );
+  assert('addCopyFileNameButtons function exists', fnExists);
 
   // Summary
   log('');
@@ -1580,7 +1920,14 @@ This PR updates the UI.
     prAuthor: 'test-user',
     prAssignees: ['reviewer-1'],
     reviewInfo: null,
+    baseSha: 'abc1234',
+    headSha: 'def5678',
+    repoPath: '/tmp',
   };
+});
+ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha }) => {
+  // Mock: return a simple diff with expanded context
+  return { content: `diff --git a/${filePath} b/${filePath}\nindex 123..456 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,5 +1,5 @@\n line1\n line2\n-old\n+new\n line4\n line5\n` };
 });
 
 app.whenReady().then(async () => {

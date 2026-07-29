@@ -78,6 +78,12 @@ function populateFileSidebar() {
     if (!nameEl) return;
     const fileName = nameEl.textContent.trim();
 
+    // Skip files whose extension is filtered out
+    if (activeExtensions !== null && activeExtensions.length > 0) {
+      const fileExt = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
+      if (fileExt && !activeExtensions.includes(fileExt)) return;
+    }
+
     // Extract +/- counts
     const header = wrapper.querySelector('.d2h-file-header');
     let additions = 0, deletions = 0;
@@ -106,23 +112,18 @@ function populateFileSidebar() {
   });
 
   // Build folder tree from flat file list
-  const tree = {}; // { folderName: { files: [], children: {} } }
+  const tree = {}; // { folderName: { _files: [], _children: {} } }
   for (const file of files) {
     const parts = file.name.split('/');
     const fileName = parts.pop();
-    let node = tree;
-
-    // Navigate/create folder hierarchy
-    for (const part of parts) {
-      if (!node[part]) node[part] = { _files: [], _children: {} };
-      node = node[part]._children || {};
-    }
-
-    // Add file to the deepest folder
-    // Re-navigate to find the right node
     let target = tree;
-    for (const part of parts) {
-      target = target[part]._children;
+
+    // Navigate/create folder hierarchy, then add file to the deepest folder node
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!target[part]) target[part] = { _files: [], _children: {} };
+      // Navigate to _children for intermediate folders, stay on folder node for the last
+      target = (i < parts.length - 1) ? target[part]._children : target[part];
     }
     target._files = target._files || [];
     target._files.push({ ...file, displayName: fileName });
@@ -246,10 +247,11 @@ function populateFileSidebar() {
       if (!wrapper) return;
       const hdr = wrapper.querySelector('.d2h-file-header');
       const target = hdr || wrapper;
-      const toolbarHeight = 52;
-      const rect = target.getBoundingClientRect();
-      const scrollTop = window.pageYOffset + rect.top - toolbarHeight - 8;
-      window.scrollTo({ top: scrollTop, behavior: 'smooth' });
+      // Scroll within the diff container (not window — container has overflow-y: auto)
+      const containerRect = diffContainer.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const scrollTop = diffContainer.scrollTop + (targetRect.top - containerRect.top) - 8;
+      diffContainer.scrollTo({ top: scrollTop, behavior: 'smooth' });
       // Highlight active
       fileSidebarList.querySelectorAll('.sidebar-file-row, .sidebar-file-item').forEach(el => el.classList.remove('active'));
       row.classList.add('active');
@@ -358,7 +360,7 @@ function autoSaveDraft() {
       comments: comments,
       timestamp: new Date().toISOString()
     };
-    window.electronAPI.saveDraft({ filePath: currentFilePath, draft }).catch(() => {});
+    window.electronAPI.saveDraft({ filePath: currentFilePath, draft }).catch((err) => { console.warn('[autosave] Failed to save draft:', err.message); });
   }, 500); // Debounce 500ms
 }
 
@@ -368,7 +370,7 @@ async function loadSavedDraft(filePath) {
     if (draft && draft.comments && draft.comments.length > 0) {
       return draft;
     }
-  } catch {}
+  } catch (err) { console.warn('[loadDraft] No saved draft or failed to load:', err.message); }
   return null;
 }
 
@@ -435,23 +437,7 @@ function getFileName(lineElement) {
 }
 
 function getLineNumber(lineElement, isRight) {
-  if (!parsedDiff) return '';
-  const fileName = getFileName(lineElement);
-  const fileData = parsedDiff[fileName];
-  if (!fileData) return '';
-
-  // Side-by-side mode: derive from parsedDiff structure
-  const sideDiff = lineElement.closest('.d2h-file-side-diff');
-  if (sideDiff) {
-    const allLines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
-    const lineIndex = Array.from(allLines).indexOf(lineElement);
-    if (lineIndex < 0) return '';
-    const sideData = isRight ? fileData.right : fileData.left;
-    const entry = sideData[lineIndex];
-    return entry ? String(entry.lineNum) : '';
-  }
-
-  // Unified mode: pick the correct line number from the cell's child divs
+  // Unified mode: try reading directly from DOM first (most reliable)
   const row = lineElement.closest('tr');
   if (row) {
     const linenumEl = row.querySelector('.d2h-code-linenumber');
@@ -466,6 +452,23 @@ function getLineNumber(lineElement, isRight) {
       }
     }
   }
+
+  // Side-by-side mode: derive from parsedDiff structure
+  if (!parsedDiff) return '';
+  const fileName = getFileName(lineElement);
+  const fileData = parsedDiff[fileName];
+  if (!fileData) return '';
+
+  const sideDiff = lineElement.closest('.d2h-file-side-diff');
+  if (sideDiff) {
+    const allLines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
+    const lineIndex = Array.from(allLines).indexOf(lineElement);
+    if (lineIndex < 0) return '';
+    const sideData = isRight ? fileData.right : fileData.left;
+    const entry = sideData[lineIndex];
+    return entry ? String(entry.lineNum) : '';
+  }
+
   return '';
 }
 
@@ -474,10 +477,12 @@ function getLineNumber(lineElement, isRight) {
 function loadDiff(content, filePath) {
   if (!content || !content.trim()) {
     prInfo.textContent = 'Error: Empty diff file';
+    resetButtons();
     return;
   }
   if (!content.includes('diff --git') && !content.includes('@@') && !content.includes('---')) {
     prInfo.textContent = 'Error: File does not appear to be a valid diff';
+    resetButtons();
     return;
   }
 
@@ -509,6 +514,10 @@ function loadDiff(content, filePath) {
 
   diffContainer.innerHTML = html;
 
+  // Apply syntax highlighting to the rendered diff
+  applySyntaxHighlighting();
+  highlightUnrecognizedFiles();
+
   const fileCount = (content.match(/diff --git/g) || []).length;
   prInfo.innerHTML = `<strong>${fileCount} file${fileCount !== 1 ? 's' : ''}</strong> changed`;
   prNumberWrapper.style.display = 'inline-flex';
@@ -522,9 +531,20 @@ function loadDiff(content, filePath) {
 
   addCommentButtons();
   addFileCommentButtons();
+  addCopyFileNameButtons();
   populateFileSidebar();
   addContextButtons();
   showReviewButtons();
+
+  // Apply extension filter to diff view on initial load
+  // Only if user has explicitly unchecked extensions (null = show all, [] = hide all)
+  if (activeExtensions !== null && activeExtensions.length > 0) {
+    const allExts = extractExtensionsFromDiff(currentDiffContent);
+    const excludedExts = allExts.filter(e => !activeExtensions.includes(e));
+    if (excludedExts.length > 0) {
+      collapseFilteredFiles(excludedExts);
+    }
+  }
 
   // Try to load saved draft
   if (currentFilePath) {
@@ -768,11 +788,17 @@ function addCommentButtons() {
         const isRight = index % 2 === 1;
         const lines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
         lines.forEach(line => {
-          // Only add comment button if line has a valid line number
-          const lineNumEl = line.querySelector('.d2h-code-side-linenumber');
+          // Navigate up to the <tr> to find the sibling line number cell
+          // (diff2html puts .d2h-code-side-linenumber in a <td> sibling, not inside the <div class="d2h-code-side-line">)
+          const row = line.closest('tr');
+          if (!row) return;
+          const lineNumEl = row.querySelector('.d2h-code-side-linenumber');
           if (!lineNumEl) return;
           const numText = lineNumEl.textContent.trim();
           if (!numText || !/^\d+$/.test(numText)) return;
+
+          // Skip if this line already has a comment button
+          if (lineNumEl.querySelector('.line-comment-btn')) return;
 
           const btn = document.createElement('button');
           btn.className = 'line-comment-btn';
@@ -783,8 +809,7 @@ function addCommentButtons() {
             e.preventDefault();
             openCommentDialog(line, btn, isRight, e);
           });
-          line.style.position = 'relative';
-          line.appendChild(btn);
+          lineNumEl.appendChild(btn);
         });
       });
     } else {
@@ -799,6 +824,9 @@ function addCommentButtons() {
         const numText = linenumEl.textContent.trim();
         if (!numText || !/^\d+$/.test(numText)) return;
 
+        // Skip if this line already has a comment button
+        if (linenumEl.querySelector('.line-comment-btn')) return;
+
         const btn = document.createElement('button');
         btn.className = 'line-comment-btn';
         btn.textContent = '+';
@@ -806,12 +834,12 @@ function addCommentButtons() {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           e.preventDefault();
-          // Determine side from line class: deletion=LEFT, insertion=RIGHT
-          const isRight = line.classList.contains('d2h-code-line-ins');
+          // Determine side from parent td class: d2h-del=LEFT, d2h-ins=RIGHT
+          const td = line.closest('td');
+          const isRight = td ? td.classList.contains('d2h-ins') : (row ? row.querySelector('.d2h-code-linenumber.d2h-ins') !== null : false);
           openCommentDialog(line, btn, isRight, e);
         });
-        line.style.position = 'relative';
-        line.appendChild(btn);
+        linenumEl.appendChild(btn);
       });
     }
   });
@@ -860,6 +888,40 @@ function addFileCommentButtons() {
   });
 }
 
+// ===================== COPY FILE NAME BUTTONS =====================
+
+function addCopyFileNameButtons() {
+  const fileHeaders = document.querySelectorAll('.d2h-file-header');
+  fileHeaders.forEach(header => {
+    // Skip if already has a copy button
+    if (header.querySelector('.copy-file-name-btn')) return;
+
+    const fileNameEl = header.querySelector('.d2h-file-name');
+    if (!fileNameEl) return;
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-file-name-btn';
+    copyBtn.title = 'Copy file path';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg><span class="copy-feedback">Copied!</span>';
+
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const filePath = fileNameEl.textContent.trim();
+      navigator.clipboard.writeText(filePath).then(() => {
+        const feedback = copyBtn.querySelector('.copy-feedback');
+        feedback.classList.add('show');
+        setTimeout(() => feedback.classList.remove('show'), 1500);
+      }).catch(err => {
+        console.error('Failed to copy file path:', err);
+      });
+    });
+
+    // Insert right after the file name (before stats)
+    fileNameEl.after(copyBtn);
+  });
+}
+
 // ===================== CONTEXT EXPAND BUTTONS =====================
 
 const CONTEXT_INCREMENT = 3;
@@ -898,8 +960,14 @@ function addContextButtons() {
     btnDown.innerHTML = `Show more lines below <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
     btnDown.addEventListener('click', () => handleContextExpand(fileName, wrapper));
 
-    // Insert "Expand up" as the first child of the wrapper
-    wrapper.insertBefore(btnUp, wrapper.firstChild);
+    // Insert "Expand up" after the file header (not above it)
+    if (header && header.nextSibling) {
+      wrapper.insertBefore(btnUp, header.nextSibling);
+    } else if (header) {
+      header.after(btnUp);
+    } else {
+      wrapper.insertBefore(btnUp, wrapper.firstChild);
+    }
 
     // Insert "Expand down" as the last child of the wrapper
     wrapper.appendChild(btnDown);
@@ -956,7 +1024,9 @@ async function handleContextExpand(fileName) {
     const result = await window.electronAPI.expandDiffContext({
       repoPath: currentRepoPath,
       filePath: fileName,
-      contextLines: newContext
+      contextLines: newContext,
+      baseSha: currentBaseSha,
+      headSha: currentHeadSha
     });
 
     if (result.error) {
@@ -968,8 +1038,33 @@ async function handleContextExpand(fileName) {
     if (result.content && currentDiffContent) {
       currentDiffContent = replaceFileInDiff(currentDiffContent, fileName, result.content);
 
+      // Save scroll position and target file position before re-render
+      const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+      const targetWrapper = Array.from(diffContainer.querySelectorAll('.d2h-file-name'))
+        .find(el => el.textContent.trim() === fileName);
+      let targetOffset = null;
+      if (targetWrapper) {
+        const rect = targetWrapper.getBoundingClientRect();
+        targetOffset = rect.top;
+      }
+
       // Re-render the entire diff
       renderFilteredDiff();
+
+      // Restore scroll position — adjust if the target file moved
+      if (targetOffset !== null) {
+        const newTarget = Array.from(diffContainer.querySelectorAll('.d2h-file-name'))
+          .find(el => el.textContent.trim() === fileName);
+        if (newTarget) {
+          const newRect = newTarget.getBoundingClientRect();
+          const delta = newRect.top - targetOffset;
+          window.scrollTo(0, scrollTop + delta);
+        } else {
+          window.scrollTo(0, scrollTop);
+        }
+      } else {
+        window.scrollTo(0, scrollTop);
+      }
 
       // Re-apply comments
       for (const c of comments) {
@@ -998,10 +1093,9 @@ function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
     if (match) {
       const bPath = match[2];
       if (bPath === targetFile) {
-        // Replace with the new expanded diff, but preserve the original diff --git header
-        // The new diff from git diff starts with diff --git too, so use it directly
+        // Replace with the new expanded diff
         if (newFileDiff.trim()) {
-          result.push(newFileDiff.trim());
+          result.push(newFileDiff);
         }
         continue;
       }
@@ -1230,18 +1324,25 @@ function findDiffLineRow(fileName, lineNum, side) {
     if (!nameEl || nameEl.textContent.trim() !== fileName) continue;
     const rows = wrapper.querySelectorAll('tr');
     for (const row of rows) {
-      const leftLine = row.querySelector('.d2h-code-linenumber.d2h-del');
-      const rightLine = row.querySelector('.d2h-code-linenumber.d2h-ins');
+      // In unified mode, each row has a single line number cell with
+      // .line-num1 (left/old) and .line-num2 (right/new) divs inside
       const lineCell = row.querySelector('.d2h-code-linenumber');
-      if (side === 'RIGHT' && rightLine) {
-        const num = parseInt(rightLine.textContent.trim(), 10);
+      if (!lineCell) continue;
+
+      const num1El = lineCell.querySelector('.line-num1');
+      const num2El = lineCell.querySelector('.line-num2');
+
+      if (side === 'RIGHT' && num2El) {
+        const num = parseInt(num2El.textContent.trim(), 10);
         if (num === lineNum) return row;
-      } else if (side === 'LEFT' && leftLine) {
-        const num = parseInt(leftLine.textContent.trim(), 10);
+      } else if (side === 'LEFT' && num1El) {
+        const num = parseInt(num1El.textContent.trim(), 10);
         if (num === lineNum) return row;
-      } else if (lineCell) {
-        const num = parseInt(lineCell.textContent.trim(), 10);
-        if (num === lineNum) return row;
+      } else {
+        // Fallback: check both line numbers
+        const num1 = num1El ? parseInt(num1El.textContent.trim(), 10) : NaN;
+        const num2 = num2El ? parseInt(num2El.textContent.trim(), 10) : NaN;
+        if (num1 === lineNum || num2 === lineNum) return row;
       }
     }
   }
@@ -1485,7 +1586,10 @@ function computeDiffPositions() {
         position++;
         map[`${currentFile}:${rightLine}:RIGHT`] = position;
         rightLine++;
-      } else if (line.startsWith(' ') || line === '' || line.startsWith('\\')) {
+      } else if (line.startsWith('\\')) {
+        // \ No newline at end of file — counts for position but not line numbers
+        position++;
+      } else if (line.startsWith(' ')) {
         position++;
         map[`${currentFile}:${leftLine}:LEFT`] = position;
         map[`${currentFile}:${rightLine}:RIGHT`] = position;
@@ -1515,10 +1619,10 @@ async function submitReview(eventType) {
     const prCount = comments.filter(c => { const t = c.text.toLowerCase(); return !t.startsWith('@hermes') && !t.startsWith('@ask'); }).length;
     const aiCount = comments.filter(c => c.text.toLowerCase().startsWith('@hermes')).length;
     const askCount = comments.filter(c => c.text.toLowerCase().startsWith('@ask')).length;
-    let msg = '<strong style="color:#3fb950">✓ Review saved</strong>';
-    if (aiCount > 0) msg += ` <span style="color:#58a6ff">(${aiCount} sent to AI)</span>`;
-    if (askCount > 0) msg += ` <span style="color:#3fb950">(${askCount} AI responses received)</span>`;
-    prInfo.innerHTML = msg;
+    let msg = '✓ Review saved';
+    if (aiCount > 0) msg += ` (${aiCount} sent to AI)`;
+    if (askCount > 0) msg += ` (${askCount} AI responses received)`;
+    showToast(msg, 'success', 6000);
 
     // Toast for AI messages sent
     if (aiCount > 0) {
@@ -1550,10 +1654,12 @@ async function submitReview(eventType) {
 
     // Submit directly to GitHub if PR number is available
     if (review.prNumber && window.electronAPI.submitGitHubReview) {
-      prInfo.innerHTML = '<strong style="color:#58a6ff">⏳ Submitting to GitHub...</strong>';
+      showToast('Submitting to GitHub…', 'progress', 30000);
 
       // Compute diff positions for inline comments
       const positionMap = computeDiffPositions();
+      console.log('[submit] comments array:', comments.length, 'positionMap keys:', Object.keys(positionMap).length);
+      comments.forEach((c, i) => console.log(`[submit] comment ${i}:`, JSON.stringify({ file: c.file, line: c.line, side: c.side, isAiTagged: c.isAiTagged, level: c.level, text: c.text?.substring(0, 50) })));
       const githubComments = comments
         .filter(c => !c.isAiTagged && c.level !== 'file' && c.line && c.side)
         .map(c => {
@@ -1573,17 +1679,12 @@ async function submitReview(eventType) {
 
       if (result.error) {
         showToast(`⚠ GitHub submission failed: ${escapeHtml(result.error)}`, 'error', 10000);
-        prInfo.innerHTML = `<strong style="color:#f85149">GitHub submission failed:</strong> ${escapeHtml(result.error)}`;
         resetButtons();
       } else {
         const ghMsg = eventType === 'approve' ? '✓ Review approved on GitHub' :
                       eventType === 'request_changes' ? '✓ Changes requested on GitHub' :
                       '✓ Comment submitted to GitHub';
         showToast(ghMsg, 'success', 8000);
-        prInfo.innerHTML = '<strong style="color:#3fb950">✓ Review submitted to GitHub</strong>';
-        if (aiCount > 0) {
-          prInfo.innerHTML += ` <span style="color:#58a6ff">(${aiCount} sent to AI)</span>`;
-        }
 
         // Auto-remove this PR from the cached list
         if (review.prNumber && cachedPrList) {
@@ -1604,8 +1705,9 @@ async function submitReview(eventType) {
             feedback.push({ file: c.file, line: c.line, text: c.text });
           }
         }
+        let rulesDialogShown = false;
         if (feedback.length > 0) {
-          await showRulesDialog(feedback);
+          rulesDialogShown = await showRulesDialog(feedback);
         }
 
         // Auto-fix with AI: trigger Hermes agent to create a fix PR (only for request_changes)
@@ -1634,6 +1736,28 @@ async function submitReview(eventType) {
             }
           } catch (autoFixErr) {
             showSafeToast(`⚠ Auto-fix error: ${autoFixErr.message}`, 'error', 10000);
+          }
+        }
+
+        // Auto-advance to next PR after successful review.
+        // Skip if the rules dialog was shown — its Save/Cancel handlers
+        // call cleanupAndLoadNext() which handles the transition.
+        if (!rulesDialogShown) {
+          if (cachedPrList && cachedPrList.length > 0) {
+            const nextPr = cachedPrList[0];
+            // Clear previous review state before loading next PR
+            reviewBody.value = '';
+            try {
+              await loadPrByNumber(nextPr.number, nextPr.repo);
+            } catch (advanceErr) {
+              console.error('[auto-advance] Failed to load next PR:', advanceErr);
+              prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
+              resetButtons();
+            }
+          } else {
+            currentPrNumber = null;
+            prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
+            resetButtons();
           }
         }
       }
@@ -1668,6 +1792,10 @@ reviewBody.addEventListener('input', () => autoSaveDraft());
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
   const isMeta = e.metaKey || e.ctrlKey;
+  // Normalize single-char keys to uppercase for comparison.
+  // On macOS, Cmd+letter reports e.key as lowercase even with Shift held,
+  // so we must normalize to avoid case-sensitive mismatches.
+  const key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
 
   // Escape — close comment form
   if (e.key === 'Escape') {
@@ -1686,21 +1814,21 @@ document.addEventListener('keydown', (e) => {
   }
 
   // Cmd+Shift+A — Approve
-  if (e.key === 'A' && isMeta && e.shiftKey) {
+  if (key === 'A' && isMeta && e.shiftKey) {
     e.preventDefault();
     if (!btnApprove.disabled) btnApprove.click();
     return;
   }
 
   // Cmd+Shift+R — Request Changes
-  if (e.key === 'R' && isMeta && e.shiftKey) {
+  if (key === 'R' && isMeta && e.shiftKey) {
     e.preventDefault();
     if (!btnRequestChanges.disabled) btnRequestChanges.click();
     return;
   }
 
   // Cmd+Shift+C — Comment (submit review as comment, not line comment)
-  if (e.key === 'C' && isMeta && e.shiftKey) {
+  if (key === 'C' && isMeta && e.shiftKey) {
     e.preventDefault();
     if (!btnComment.disabled) btnComment.click();
     return;
@@ -1718,14 +1846,14 @@ document.addEventListener('keydown', (e) => {
   }
 
   // Cmd+] — Next comment
-  if (e.key === ']' && isMeta && !e.shiftKey) {
+  if (key === ']' && isMeta && !e.shiftKey) {
     e.preventDefault();
     navigateToComment('next');
     return;
   }
 
   // Cmd+[ — Previous comment
-  if (e.key === '[' && isMeta && !e.shiftKey) {
+  if (key === '[' && isMeta && !e.shiftKey) {
     e.preventDefault();
     navigateToComment('prev');
     return;
@@ -1860,7 +1988,7 @@ async function checkBinariesAndMaybeShowError() {
     } else {
       hideErrorScreen();
     }
-  } catch {}
+  } catch (err) { console.error('[checkBinaries] Error checking binaries:', err.message); }
 }
 
 async function autoDetectAgent() {
@@ -1871,7 +1999,7 @@ async function autoDetectAgent() {
       const select = document.getElementById('pref-ai-command');
       if (select) select.value = result.agent;
     }
-  } catch {}
+  } catch (err) { console.warn('[autoDetectAgent] Agent auto-detection failed:', err.message); }
 }
 
 // Re-check on focus if previously missing
@@ -1897,14 +2025,18 @@ window.electronAPI.getConfig().then(async (config) => {
 
   // Load repos and pre-fetch PRs on startup
   try {
+    const loadingToast = showToast('Loading pull requests…', 'progress', 30000);
     const { repos } = await window.electronAPI.listRepos();
     checkedRepos = (repos || []).filter(r => r.checked);
     console.log('[Startup] Checked repos:', checkedRepos.map(r => r.name).join(', ') || '(none)');
-    if (checkedRepos.length > 0) {
-      const reposToFetch = checkedRepos.map(r => ({ owner: r.owner, name: r.name }));
+    {
+      const reposToFetch = checkedRepos.length > 0
+        ? checkedRepos.map(r => ({ owner: r.owner, name: r.name }))
+        : [{ owner: appConfig.repoOwner || '', name: appConfig.repoName || '' }];
       const { prs, errors } = await window.electronAPI.listAllPrs({ repos: reposToFetch });
       if (errors && errors.length > 0) console.warn('[Startup] Repo errors:', errors.map(e => `${e.repo}: ${e.error}`).join('; '));
       console.log('[Startup] Fetched', prs ? prs.length : 0, 'PRs on startup');
+      if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
       if (prs && prs.length > 0) {
         cachedPrList = prs;
         cachedPrListTime = Date.now();
@@ -1912,10 +2044,17 @@ window.electronAPI.getConfig().then(async (config) => {
         if (!currentPrNumber && prs.length > 0) {
           await loadPrByNumber(prs[0].number, prs[0].repo);
         }
+      } else {
+        showToast('No pull requests found', 'info', 5000);
       }
     }
-  } catch {}
-}).catch(() => {});
+  } catch (startupErr) {
+    console.error('[Startup] Error:', startupErr);
+    showToast(`Startup error: ${startupErr.message}`, 'error', 10000);
+  }
+}).catch((configErr) => {
+  console.error('[Config] Error:', configErr);
+});
 
 // ===================== IMAGE PASTE =====================
 
@@ -2289,18 +2428,21 @@ async function loadPrByNumber(prNumber, repoKey) {
     if (result.error) {
       prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
       if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
+      resetButtons();
       return;
     }
     currentFileName = result.fileName || `pr-${prNumber}.diff`;
     currentDiffContent = result.content;
     currentDiffFilePath = result.filePath;
     currentRepoPath = result.repoPath || null;
+    currentBaseSha = result.baseSha || null;
+    currentHeadSha = result.headSha || null;
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
     // Fetch and display inline review comments (guard against race if user loads another PR)
     const prForComments = prNumber;
-    fetchAndDisplayReviewComments(prNumber, repoKey).catch(() => {});
+    fetchAndDisplayReviewComments(prNumber, repoKey).catch((err) => { console.warn('[loadPr] Failed to fetch review comments:', err.message); });
     // Store PR title for later use
     currentPrTitle = result.prTitle || '';
     currentPrNumber = prNumber;
@@ -2337,6 +2479,7 @@ async function loadPrByNumber(prNumber, repoKey) {
   } catch (err) {
     prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(err.message)}`;
     if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
+    resetButtons();
   }
 }
 
@@ -2555,29 +2698,24 @@ const filterSelectAll = document.getElementById('filter-select-all');
 const filterSelectNone = document.getElementById('filter-select-none');
 
 let fileFilterOpen = false;
-let activeExtensions = null;
+// Persist active extensions across PR loads via localStorage
+// null = show all, [...] = show only these extensions, [] = stale/broken → treat as null
+let activeExtensions = (() => {
+  try {
+    const stored = localStorage.getItem('pr-reviewer-active-extensions');
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    // Empty array is a stale state — treat as "show all"
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+  } catch { return null; }
+})();
 let allExtensionsInDiff = [];
 
-// All possible file extensions (comprehensive list)
-const ALL_EXTENSIONS = [
-  '.pm', '.cgi', '.js', '.jsx', '.ts', '.tsx', '.tpl', '.css', '.scss', '.less',
-  '.json', '.html', '.py', '.rb', '.go', '.java', '.c', '.cpp', '.h', '.hpp',
-  '.sh', '.bash', '.sql', '.yaml', '.yml', '.toml', '.xml', '.md', '.txt',
-  '.php', '.pl', '.rs', '.swift', '.kt', '.scala', '.r', '.m', '.mm',
-  '.vue', '.svelte', '.astro', '.elm', '.ex', '.exs', '.erl', '.hs'
-];
-
-// Initialize filter from config
-async function initFileFilter() {
-  const config = await window.electronAPI.getConfig();
-  const diffConfig = config.diff || {};
-  const configExtensions = diffConfig.codeFileExtensions;
-  // If config is blank/empty array, all extensions are active (show all)
-  // If config has specific extensions, only those are active
-  activeExtensions = (configExtensions && configExtensions.length > 0) ? configExtensions : null;
+function saveActiveExtensions() {
+  try {
+    localStorage.setItem('pr-reviewer-active-extensions', JSON.stringify(activeExtensions));
+  } catch { /* ignore quota errors */ }
 }
-
-initFileFilter();
 
 // Extract extensions from diff content
 function extractExtensionsFromDiff(diffContent) {
@@ -2587,9 +2725,7 @@ function extractExtensionsFromDiff(diffContent) {
     if (line.startsWith('+++ b/') || line.startsWith('--- a/')) {
       const filePath = line.substring(6);
       const ext = filePath.includes('.') ? '.' + filePath.split('.').pop() : '';
-      if (ext && ALL_EXTENSIONS.includes(ext)) {
-        extensions.add(ext);
-      }
+      if (ext) extensions.add(ext);
     }
   }
   return Array.from(extensions).sort();
@@ -2649,6 +2785,7 @@ function openFileFilterDropdown() {
     });
   if (allCheckedNow || extensionsToShow.length === 0) {
     activeExtensions = null;
+    saveActiveExtensions();
   }
 
   // Update button state
@@ -2687,7 +2824,8 @@ function applyExtensionFilter() {
   // If all or none selected, set to null (show all)
   const allChecked = selected.length === allExtensionsInDiff.length;
   const noneChecked = selected.length === 0;
-  activeExtensions = (allChecked || noneChecked) ? null : selected;
+  activeExtensions = allChecked ? null : (noneChecked ? [] : selected);
+  saveActiveExtensions();
   updateFilterButtonState();
 
   // Re-render the diff with filtered extensions
@@ -2728,12 +2866,24 @@ function applyFileNameFilter() {
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
   const fileListLinks = document.querySelectorAll('.d2h-file-list .d2h-file-link');
 
+  // Compute excluded extensions for combined filtering
+  const excludedExts = activeExtensions
+    ? (allExtensionsInDiff || []).filter(e => !activeExtensions.includes(e))
+    : [];
+
   fileWrappers.forEach(wrapper => {
     const fileNameEl = wrapper.querySelector('.d2h-file-name');
     if (!fileNameEl) return;
-    const fileName = fileNameEl.textContent.trim().toLowerCase();
-    const matchesName = !currentNameFilter || fileName.includes(currentNameFilter);
-    wrapper.style.display = matchesName ? '' : 'none';
+    const fileName = fileNameEl.textContent.trim();
+    const fileNameLower = fileName.toLowerCase();
+    const matchesName = !currentNameFilter || fileNameLower.includes(currentNameFilter);
+    // Also check extension filter
+    let matchesExt = true;
+    if (excludedExts.length > 0) {
+      const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
+      if (ext && excludedExts.includes(ext)) matchesExt = false;
+    }
+    wrapper.style.display = (matchesName && matchesExt) ? '' : 'none';
   });
 
   // Also hide/show corresponding file list entries
@@ -2759,6 +2909,8 @@ let currentPrNumber = null;
 let currentRepoKey = null;
 let currentPrBody = '';
 let currentRepoPath = null;
+let currentBaseSha = null;
+let currentHeadSha = null;
 const fileContextLevels = new Map(); // filename -> current context lines count
 
 // ===================== MULTI-REPO STATE =====================
@@ -2909,19 +3061,24 @@ function renderFilteredDiff() {
   // Always render ALL files — sorted by extension
   const sortedDiff = sortDiffByExtension(currentDiffContent);
 
-  // Use diff2html to render everything
+  // Use diff2html to render everything — pass window.hljs for syntax highlighting
   const diff2htmlUi = new Diff2HtmlUI(document.getElementById('diff-container'), sortedDiff, {
     drawFileList: true,
     matching: 'lines',
     outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
-    colorScheme: 'auto'
-  });
+    colorScheme: 'dark'
+  }, typeof window.hljs !== 'undefined' ? window.hljs : undefined);
   diff2htmlUi.draw();
   diff2htmlUi.fileListToggle(false);
+
+  // Post-process: highlight Perl files that diff2html didn't recognize
+  // (.cgi is mapped already, but extensionless Perl scripts need detection)
+  highlightUnrecognizedFiles();
 
   // Re-add comment buttons
   addCommentButtons();
   addFileCommentButtons();
+  addCopyFileNameButtons();
   populateFileSidebar();
   addContextButtons();
 
@@ -2933,6 +3090,99 @@ function renderFilteredDiff() {
   if (excludedExts.length > 0) {
     collapseFilteredFiles(excludedExts);
   }
+}
+
+/**
+ * Apply syntax highlighting to all code blocks in the diff container.
+ * Used by loadDiff() which renders via Diff2Html.html() (raw HTML, no highlighting).
+ */
+function applySyntaxHighlighting() {
+  if (typeof window.hljs === 'undefined') return;
+
+  const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+  wrappers.forEach(wrapper => {
+    const lang = wrapper.getAttribute('data-lang') || '';
+    const hljsLanguage = lang && lang !== 'plaintext' && window.hljs.getLanguage(lang) ? lang : 'plaintext';
+    const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
+    codeLines.forEach(line => {
+      try {
+        const text = line.textContent;
+        if (text === null) return;
+        const result = window.hljs.highlight(text, {
+          language: hljsLanguage,
+          ignoreIllegals: true,
+        });
+        line.classList.add('hljs');
+        if (result.language) {
+          line.classList.add(result.language);
+        }
+        line.innerHTML = result.value;
+      } catch (e) {
+        // Ignore highlight errors for individual lines
+      }
+    });
+  });
+}
+
+/**
+ * Post-process diff to highlight files that diff2html didn't recognize.
+ * diff2html maps extensions → languages, but files with no extension
+ * get data-lang="" and fall to plaintext.
+ * This function uses hljs.highlightAuto() to detect the language from code content.
+ */
+function highlightUnrecognizedFiles() {
+  if (typeof window.hljs === 'undefined' || !window.hljs.highlightAuto) return;
+
+  const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+  wrappers.forEach(wrapper => {
+    const lang = wrapper.getAttribute('data-lang');
+    // Only process files with no recognized extension
+    if (lang && lang !== '' && lang !== 'plaintext') return;
+
+    // Gather all code content for auto-detection
+    const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
+    if (codeLines.length === 0) return;
+
+    // Sample up to 20 lines for language detection (enough for reliable detection)
+    const sampleLines = Array.from(codeLines).slice(0, 20).map(l => l.textContent).join('\n');
+    if (!sampleLines.trim()) return;
+
+    // Use highlightAuto to detect language from code content
+    let detectedLang = null;
+    try {
+      const autoResult = window.hljs.highlightAuto(sampleLines);
+      if (autoResult.language && autoResult.relevance > 5) {
+        detectedLang = autoResult.language;
+      }
+    } catch (e) {
+      // Auto-detection failed, fall through to Perl-specific check
+    }
+
+    // Fallback: check filename for Perl extensions
+    if (!detectedLang) {
+      const fileName = wrapper.querySelector('.d2h-file-name');
+      const name = fileName ? fileName.textContent.trim() : '';
+      if (/\.(cgi|pl|pm|t|psgi|plx|fcgi)$/i.test(name)) {
+        detectedLang = 'perl';
+      }
+    }
+
+    if (!detectedLang) return;
+
+    // Re-highlight all code lines in this file with the detected language
+    codeLines.forEach(line => {
+      const text = line.textContent;
+      if (!text) return;
+
+      try {
+        const result = window.hljs.highlight(text, { language: detectedLang, ignoreIllegals: true });
+        line.classList.add('hljs', detectedLang);
+        line.innerHTML = result.value;
+      } catch (e) {
+        // Ignore highlight errors for individual lines
+      }
+    });
+  });
 }
 
 // Apply name filter after extension filter renders
@@ -2959,35 +3209,8 @@ function collapseFilteredFiles(excludedExts) {
     const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
     if (!excludedExts.includes(ext)) continue;
 
-    // Collapse: hide the diff content area, add toggle icon to header
-    const header = wrapper.querySelector('.d2h-file-header');
-    const diffContent = wrapper.querySelector('.d2h-files-diff');
-    if (!header || !diffContent) continue;
-
-    diffContent.style.display = 'none';
-
-    // Add toggle icon (same SVG chevron as PR description toggle)
-    const icon = document.createElement('span');
-    icon.className = 'filtered-toggle-icon';
-    icon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
-    icon.style.cssText = 'cursor:pointer;margin-right:6px;display:inline-flex;align-items:center;transition:transform 0.2s;transform:rotate(-90deg);vertical-align:middle;';
-    header.style.cursor = 'pointer';
-    fileNameEl.insertBefore(icon, fileNameEl.firstChild);
-
-    // Add "filtered" indicator
-    const badge = document.createElement('span');
-    badge.className = 'filtered-badge';
-    badge.textContent = 'filtered';
-    badge.style.cssText = 'font-size:10px;color:#484f58;margin-left:8px;padding:1px 6px;background:#21262d;border-radius:10px;vertical-align:middle;';
-    fileNameEl.appendChild(badge);
-
-    // Click handler on header to toggle
-    header.addEventListener('click', () => {
-      const isHidden = diffContent.style.display === 'none';
-      diffContent.style.display = isHidden ? '' : 'none';
-      icon.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-      if (badge) badge.style.display = isHidden ? 'none' : '';
-    });
+    // Hide the entire file wrapper
+    wrapper.style.display = 'none';
   }
 }
 
@@ -3018,7 +3241,11 @@ function sortDiffByExtension(diffContent) {
     return getName(a).localeCompare(getName(b));
   });
 
-  return validFiles.map(f => 'diff --git ' + f).join('');
+  // Ensure each section ends with a newline before joining
+  return validFiles.map(f => {
+    const trimmed = f.trimEnd();
+    return 'diff --git ' + trimmed + '\n';
+  }).join('');
 }
 
 // Update the loadDiff function to store content
@@ -3247,8 +3474,26 @@ function togglePrDescDropdown() {
     try {
       // Configure marked to strip dangerous HTML
       const cleanRenderer = new marked.Renderer();
-      // Override HTML rendering to escape it entirely
-      cleanRenderer.html = (token) => escapeHtml(typeof token === 'string' ? token : (token.text || token.raw || ''));
+      // Override HTML rendering: sanitize dangerous elements/attributes, allow safe HTML through
+      cleanRenderer.html = (token) => {
+        const raw = typeof token === 'string' ? token : (token.text || token.raw || '');
+        try {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = raw;
+          // Remove dangerous elements
+          tmp.querySelectorAll('script, iframe, object, embed, form, input, textarea, button, select, style, link, meta, base').forEach(el => el.remove());
+          // Remove dangerous attributes (on* events, javascript: URLs)
+          tmp.querySelectorAll('*').forEach(el => {
+            [...el.attributes].forEach(attr => {
+              if (/^on/i.test(attr.name)) el.removeAttribute(attr.name);
+              if (/^(href|src|action)$/i.test(attr.name) && /^javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+            });
+          });
+          return tmp.innerHTML;
+        } catch {
+          return escapeHtml(raw);
+        }
+      };
       // Disable image URLs that aren't http/https/file
       const origImage = cleanRenderer.image;
       cleanRenderer.image = (token) => {
@@ -3327,7 +3572,7 @@ function detectBeforeAfterPairs(prBody) {
     // Check if current line has a "before" indicator
     const beforeMatch = line.match(/^#{1,6}\s+.*before/i) ||
                         line.match(/^\*{1,2}\s*before\s*:?\s*\*{0,2}/i) ||
-                        line.match(/^before\s*:/i);
+                        line.match(/^before(?:\s+\d+)?\s*:/i);
 
     if (beforeMatch) {
       // Look for an image URL on this line or the next few lines (up to 3 lines ahead)
@@ -3346,7 +3591,7 @@ function detectBeforeAfterPairs(prBody) {
           const afterLine = lines[k].trim();
           const afterMatch = afterLine.match(/^#{1,6}\s+.*after/i) ||
                              afterLine.match(/^\*{1,2}\s*after\s*:?\s*\*{0,2}/i) ||
-                             afterLine.match(/^after\s*:/i);
+                             afterLine.match(/^after(?:\s+\d+)?\s*:/i);
 
           if (afterMatch) {
             // Look for image URL on this line or next few lines
@@ -3673,64 +3918,61 @@ let rulesAvailableFiles = [];
 
 async function showRulesDialog(reviewFeedback) {
   const config = await window.electronAPI.getConfig();
-  if (!config.rules || !config.rules.enabled) return;
+  if (!config.rules || !config.rules.enabled) return false;
   
-  rulesOverlay.style.display = 'flex';
-  rulesBody.innerHTML = '<div class="rules-loading">Analyzing feedback against existing rules...</div>';
-  btnRulesSave.disabled = true;
+  showToast('Analyzing feedback against existing rules...', 'progress');
   
-  // Fetch AGENTS.md
-  const rulesData = await window.electronAPI.getAgentRules();
-  if (rulesData.error) {
-    rulesBody.innerHTML = `<div class="rules-empty">Error: ${escapeHtml(rulesData.error)}</div>`;
-    return;
+  // Run analysis in background — don't show overlay until we have proposals
+  try {
+    const rulesData = await window.electronAPI.getAgentRules();
+    if (rulesData.error) {
+      console.error('[rules] Failed to load agent rules:', rulesData.error);
+      showToast('Rules analysis failed', 'error');
+      return false;
+    }
+    
+    const result = await window.electronAPI.proposeRules({
+      feedback: reviewFeedback,
+      agentsMd: rulesData.agentsMd || ''
+    });
+    
+    if (result.error) {
+      console.error('[rules] Propose rules failed:', result.error);
+      showToast('Rules analysis failed', 'error');
+      return false;
+    }
+    
+    if (result.disabled || !result.proposals || result.proposals.length === 0) {
+      showToast('No new rules needed', 'info', 4000);
+      return false;
+    }
+    
+    // We have proposals — now show the overlay
+    currentRuleProposals = result.proposals || [];
+    rulesAvailableFiles = result.availableFiles || ['AGENTS.md'];
+    
+    rulesOverlay.style.display = 'flex';
+    btnRulesSave.disabled = false;
+    let html = '';
+    currentRuleProposals.forEach((proposal, i) => {
+      html += `<div class="rule-item" data-index="${i}">
+        <div class="rule-item-header">
+          <input type="checkbox" id="rule-check-${i}" checked>
+          <span class="rule-reason">${escapeHtml(proposal.reason || '')}</span>
+          <select id="rule-file-${i}">
+            ${rulesAvailableFiles.map(f => `<option value="${f}" ${f === proposal.file ? 'selected' : ''}>${f}</option>`).join('')}
+          </select>
+        </div>
+        <textarea id="rule-text-${i}">${escapeHtml(proposal.rule)}</textarea>
+      </div>`;
+    });
+    rulesBody.innerHTML = html;
+    return true;
+  } catch (err) {
+    console.error('[rules] Analysis failed:', err);
+    showToast('Rules analysis failed', 'error');
+    return false;
   }
-  
-  // Get proposals from AI (AI reads referenced files and returns availableFiles)
-  const result = await window.electronAPI.proposeRules({
-    feedback: reviewFeedback,
-    agentsMd: rulesData.agentsMd || ''
-  });
-  
-  if (result.disabled) {
-    rulesOverlay.style.display = 'none';
-    return;
-  }
-  
-  if (result.error) {
-    rulesBody.innerHTML = `<div class="rules-empty">Error: ${escapeHtml(result.error)}</div>`;
-    return;
-  }
-  
-  currentRuleProposals = result.proposals || [];
-  rulesAvailableFiles = result.availableFiles || ['AGENTS.md'];
-  
-  if (currentRuleProposals.length === 0) {
-    rulesBody.innerHTML = '<div class="rules-empty">All feedback is already covered by existing rules. No new rules needed.</div>';
-    // Auto-close after 2 seconds and proceed to cleanup
-    setTimeout(async () => {
-      rulesOverlay.style.display = 'none';
-      await cleanupAndLoadNext();
-    }, 2000);
-    return;
-  }
-  
-  // Render proposals
-  btnRulesSave.disabled = false;
-  let html = '';
-  currentRuleProposals.forEach((proposal, i) => {
-    html += `<div class="rule-item" data-index="${i}">
-      <div class="rule-item-header">
-        <input type="checkbox" id="rule-check-${i}" checked>
-        <span class="rule-reason">${escapeHtml(proposal.reason || '')}</span>
-        <select id="rule-file-${i}">
-          ${rulesAvailableFiles.map(f => `<option value="${f}" ${f === proposal.file ? 'selected' : ''}>${f}</option>`).join('')}
-        </select>
-      </div>
-      <textarea id="rule-text-${i}">${escapeHtml(proposal.rule)}</textarea>
-    </div>`;
-  });
-  rulesBody.innerHTML = html;
 }
 
 btnRulesSave.addEventListener('click', async () => {
@@ -3770,9 +4012,20 @@ async function cleanupAndLoadNext() {
   await window.electronAPI.deletePrFiles(prNum);
   
   // Load next PR
-  const nextResult = await window.electronAPI.getNextPr(prNum);
+  const nextResult = await window.electronAPI.getNextPr({ prNumber: prNum, repo: currentRepoKey });
   if (nextResult.pr) {
-    await loadPrByNumber(nextResult.pr.number);
+    reviewBody.value = '';
+    try {
+      await loadPrByNumber(nextResult.pr.number, nextResult.pr.repo || currentRepoKey);
+    } catch (advanceErr) {
+      console.error('[cleanupAndLoadNext] Failed to load next PR:', advanceErr);
+      prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
+      resetButtons();
+    }
+  } else {
+    currentPrNumber = null;
+    prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
+    resetButtons();
   }
 }
 
@@ -4452,7 +4705,7 @@ function cleanupVoiceStream() {
   if (voiceAnimFrame) { cancelAnimationFrame(voiceAnimFrame); voiceAnimFrame = null; }
   if (voiceSilenceTimer) { clearTimeout(voiceSilenceTimer); voiceSilenceTimer = null; }
   if (voiceStream) { voiceStream.getTracks().forEach(t => t.stop()); voiceStream = null; }
-  if (voiceAudioCtx) { voiceAudioCtx.close().catch(() => {}); voiceAudioCtx = null; }
+  if (voiceAudioCtx) { voiceAudioCtx.close().catch((err) => { console.warn('[voice] Failed to close AudioContext:', err.message); }); voiceAudioCtx = null; }
   voiceAnalyser = null;
   voiceRecorder = null;
   btnVoice.classList.remove('listening');
@@ -4562,10 +4815,18 @@ async function closePullRequest() {
       // Auto-load next available PR from the list
       if (cachedPrList && cachedPrList.length > 0) {
         const nextPr = cachedPrList[0];
-        await loadPrByNumber(nextPr.number, nextPr.repo);
+        reviewBody.value = '';
+        try {
+          await loadPrByNumber(nextPr.number, nextPr.repo);
+        } catch (advanceErr) {
+          console.error('[auto-advance] Failed to load next PR:', advanceErr);
+          prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
+          resetButtons();
+        }
       } else {
         // No more PRs to review
         prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
+        resetButtons();
       }
     }
   } catch (err) {
