@@ -1283,71 +1283,10 @@ async function handleContextExpand(fileName) {
       console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');
       console.log('[context-expand] File still present:', currentDiffContent.includes(fileName));
 
-      // Targeted DOM update: only update this file's table content, not the entire diff
-      const oldWrapper = Array.from(diffContainer.querySelectorAll('.d2h-file-wrapper'))
-        .find(w => {
-          const nameEl = w.querySelector('.d2h-file-name');
-          return nameEl && nameEl.textContent.trim() === fileName;
-        });
-
-      // Generate HTML for just this file with new context
-      const fileHtml = Diff2Html.html(result.content, {
-        drawFileList: false,
-        matching: 'words',
-        outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
-        colorScheme: 'dark'
-      });
-
-      if (oldWrapper && fileHtml.trim()) {
-        // Parse new diff into temp DOM
-        const tmp = document.createElement('div');
-        tmp.innerHTML = fileHtml;
-        const newWrapper = tmp.querySelector('.d2h-file-wrapper');
-
-        if (newWrapper) {
-          // Replace only the table body — keeps the wrapper in place, no scroll jump
-          const oldTable = oldWrapper.querySelector('table');
-          const newTable = newWrapper.querySelector('table');
-          if (oldTable && newTable) {
-            const oldTbody = oldTable.querySelector('tbody') || oldTable;
-            const newTbody = newTable.querySelector('tbody') || newTable;
-            oldTbody.innerHTML = newTbody.innerHTML;
-          }
-
-          // Apply syntax highlighting to new rows only
-          if (typeof window.hljs !== 'undefined') {
-            oldWrapper.querySelectorAll('.d2h-code-line-ctn').forEach(line => {
-              try {
-                const dels = line.querySelectorAll('del');
-                const inses = line.querySelectorAll('ins');
-                if (dels.length === 0 && inses.length === 0) {
-                  const text = line.textContent;
-                  const hl = window.hljs.highlightAuto(text);
-                  line.classList.add('hljs');
-                  if (hl.language) line.classList.add(hl.language);
-                  line.innerHTML = hl.value;
-                }
-              } catch {}
-            });
-          }
-
-          // Re-add comment buttons, context buttons for this wrapper
-          addCommentButtonsForWrapper(oldWrapper, fileName);
-          addContextButtonsForWrapper(oldWrapper, fileName);
-          addCopyFileNameButtons();
-
-          // Re-apply comments for this file
-          for (const c of comments) {
-            if (c.file === fileName) {
-              if (c.level === 'file') {
-                renderFileCommentMarker(c);
-              } else {
-                renderLineCommentMarker(c);
-              }
-            }
-          }
-        }
-      }
+      // Re-render with save/restore scroll
+      const savedScroll = window.scrollY;
+      renderFilteredDiff();
+      window.scrollTo(0, savedScroll);
     }
   } catch (err) {
     console.error('[context-expand] Error:', err);
