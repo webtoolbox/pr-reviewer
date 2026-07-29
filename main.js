@@ -598,38 +598,36 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No new commits since last review');
   }
 
-  // Always fetch latest to keep shallow clone up to date
-  log('INFO', '[generateDiff] Fetching latest from origin in', repoPath);
+  // On a shallow clone, fetching individual SHAs is very slow.
+  // Fetch the PR branch first — this brings in both headSha and baseSha in one network call.
+  log('INFO', `[generateDiff] Fetching PR ${prNumber} branch from origin`);
   try {
-    await execPromise('git fetch origin master --depth=1', { cwd: repoPath, timeout: 30000 });
+    await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 60000 });
+    log('INFO', `[generateDiff] Fetched PR branch successfully`);
   } catch (fetchErr) {
-    log('ERROR', '[generateDiff] Fetch failed:', fetchErr.message);
+    log('ERROR', `[generateDiff] PR branch fetch failed:`, fetchErr.message);
   }
 
-  // Ensure both SHAs exist in the local repo
-  // git rev-parse --verify only validates format — use git cat-file -e to check existence
+  // Also fetch master to keep it up to date
+  try {
+    await execPromise('git fetch origin master --depth=1', { cwd: repoPath, timeout: 30000 });
+  } catch {}
+
+  // Check if SHAs are now available; if not, try individual fetch as last resort
   async function shaExists(sha) {
     try { await execPromise(`git cat-file -e ${sha}`, { cwd: repoPath }); return true; } catch { return false; }
   }
-  async function fetchSha(sha) {
-    try { await execPromise(`git fetch origin ${sha}`, { cwd: repoPath }); return true; } catch { return false; }
-  }
 
   if (!(await shaExists(headSha))) {
-    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} not in local repo, fetching`);
-    if (!(await fetchSha(headSha))) {
-      // Fallback: fetch the PR branch
-      try {
-        await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
-      } catch (fetchErr) {
-        throw new Error(`Cannot fetch head commit: ${fetchErr.message}`);
-      }
-    }
+    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} still not available after PR fetch`);
+    throw new Error(`Cannot fetch head commit ${headSha.substring(0,7)}`);
   }
   if (!(await shaExists(baseSha))) {
-    log('INFO', `[generateDiff] Base SHA ${baseSha.substring(0,7)} not in local repo, fetching`);
-    if (!(await fetchSha(baseSha))) {
-      throw new Error(`Cannot reach base commit ${baseSha.substring(0,7)} locally`);
+    log('INFO', `[generateDiff] Base SHA ${baseSha.substring(0,7)} not in local repo, fetching individually`);
+    try {
+      await execPromise(`git fetch origin ${baseSha}`, { cwd: repoPath, timeout: 60000 });
+    } catch (fetchErr) {
+      throw new Error(`Cannot reach base commit ${baseSha.substring(0,7)}: ${fetchErr.message}`);
     }
   }
 
@@ -669,18 +667,17 @@ async function generateDiff(prNumber, repoKey) {
     console.warn('[generateDiff] git fetch origin master failed, will use two-dot diff');
   }
 
-  // When baseSha comes from a review, use two-dot (baseSha..headSha) to show only changes since last review
-  // When no review found, use three-dot against master to exclude merge noise
+  // Use three-dot diff against master to exclude merge noise, or two-dot as fallback
   const contextLines = appConfig.contextLines || 5;
   let diffOut;
-  if (!reviewInfo && originMasterAvailable) {
+  if (originMasterAvailable) {
     diffOut = await execPromise(
       `git diff origin/master...${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
       { cwd: repoPath }
     );
   }
   if (!diffOut) {
-    // Two-dot diff between base and head (works for both review-based and PR-base ranges)
+    // Fallback: two-dot diff between base and head
     diffOut = await execPromise(
       `git diff ${baseSha}..${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
       { cwd: repoPath }
