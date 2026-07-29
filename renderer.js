@@ -576,7 +576,7 @@ function loadDiff(content, filePath) {
 
   const html = Diff2Html.html(content, {
     drawFileList: true,
-    matching: 'lines',
+    matching: 'words',
     outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
     colorScheme: 'dark',
     synchronisedScroll: true,
@@ -1476,6 +1476,21 @@ function renderLineCommentMarker(comment) {
     const lineRow = findDiffLineRow(comment.file, comment.line, comment.side);
     if (lineRow) {
       lineRow.parentNode.insertBefore(marker, lineRow.nextSibling);
+    } else {
+      // Fallback: insert at top of the file's diff section
+      const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+      for (const wrapper of fileWrappers) {
+        const nameEl = wrapper.querySelector('.d2h-file-name');
+        if (nameEl && nameEl.textContent.trim() === comment.file) {
+          const table = wrapper.querySelector('table');
+          if (table) {
+            const firstRow = table.querySelector('tbody tr');
+            if (firstRow) firstRow.parentNode.insertBefore(marker, firstRow);
+            else table.appendChild(marker);
+          }
+          break;
+        }
+      }
     }
   }
 
@@ -3272,7 +3287,7 @@ function renderFilteredDiff() {
   // Use diff2html to render everything — pass window.hljs for syntax highlighting
   const diff2htmlUi = new Diff2HtmlUI(document.getElementById('diff-container'), sortedDiff, {
     drawFileList: true,
-    matching: 'lines',
+    matching: 'words',
     outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
     colorScheme: 'dark'
   }, typeof window.hljs !== 'undefined' ? window.hljs : undefined);
