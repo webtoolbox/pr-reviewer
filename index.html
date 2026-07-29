@@ -971,14 +971,14 @@
     }
     /* Word-level diff highlights — del/ins tags within changed lines */
     .d2h-code-line del, .d2h-code-side-line del {
-      background-color: rgba(248, 81, 73, 0.35) !important;
-      color: #ffa198 !important;
+      background-color: var(--d2h-dark-del-highlight-bg-color) !important;
+      color: var(--d2h-dark-del-label-color) !important;
     }
     .d2h-code-line ins, .d2h-code-side-line ins {
-      background-color: rgba(46, 160, 67, 0.35) !important;
-      color: #7ee787 !important;
+      background-color: var(--d2h-dark-ins-highlight-bg-color) !important;
+      color: var(--d2h-dark-ins-label-color) !important;
     }
-    /* Override diff2html's orange/yellow for "changed" lines — use same red/green as del/ins */
+    /* Changed lines use same red/green as pure del/ins, not orange */
     .d2h-dark-color-scheme .d2h-file-diff .d2h-del.d2h-change,
     .d2h-dark-color-scheme .d2h-file-diff .d2h-del-side-diff.d2h-change {
       background-color: var(--d2h-dark-del-bg-color) !important;
