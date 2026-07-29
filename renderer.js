@@ -1276,18 +1276,6 @@ async function handleContextExpand(fileName) {
       console.log('[context-expand] First 200 chars:', result.content.substring(0, 200));
       console.log('[context-expand] currentDiffContent before:', currentDiffContent.length, 'chars');
 
-      // Safety: if expanded diff would shrink the section, keep the original
-      const sections = currentDiffContent.split(/(?=^diff --git )/m);
-      const targetSections = sections.filter(s => {
-        const m = s.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
-        return m && m[2] === fileName;
-      });
-      const targetSectionLen = targetSections.reduce((sum, s) => sum + s.trim().length, 0);
-      if (targetSectionLen > 0 && result.content.trim().length < targetSectionLen * 0.5) {
-        console.log('[context-expand] Expanded diff is less than half the original, keeping original');
-        return;
-      }
-
       currentDiffContent = replaceFileInDiff(currentDiffContent, fileName, result.content);
       console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');
       console.log('[context-expand] File still present:', currentDiffContent.includes(fileName));
