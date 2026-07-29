@@ -1007,6 +1007,68 @@ function addCopyFileNameButtons() {
   });
 }
 
+// Wrapper-specific versions for targeted DOM updates (context expand)
+function addCommentButtonsForWrapper(wrapper, fileName) {
+  const sideDiffs = wrapper.querySelectorAll('.d2h-file-side-diff');
+  if (sideDiffs.length > 0) {
+    sideDiffs.forEach((sideDiff, index) => {
+      const isRight = index % 2 === 1;
+      const lines = sideDiff.querySelectorAll('.d2h-code-side-line:not(.d2h-code-side-emptyplaceholder)');
+      lines.forEach(line => {
+        const row = line.closest('tr');
+        if (!row) return;
+        const lineNumEl = row.querySelector('.d2h-code-side-linenumber');
+        if (!lineNumEl || lineNumEl.querySelector('.line-comment-btn')) return;
+        const btn = document.createElement('button');
+        btn.className = 'line-comment-btn';
+        btn.title = 'Add comment (Cmd+Enter to submit)';
+        btn.textContent = '+';
+        lineNumEl.appendChild(btn);
+      });
+    });
+  } else {
+    const lines = wrapper.querySelectorAll('.d2h-code-line:not(.d2h-code-line-emptyplaceholder)');
+    lines.forEach(line => {
+      const row = line.closest('tr');
+      if (!row) return;
+      const lineNumEl = row.querySelector('.d2h-code-linenumber');
+      if (!lineNumEl || lineNumEl.querySelector('.line-comment-btn')) return;
+      const btn = document.createElement('button');
+      btn.className = 'line-comment-btn';
+      btn.title = 'Add comment (Cmd+Enter to submit)';
+      btn.textContent = '+';
+      lineNumEl.appendChild(btn);
+    });
+  }
+}
+
+function addContextButtonsForWrapper(wrapper, fileName) {
+  if (!fileContextLevels.has(fileName)) {
+    fileContextLevels.set(fileName, CONTEXT_INITIAL);
+  }
+  const header = wrapper.querySelector('.d2h-file-header');
+  const btnUp = document.createElement('button');
+  btnUp.className = 'context-expand-btn';
+  btnUp.dataset.fileName = fileName;
+  btnUp.dataset.direction = 'up';
+  btnUp.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/></svg> Show more lines above`;
+  btnUp.addEventListener('click', () => handleContextExpand(fileName, wrapper));
+  const btnDown = document.createElement('button');
+  btnDown.className = 'context-expand-btn';
+  btnDown.dataset.fileName = fileName;
+  btnDown.dataset.direction = 'down';
+  btnDown.innerHTML = `Show more lines below <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
+  btnDown.addEventListener('click', () => handleContextExpand(fileName, wrapper));
+  if (header && header.nextSibling) {
+    wrapper.insertBefore(btnUp, header.nextSibling);
+  } else if (header) {
+    header.after(btnUp);
+  }
+  wrapper.appendChild(btnDown);
+  addInterHunkExpandButtons(fileName, wrapper);
+  updateContextButtonStates(fileName, wrapper);
+}
+
 // ===================== CONTEXT EXPAND BUTTONS =====================
 
 const CONTEXT_INCREMENT = 6;
@@ -1230,40 +1292,71 @@ async function handleContextExpand(fileName) {
       console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');
       console.log('[context-expand] File still present:', currentDiffContent.includes(fileName));
 
-      // Save scroll position and target file position before re-render
-      const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-      const targetWrapper = Array.from(diffContainer.querySelectorAll('.d2h-file-name'))
-        .find(el => el.textContent.trim() === fileName);
-      let targetOffset = null;
-      if (targetWrapper) {
-        const rect = targetWrapper.getBoundingClientRect();
-        targetOffset = rect.top;
-      }
+      // Targeted DOM update: only replace this file's wrapper, not the entire diff
+      const oldWrapper = Array.from(diffContainer.querySelectorAll('.d2h-file-wrapper'))
+        .find(w => {
+          const nameEl = w.querySelector('.d2h-file-name');
+          return nameEl && nameEl.textContent.trim() === fileName;
+        });
 
-      // Re-render the entire diff
-      renderFilteredDiff();
+      // Generate HTML for just this file with new context
+      const fileHtml = Diff2Html.html(result.content, {
+        drawFileList: false,
+        matching: 'words',
+        outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
+        colorScheme: 'dark'
+      });
 
-      // Restore scroll position — adjust if the target file moved
-      if (targetOffset !== null) {
-        const newTarget = Array.from(diffContainer.querySelectorAll('.d2h-file-name'))
-          .find(el => el.textContent.trim() === fileName);
-        if (newTarget) {
-          const newRect = newTarget.getBoundingClientRect();
-          const delta = newRect.top - targetOffset;
-          window.scrollTo(0, scrollTop + delta);
-        } else {
-          window.scrollTo(0, scrollTop);
-        }
-      } else {
-        window.scrollTo(0, scrollTop);
-      }
+      if (oldWrapper && fileHtml.trim()) {
+        // Remember scroll offset relative to the wrapper
+        const oldRect = oldWrapper.getBoundingClientRect();
+        const scrollRef = window.pageYOffset;
 
-      // Re-apply comments
-      for (const c of comments) {
-        if (c.level === 'file') {
-          renderFileCommentMarker(c);
-        } else {
-          renderLineCommentMarker(c);
+        // Create temp container to extract the new wrapper
+        const tmp = document.createElement('div');
+        tmp.innerHTML = fileHtml;
+        const newWrapper = tmp.querySelector('.d2h-file-wrapper');
+        if (newWrapper) {
+          oldWrapper.replaceWith(newWrapper);
+
+          // Apply syntax highlighting to new wrapper only
+          if (typeof window.hljs !== 'undefined') {
+            newWrapper.querySelectorAll('.d2h-code-line-ctn').forEach(line => {
+              try {
+                const text = line.textContent;
+                const result = window.hljs.highlightAuto(text);
+                line.classList.add('hljs');
+                if (result.language) line.classList.add(result.language);
+                // Preserve del/ins tags if present
+                const dels = line.querySelectorAll('del');
+                const inses = line.querySelectorAll('ins');
+                if (dels.length === 0 && inses.length === 0) {
+                  line.innerHTML = result.value;
+                }
+              } catch {}
+            });
+          }
+
+          // Restore scroll: keep the wrapper at roughly the same screen position
+          const newRect = newWrapper.getBoundingClientRect();
+          const delta = newRect.top - oldRect.top;
+          window.scrollTo(0, scrollRef + delta);
+
+          // Re-add comment buttons, context buttons for this wrapper
+          addCommentButtonsForWrapper(newWrapper, fileName);
+          addContextButtonsForWrapper(newWrapper, fileName);
+          addCopyFileNameButtons();
+
+          // Re-apply comments for this file
+          for (const c of comments) {
+            if (c.file === fileName) {
+              if (c.level === 'file') {
+                renderFileCommentMarker(c);
+              } else {
+                renderLineCommentMarker(c);
+              }
+            }
+          }
         }
       }
     }
