@@ -1520,6 +1520,26 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     payload.body = `Review with ${ghComments.length} comment${ghComments.length > 1 ? 's' : ''}`;
   }
 
+  // Delete any existing pending review (GitHub only allows one at a time)
+  try {
+    const existingReviews = await execPromise(
+      `gh api "repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100"`,
+      { timeout: 15000 }
+    );
+    const reviews = JSON.parse(existingReviews || '[]');
+    const currentUser = await execPromise('gh api user --jq .login', { timeout: 10000 });
+    const pending = reviews.filter(r => r.state === 'PENDING' && r.user.login === currentUser.trim());
+    for (const p of pending) {
+      await execPromise(
+        `gh api "repos/${owner}/${repo}/pulls/${prNumber}/reviews/${p.id}" --method DELETE`,
+        { timeout: 10000 }
+      );
+      log('INFO', `[github-review] Deleted pending review ${p.id}`);
+    }
+  } catch (delErr) {
+    log('WARN', '[github-review] Failed to check/delete pending reviews:', delErr.message);
+  }
+
   // Write payload to temp file for gh api --input
   const tmpPath = path.join(getGeneratedDir(), `review-payload-${Date.now()}.json`);
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
