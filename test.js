@@ -1464,6 +1464,28 @@ async function runTests() {
   `);
   assert('Startup auto-load: first PR has required fields', autoLoadFirstPr === 'ok', `result: ${autoLoadFirstPr}`);
 
+  // TEST: Keyboard shortcut Cmd+R reloads current PR
+  const shortcutReload = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      let loadCalled = false;
+      let toastMsg = null;
+      // Set up the globals the shortcut handler needs
+      window.currentPrNumber = 42;
+      window.currentRepoKey = 'test/repo';
+      const origLoad = window.loadPrByNumber;
+      const origToast = window.showToast;
+      window.loadPrByNumber = (pr, repo) => { loadCalled = true; return Promise.resolve(); };
+      window.showToast = (msg) => { toastMsg = msg; };
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'r', code: 'KeyR', metaKey: true, shiftKey: false, bubbles: true
+      }));
+      window.loadPrByNumber = origLoad;
+      window.showToast = origToast;
+      return loadCalled && toastMsg === 'Reloading PR…' ? 'ok' : JSON.stringify({loadCalled, toastMsg});
+    })()
+  `);
+  assert('Cmd+R reloads current PR with toast', shortcutReload === 'ok', `result: ${shortcutReload}`);
+
   // TEST: Keyboard shortcut Cmd+Shift+A triggers approve (uppercase key - Windows/Linux)
   const shortcutApprove = await mainWindow.webContents.executeJavaScript(`
     (() => {

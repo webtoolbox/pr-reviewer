@@ -1115,6 +1115,9 @@ function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
           let replacement = newFileDiff;
           if (!replacement.endsWith('\n')) replacement += '\n';
           result.push(replacement);
+        } else {
+          // New diff is empty — keep the original section rather than dropping it
+          result.push(section);
         }
         continue;
       }
@@ -1739,32 +1742,35 @@ async function submitReview(eventType) {
         }
 
         // Auto-fix with AI: trigger Hermes agent to create a fix PR (only for request_changes)
+        // Fire-and-forget — don't block auto-advance
         if (eventType === 'request_changes' && window.electronAPI.autoFixWithAi) {
-          try {
-            const autoFixConfig = await window.electronAPI.getConfig();
-            const autoFixEnabled = autoFixConfig.autoFix && autoFixConfig.autoFix.enabled !== false;
-            if (autoFixEnabled) {
-              showToast('🤖 Auto-fixing with AI...', 'progress', 30000);
-              const autoFixComments = comments
-              .filter(c => !c.isAiTagged && c.text && c.file)
-              .map(c => ({ file: c.file, line: c.line, text: c.text }));
-              const autoFixResult = await window.electronAPI.autoFixWithAi({
-              prNumber: review.prNumber,
-              comments: autoFixComments,
-              reviewBody: review.body,
-              repo: currentRepoKey
-              });
-              if (autoFixResult.error) {
-              showSafeToast(`⚠ Auto-fix failed: ${autoFixResult.error}`, 'error', 10000);
-              } else if (autoFixResult.success && autoFixResult.prUrl) {
-              const prLink = autoFixResult.prUrl;
-              const prNum = autoFixResult.prNumber || '';
-              showToast(`✓ Auto-fix PR #${escapeHtml(prNum)} created — <a href="${escapeHtml(prLink)}" style="color:#58a6ff" class="pr-url-link">View PR</a>`, 'success', 10000);
+          (async () => {
+            try {
+              const autoFixConfig = await window.electronAPI.getConfig();
+              const autoFixEnabled = autoFixConfig.autoFix && autoFixConfig.autoFix.enabled !== false;
+              if (autoFixEnabled) {
+                showToast('🤖 Auto-fixing with AI...', 'progress', 30000);
+                const autoFixComments = comments
+                  .filter(c => !c.isAiTagged && c.text && c.file)
+                  .map(c => ({ file: c.file, line: c.line, text: c.text }));
+                const autoFixResult = await window.electronAPI.autoFixWithAi({
+                  prNumber: review.prNumber,
+                  comments: autoFixComments,
+                  reviewBody: review.body,
+                  repo: currentRepoKey
+                });
+                if (autoFixResult.error) {
+                  showSafeToast(`⚠ Auto-fix failed: ${autoFixResult.error}`, 'error', 10000);
+                } else if (autoFixResult.success && autoFixResult.prUrl) {
+                  const prLink = autoFixResult.prUrl;
+                  const prNum = autoFixResult.prNumber || '';
+                  showToast(`✓ Auto-fix PR #${escapeHtml(prNum)} created — <a href="${escapeHtml(prLink)}" style="color:#58a6ff" class="pr-url-link">View PR</a>`, 'success', 10000);
+                }
               }
+            } catch (autoFixErr) {
+              showSafeToast(`⚠ Auto-fix error: ${autoFixErr.message}`, 'error', 10000);
             }
-          } catch (autoFixErr) {
-            showSafeToast(`⚠ Auto-fix error: ${autoFixErr.message}`, 'error', 10000);
-          }
+          })();
         }
 
         // Auto-advance to next PR after successful review
@@ -1837,6 +1843,16 @@ document.addEventListener('keydown', (e) => {
       submitComment();
       return;
     }
+  }
+
+  // Cmd+R — Reload current PR diff
+  if (key === 'R' && isMeta && !e.shiftKey) {
+    e.preventDefault();
+    if (currentPrNumber) {
+      showToast('Reloading PR…');
+      loadPrByNumber(currentPrNumber, currentRepoKey);
+    }
+    return;
   }
 
   // Cmd+Shift+A — Approve
