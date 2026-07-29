@@ -658,10 +658,53 @@ async function generateDiff(prNumber, repoKey) {
   }
 
   // Use `gh pr diff` which respects merge base and excludes merged master noise
-  const diffOut = await execPromise(
+  let diffOut = await execPromise(
     `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
     { timeout: 60000 }
   );
+
+  // If reviewing since last review, filter to only files changed in commits after the review
+  if (reviewInfo && diffOut) {
+    try {
+      // Get files changed by PR commits after the review
+      const reviewCommits = await execPromise(
+        `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`,
+        { timeout: 15000 }
+      );
+      const allCommits = JSON.parse(reviewCommits || '[]');
+      const reviewDate = reviewInfo.date;
+      const afterReview = allCommits.filter(c => c.commit.committer.date > reviewDate);
+      
+      if (afterReview.length > 0 && afterReview.length < allCommits.length) {
+        // Get files changed in commits after the review
+        const changedSinceReview = new Set();
+        for (const c of afterReview) {
+          try {
+            const files = await execPromise(
+              `git diff-tree --no-commit-id --name-only -r ${c.sha}`,
+              { cwd: repoPath }
+            );
+            files.split('\n').filter(Boolean).forEach(f => changedSinceReview.add(f));
+          } catch {}
+        }
+        
+        if (changedSinceReview.size > 0) {
+          // Parse gh pr diff into per-file sections and keep only changed files
+          const sections = diffOut.split(/^(?=diff --git )/m);
+          const filtered = sections.filter(section => {
+            const match = section.match(/^diff --git a\/(.*?) b\//);
+            if (!match) return true; // Keep preamble
+            return changedSinceReview.has(match[1]);
+          });
+          diffOut = filtered.join('');
+          log('INFO', `[generateDiff] Filtered to ${changedSinceReview.size} files changed since review`);
+        }
+      }
+    } catch (filterErr) {
+      log('ERROR', '[generateDiff] Failed to filter since-review files:', filterErr.message);
+      // Use full diff as fallback
+    }
+  }
 
   if (!diffOut || !diffOut.trim()) {
     throw new Error('Diff is empty — no changes detected between base and head commits');

@@ -257,7 +257,20 @@ function populateFileSidebar() {
 
     // Click handler - scroll to file
     row.addEventListener('click', () => {
-      const wrapper = diffContainer.querySelectorAll('.d2h-file-wrapper')[file.index];
+      // Find wrapper by matching file name (more reliable than index after filtering)
+      const allWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+      let wrapper = null;
+      for (const w of allWrappers) {
+        const nameEl = w.querySelector('.d2h-file-name');
+        if (nameEl && nameEl.textContent.trim() === file.name.trim()) {
+          wrapper = w;
+          break;
+        }
+      }
+      if (!wrapper) {
+        // Fallback: use index
+        wrapper = allWrappers[file.index];
+      }
       if (!wrapper) return;
       const hdr = wrapper.querySelector('.d2h-file-header');
       const target = hdr || wrapper;
