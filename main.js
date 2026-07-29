@@ -187,6 +187,9 @@ function expandPath(p) {
 function getLocalRepoPath(repoKey) {
   if (repoKey && repoKey.includes('/')) {
     const repoName = repoKey.split('/')[1];
+    // Prefer the pr-reviewer worktree (always on master) over the main repo
+    const worktreePath = path.join(app.getPath('home'), repoName + '-pr-reviewer');
+    if (fs.existsSync(worktreePath)) return worktreePath;
     // Check ~/Repos/ first (conventional location), then ~/
     const reposPath = path.join(app.getPath('home'), 'Repos', repoName);
     if (fs.existsSync(reposPath)) return reposPath;
@@ -1470,15 +1473,17 @@ ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBod
 ${commentSummary}${bodySummary}
 
 **Instructions**:
-1. Clone or pull the repository: \`gh repo clone ${owner}/${repo}\` or \`cd <repo-path> && git fetch\`
-2. Create a new branch from the PR's head branch: \`git checkout -b auto-fix/pr-${prNumber} origin/${headBranch}\`
-3. Read each file mentioned in the review comments and make the necessary code changes to address each comment
-4. If an AGENTS.md file exists in the repo, follow its guidelines for code changes
-5. Commit your changes with a clear message like "fix: address review comments for PR #${prNumber}"
-6. Push the branch: \`git push origin auto-fix/pr-${prNumber}\`
-7. Create a PR targeting the original branch: \`gh pr create --base ${headBranch} --title "Auto-fix: Review comments for PR #${prNumber}" --body "Addresses review comments from PR #${prNumber}.\\n\\nReview comments addressed:\\n${commentSummary.replace(/"/g, '\\"')}"\`
-8. Add reviewers and assignees: \`gh pr edit --add-reviewer ${participants.join(',')} --add-assignee ${participants.join(',')}\`
-9. After creating the PR, add a comment on the original PR #${prNumber} mentioning the fix PR: \`gh pr comment ${prNumber} --body "🤖 I've created an auto-fix PR addressing the review comments: <link to new PR>"\`
+1. Fetch the repository: \`cd <repo-path> && git fetch origin\`
+2. Create a worktree for your changes: \`git worktree add ../auto-fix/pr-${prNumber} origin/${headBranch}\`
+3. Change into the worktree: \`cd ../auto-fix/pr-${prNumber}\`
+4. Read each file mentioned in the review comments and make the necessary code changes to address each comment
+5. If an AGENTS.md file exists in the repo, follow its guidelines for code changes
+6. Commit your changes with a clear message like "fix: address review comments for PR #${prNumber}"
+7. Push the branch: \`git push origin HEAD:auto-fix/pr-${prNumber}\`
+8. Create a PR targeting the original branch: \`gh pr create --base ${headBranch} --title "Auto-fix: Review comments for PR #${prNumber}" --body "Addresses review comments from PR #${prNumber}.\\n\\nReview comments addressed:\\n${commentSummary.replace(/"/g, '\\"')}"\`
+9. Add reviewers and assignees: \`gh pr edit --add-reviewer ${participants.join(',')} --add-assignee ${participants.join(',')}\`
+10. After creating the PR, add a comment on the original PR #${prNumber} mentioning the fix PR: \`gh pr comment ${prNumber} --body "🤖 I've created an auto-fix PR addressing the review comments: <link to new PR>"\`
+11. Clean up the worktree when done: \`cd <repo-path> && git worktree remove ../auto-fix/pr-${prNumber}\`
 
 IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the format: PR_URL: https://github.com/${owner}/${repo}/pull/<number>`;
 
