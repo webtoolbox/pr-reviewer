@@ -1404,6 +1404,58 @@ ipcMain.handle('close-pr', async (event, { prNumber, comment, repo: repoKey }) =
 });
 
 // Submit review directly to GitHub via gh CLI
+// Compute diff positions from a unified diff (for GitHub review API)
+function computePositionsFromDiff(diffContent) {
+  const map = {};
+  let currentFile = null;
+  let position = 0;
+  let leftLine = 0;
+  let rightLine = 0;
+  const lines = diffContent.split('\n');
+  let inHeaders = false;
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git')) {
+      const match = line.match(/b\/(.+)$/);
+      if (match) {
+        currentFile = match[1];
+        inHeaders = true;
+        position = 0;
+        leftLine = 0;
+        rightLine = 0;
+      }
+    } else if (inHeaders && (line.startsWith('---') || line.startsWith('+++') || line.startsWith('index'))) {
+      continue;
+    } else if (line.startsWith('@@')) {
+      inHeaders = false;
+      const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (match) {
+        leftLine = parseInt(match[1], 10);
+        rightLine = parseInt(match[3], 10);
+      }
+    } else if (currentFile && !inHeaders) {
+      if (line.startsWith('-')) {
+        position++;
+        map[`${currentFile}:${leftLine}:LEFT`] = position;
+        leftLine++;
+      } else if (line.startsWith('+')) {
+        position++;
+        map[`${currentFile}:${rightLine}:RIGHT`] = position;
+        rightLine++;
+      } else if (line.startsWith('\\')) {
+        position++;
+      } else if (line.startsWith(' ')) {
+        position++;
+        map[`${currentFile}:${leftLine}:LEFT`] = position;
+        map[`${currentFile}:${rightLine}:RIGHT`] = position;
+        leftLine++;
+        rightLine++;
+      }
+    }
+  }
+  return map;
+}
+
 ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType, comments, repo: repoKey }) => {
   prNumber = safePrNumber(prNumber);
   if (!prNumber) return { error: 'Valid PR number is required' };
@@ -1426,14 +1478,32 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
   };
   const ghEvent = eventMap[eventType] || 'COMMENT';
 
-  // Build inline comments array (only those with valid diff positions)
-  const ghComments = (comments || [])
-    .filter(c => c.position && c.file && c.text)
-    .map(c => ({
-      path: c.file,
-      position: c.position,
-      body: c.text
-    }));
+  // Build inline comments array — recompute positions from gh pr diff
+  // (renderer positions may be from per-commit diffs which don't match GitHub's unified diff)
+  let ghComments = [];
+  if (comments && comments.length > 0) {
+    // Get the PR's unified diff to compute correct positions
+    let prDiff = '';
+    try {
+      prDiff = await execPromise(`gh pr diff ${prNumber} --repo ${owner}/${repo}`, { timeout: 30000 });
+    } catch {}
+    
+    if (prDiff) {
+      const positionMap = computePositionsFromDiff(prDiff);
+      ghComments = comments
+        .filter(c => c.file && c.text)
+        .map(c => {
+          const key = `${c.file}:${c.line}:${c.side || 'RIGHT'}`;
+          const position = positionMap[key];
+          if (!position) {
+            log('WARN', `[github-review] No position found for ${key}`);
+            return null;
+          }
+          return { path: c.file, position, body: c.text };
+        })
+        .filter(Boolean);
+    }
+  }
 
   const payload = { body: body || '', event: ghEvent };
   if (ghComments.length > 0) {

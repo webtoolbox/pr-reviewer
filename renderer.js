@@ -1789,14 +1789,10 @@ async function submitReview(eventType) {
       const positionMap = computeDiffPositions();
       console.log('[submit] comments array:', comments.length, 'positionMap keys:', Object.keys(positionMap).length);
       comments.forEach((c, i) => console.log(`[submit] comment ${i}:`, JSON.stringify({ file: c.file, line: c.line, side: c.side, isAiTagged: c.isAiTagged, level: c.level, text: c.text?.substring(0, 50) })));
+      // Send line and side to backend — positions will be recomputed from gh pr diff
       const githubComments = comments
         .filter(c => !c.isAiTagged && c.level !== 'file' && c.line && c.side)
-        .map(c => {
-          const key = `${c.file}:${c.line}:${c.side}`;
-          const position = positionMap[key];
-          return position ? { file: c.file, position, text: c.text } : null;
-        })
-        .filter(Boolean);
+        .map(c => ({ file: c.file, line: c.line, side: c.side, text: c.text }));
 
       const result = await window.electronAPI.submitGitHubReview({
         prNumber: review.prNumber,
