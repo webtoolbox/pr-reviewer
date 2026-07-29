@@ -524,10 +524,10 @@
     .d2h-file-name-wrapper .d2h-tag { margin-left: auto; flex-shrink: 0; }
 
     /* Tighten diff line spacing — reduce line number column and code padding */
-    .d2h-code-linenumber { width: 5.5em !important; }
+    .d2h-code-linenumber { width: 5.5em !important; direction: ltr !important; }
     .d2h-code-line { padding: 0 6em !important; width: calc(100% - 12em) !important; }
-    .line-num1, .line-num2 { width: 2.5em !important; }
-    .d2h-code-side-linenumber { width: 3em !important; padding: 0 .3em !important; }
+    .line-num1, .line-num2 { width: 2.5em !important; text-overflow: clip !important; }
+    .d2h-code-side-linenumber { width: 3em !important; padding: 0 .3em !important; direction: ltr !important; }
     .d2h-code-side-line { padding: 0 3.5em !important; width: calc(100% - 7em) !important; }
     .file-comment-btn {
       background: #21262d; color: #8b949e; border: 1px solid #30363d;

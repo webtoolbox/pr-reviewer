@@ -1,11 +1,22 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Expose highlight.js globally for diff2html syntax highlighting
+try {
+  const hljs = require('highlight.js');
+  contextBridge.exposeInMainWorld('hljs', hljs);
+} catch (err) {
+  console.warn('[preload] highlight.js not available:', err.message);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   openFile: () => ipcRenderer.invoke('open-file'),
   saveReview: (review) => ipcRenderer.invoke('save-review', review),
   saveDraft: (data) => ipcRenderer.invoke('save-draft', data),
   loadDraft: (filePath) => ipcRenderer.invoke('load-draft', filePath),
   deleteDraft: (filePath) => ipcRenderer.invoke('delete-draft', filePath),
+  savePrDraft: (data) => ipcRenderer.invoke('save-pr-draft', data),
+  loadPrDraft: (prNumber) => ipcRenderer.invoke('load-pr-draft', prNumber),
+  deletePrDraft: (prNumber) => ipcRenderer.invoke('delete-pr-draft', prNumber),
   getConfig: () => ipcRenderer.invoke('get-config'),
   savePreferences: (prefs) => ipcRenderer.invoke('save-preferences', prefs),
   exportMarkdown: (data) => ipcRenderer.invoke('export-markdown', data),

@@ -361,6 +361,16 @@ function autoSaveDraft() {
       timestamp: new Date().toISOString()
     };
     window.electronAPI.saveDraft({ filePath: currentFilePath, draft }).catch((err) => { console.warn('[autosave] Failed to save draft:', err.message); });
+
+    // Also save PR-specific draft (persists across app restarts)
+    if (currentPrNumber) {
+      window.electronAPI.savePrDraft({
+        prNumber: currentPrNumber,
+        repoKey: currentRepoKey,
+        reviewBody: reviewBody.value.trim(),
+        comments: comments
+      }).catch((err) => { console.warn('[autosave] Failed to save PR draft:', err.message); });
+    }
   }, 500); // Debounce 500ms
 }
 
@@ -909,11 +919,10 @@ function addCopyFileNameButtons() {
       e.preventDefault();
       const filePath = fileNameEl.textContent.trim();
       navigator.clipboard.writeText(filePath).then(() => {
-        const feedback = copyBtn.querySelector('.copy-feedback');
-        feedback.classList.add('show');
-        setTimeout(() => feedback.classList.remove('show'), 1500);
+        showToast('Copied: ' + filePath, 'info', 2000);
       }).catch(err => {
         console.error('Failed to copy file path:', err);
+        showToast('Failed to copy file path', 'error', 3000);
       });
     });
 
@@ -1089,13 +1098,17 @@ function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
     if (!section.trim()) continue;
 
     // Check if this section is for the target file
-    const match = section.match(/^diff --git a\/(.+?) b\/(.+)/m);
+    const match = section.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
     if (match) {
       const bPath = match[2];
       if (bPath === targetFile) {
         // Replace with the new expanded diff
         if (newFileDiff.trim()) {
-          result.push(newFileDiff);
+          // Ensure trailing newline so the next section's diff --git header
+          // starts on its own line (prevents sortDiffByExtension corruption)
+          let replacement = newFileDiff;
+          if (!replacement.endsWith('\n')) replacement += '\n';
+          result.push(replacement);
         }
         continue;
       }
@@ -1685,6 +1698,13 @@ async function submitReview(eventType) {
                       eventType === 'request_changes' ? '✓ Changes requested on GitHub' :
                       '✓ Comment submitted to GitHub';
         showToast(ghMsg, 'success', 8000);
+
+        // Delete PR draft after successful GitHub submission
+        if (review.prNumber) {
+          window.electronAPI.deletePrDraft(review.prNumber).catch((err) => {
+            console.warn('[submit] Failed to delete PR draft:', err.message);
+          });
+        }
 
         // Auto-remove this PR from the cached list
         if (review.prNumber && cachedPrList) {
@@ -2448,6 +2468,20 @@ async function loadPrByNumber(prNumber, repoKey) {
     currentPrNumber = prNumber;
     currentRepoKey = repoKey || null;
     currentPrBody = result.prBody || '';
+
+    // Check for saved PR draft (persists across app restarts)
+    try {
+      const prDraft = await window.electronAPI.loadPrDraft(prNumber);
+      if (prDraft && prDraft.comments && prDraft.comments.length > 0) {
+        // Clear any comments restored from file-based draft
+        comments = [];
+        diffContainer.querySelectorAll('.line-comment-marker, .file-comment-marker').forEach(el => el.remove());
+        if (prDraft.reviewBody) reviewBody.value = prDraft.reviewBody;
+        restoreDraft({ comments: prDraft.comments });
+      }
+    } catch (err) {
+      console.warn('[loadPr] No PR draft or failed to load:', err.message);
+    }
 
     // Download GitHub-attached images to local files (they need auth to access)
     if (currentPrBody.includes('github.com/user-attachments/')) {

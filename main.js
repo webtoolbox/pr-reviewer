@@ -14,7 +14,7 @@ function log(level, ...args) {
     const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
     const line = `[${ts}] [${level}] ${msg}\n`;
     fs.appendFileSync(LOG_FILE, line);
-  } catch {}
+  } catch (err) { console.warn('[log] Failed to write to log file:', err.message); }
   // Also echo to terminal
   if (level === 'ERROR') {
     console.error(...args);
@@ -143,12 +143,12 @@ const positionalArgs = rawArgs.filter((_, i) => {
 function sendAiMessage(message, prNumber) {
   if (!aiChatId) {
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
-    log('INFO', '[ai] No chat-id configured, sending to new session');
-    log('INFO', '[ai] Command:', appConfig.aiCommand, appConfig.aiSendArgs[0], prefix + message.substring(0, 100));
-    const args = [appConfig.aiSendArgs[0], prefix + message];
+    log('INFO', '[ai] No chat-id configured, sending via chat -q');
+    // Use hermes chat -q for non-interactive single query (hermes send requires --to)
+    const args = ['chat', '-q', '-p', 'wt', prefix + message];
     execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
       if (err) log('ERROR', `[${appConfig.aiCommand}] send failed:`, err.message, stderr);
-      else log('INFO', `[${appConfig.aiCommand}] message sent to new session`);
+      else log('INFO', `[${appConfig.aiCommand}] message sent via chat`);
     });
     return;
   }
@@ -220,6 +220,61 @@ function getDraftsDir() {
   const dir = path.join(getAppDataDir(), 'drafts');
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// PR-specific draft management (persists across app restarts)
+function getPrDraftDir() {
+  const dir = path.join(app.getPath('home'), '.config', 'pr-reviewer', 'drafts');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function getPrDraftPath(prNumber) {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) return null;
+  return path.join(getPrDraftDir(), `pr-${safePr}.json`);
+}
+
+function savePrDraft(prNumber, data) {
+  try {
+    const draftPath = getPrDraftPath(prNumber);
+    if (!draftPath) return null;
+    const payload = {
+      comments: data.comments || [],
+      prNumber: safePrNumber(prNumber),
+      repoKey: data.repoKey || null,
+      reviewBody: data.reviewBody || '',
+      timestamp: new Date().toISOString()
+    };
+    atomicWriteFileSync(draftPath, JSON.stringify(payload, null, 2));
+    return draftPath;
+  } catch (err) {
+    log('ERROR', '[pr-draft] save failed:', err.message);
+    return null;
+  }
+}
+
+function loadPrDraft(prNumber) {
+  try {
+    const draftPath = getPrDraftPath(prNumber);
+    if (!draftPath || !fs.existsSync(draftPath)) return null;
+    const raw = fs.readFileSync(draftPath, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    log('ERROR', '[pr-draft] load failed:', err.message);
+    return null;
+  }
+}
+
+function deletePrDraft(prNumber) {
+  try {
+    const draftPath = getPrDraftPath(prNumber);
+    if (draftPath && fs.existsSync(draftPath)) {
+      fs.unlinkSync(draftPath);
+    }
+  } catch (err) {
+    log('ERROR', '[pr-draft] delete failed:', err.message);
+  }
 }
 
 function getGeneratedDir() {
@@ -337,7 +392,7 @@ function uploadImageToS3(imageDataUrl, fileName) {
     const cmd = `aws --profile ${profile} --region ${region} s3 cp "${tmpPath}" "s3://${bucket}/${s3Key}" --acl ${acl}`;
 
     exec(cmd, { timeout: 30000 }, (err) => {
-      try { fs.unlinkSync(tmpPath); } catch {}
+      try { fs.unlinkSync(tmpPath); } catch (e) { console.warn('[s3] Failed to clean up temp file:', e.message); }
 
       if (err) {
         log('ERROR', '[s3] upload failed:', err.message);
@@ -498,18 +553,30 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No new commits since last review');
   }
 
-  // Ensure both SHAs exist in the local repo (fetch PR branch if needed)
-  try {
-    await execPromise(`git rev-parse --verify ${headSha}`, { cwd: repoPath });
-  } catch {
-    // Head SHA not in local repo — fetch the PR branch
-    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} not found locally, fetching PR #${prNumber}`);
-    try {
-      await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
-      log('INFO', `[generateDiff] Fetch succeeded for PR #${prNumber}`);
-    } catch (fetchErr) {
-      console.error(`[generateDiff] Fetch failed for PR #${prNumber}:`, fetchErr.message);
-      throw new Error(`PR branch not available locally and fetch failed: ${fetchErr.message}`);
+  // Ensure both SHAs exist in the local repo
+  // git rev-parse --verify only validates format — use git cat-file -e to check existence
+  async function shaExists(sha) {
+    try { await execPromise(`git cat-file -e ${sha}`, { cwd: repoPath }); return true; } catch { return false; }
+  }
+  async function fetchSha(sha) {
+    try { await execPromise(`git fetch origin ${sha}`, { cwd: repoPath }); return true; } catch { return false; }
+  }
+
+  if (!(await shaExists(headSha))) {
+    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} not in local repo, fetching`);
+    if (!(await fetchSha(headSha))) {
+      // Fallback: fetch the PR branch
+      try {
+        await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath });
+      } catch (fetchErr) {
+        throw new Error(`Cannot fetch head commit: ${fetchErr.message}`);
+      }
+    }
+  }
+  if (!(await shaExists(baseSha))) {
+    log('INFO', `[generateDiff] Base SHA ${baseSha.substring(0,7)} not in local repo, fetching`);
+    if (!(await fetchSha(baseSha))) {
+      throw new Error(`Cannot reach base commit ${baseSha.substring(0,7)} locally`);
     }
   }
 
@@ -528,35 +595,52 @@ async function generateDiff(prNumber, repoKey) {
     );
   }
 
-  // Filter to code files only
-  const codeFiles = files
+  // Get all changed files (no extension filter — user controls visibility via sidebar filter)
+  const changedFiles = files
     .split('\n')
     .map(f => f.trim())
-    .filter(f => f && /\.(pm|cgi|js|tpl|css|less|json)$/.test(f))
+    .filter(f => f)
     .filter((f, i, arr) => arr.indexOf(f) === i); // unique
 
-  if (codeFiles.length === 0) {
-    throw new Error('No code files changed since last review');
+  if (changedFiles.length === 0) {
+    throw new Error('No files changed since last review');
   }
 
   // Fetch origin/master for three-dot diff
+  let originMasterAvailable = true;
   try {
     await execPromise('git fetch origin master', { cwd: repoPath });
   } catch {
-    // Ignore fetch errors (might already be up to date)
+    // If fetch fails, three-dot diff won't work — fall back to two-dot diff
+    originMasterAvailable = false;
+    console.warn('[generateDiff] git fetch origin master failed, will use two-dot diff');
   }
 
-  // Use three-dot diff against master to exclude merge noise
+  // Use three-dot diff against master to exclude merge noise, or two-dot as fallback
   const contextLines = appConfig.contextLines || 5;
-  const diffOut = await execPromise(
-    `git diff origin/master...${headSha} --unified=${contextLines} -- ${codeFiles.map(f => `"${f}"`).join(' ')}`,
-    { cwd: repoPath }
-  );
+  let diffOut;
+  if (originMasterAvailable) {
+    diffOut = await execPromise(
+      `git diff origin/master...${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
+      { cwd: repoPath }
+    );
+  }
+  if (!diffOut) {
+    // Fallback: two-dot diff between base and head
+    diffOut = await execPromise(
+      `git diff ${baseSha}..${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
+      { cwd: repoPath }
+    );
+  }
+
+  if (!diffOut || !diffOut.trim()) {
+    throw new Error('Diff is empty — no changes detected between base and head commits');
+  }
 
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);
   fs.writeFileSync(tmpPath, diffOut);
 
-  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: codeFiles.length, prData };
+  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData };
 }
 
 // Create application menu with "New Window" option
@@ -796,6 +880,20 @@ ipcMain.handle('delete-draft', async (event, filePath) => {
   return true;
 });
 
+ipcMain.handle('save-pr-draft', async (event, data) => {
+  if (!data || !data.prNumber) return null;
+  return savePrDraft(data.prNumber, data);
+});
+ipcMain.handle('load-pr-draft', async (event, prNumber) => {
+  if (!prNumber) return null;
+  return loadPrDraft(prNumber);
+});
+ipcMain.handle('delete-pr-draft', async (event, prNumber) => {
+  if (!prNumber) return false;
+  deletePrDraft(prNumber);
+  return true;
+});
+
 ipcMain.handle('save-image', async (event, { reviewDir, imageDataUrl, fileName }) => {
   try {
     const dir = reviewDir || getReviewDir();
@@ -864,7 +962,9 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
       prBody,
       reviewInfo: result.reviewInfo,
       filesChanged: result.filesChanged,
-      repoPath: getLocalRepoPath(repo)
+      repoPath: getLocalRepoPath(repo),
+      baseSha: result.baseSha || null,
+      headSha: result.headSha || null
     };
   } catch (err) {
     log('ERROR', '[pr] load failed:', err.message);
@@ -942,7 +1042,7 @@ async function loadReposConfig() {
     for (const r of (parsed.repos || [])) {
       checkedState[`${r.owner}/${r.name}`] = r.checked;
     }
-  } catch {}
+  } catch (err) { console.warn('[loadReposConfig] Could not read private config for checked state:', err.message); }
 
   // Load default owner from config
   const defaultOwner = appConfig.repoOwner || 'webtoolbox';
@@ -999,7 +1099,7 @@ ipcMain.handle('save-repos', async (event, repos) => {
     try {
       const raw = fs.readFileSync(privateConfigPath, 'utf8');
       existing = JSON.parse(raw);
-    } catch {}
+    } catch (err) { console.warn('[saveReposConfig] Could not read existing private config (may be first save):', err.message); }
 
     // Update repos
     existing.repos = repos;
@@ -1181,7 +1281,7 @@ ipcMain.handle('close-pr', async (event, { prNumber, comment, repo: repoKey }) =
           `gh pr comment ${prNumber} --repo ${owner}/${repo} --body-file "${tmpPath}"`
         );
       } finally {
-        try { fs.unlinkSync(tmpPath); } catch {}
+        try { fs.unlinkSync(tmpPath); } catch (e) { console.warn('[close-pr] Failed to clean up temp comment file:', e.message); }
       }
     }
 
@@ -1235,22 +1335,47 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     payload.comments = ghComments;
   }
 
+  // Validate: REQUEST_CHANGES and COMMENT require a non-empty body or comments
+  if ((ghEvent === 'REQUEST_CHANGES' || ghEvent === 'COMMENT') && !payload.body && ghComments.length === 0) {
+    return { error: 'Cannot submit an empty review. Write a review body or add inline comments.' };
+  }
+
+  // If body is empty but there are comments, add a summary body (GitHub requires non-empty body)
+  if (!payload.body && ghComments.length > 0) {
+    payload.body = `Review with ${ghComments.length} comment${ghComments.length > 1 ? 's' : ''}`;
+  }
+
   // Write payload to temp file for gh api --input
   const tmpPath = path.join(getGeneratedDir(), `review-payload-${Date.now()}.json`);
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
+
+  log('INFO', '[github-review] submitting review:', JSON.stringify({ event: payload.event, bodyLen: (payload.body || '').length, commentCount: (payload.comments || []).length }));
+  if (payload.comments && payload.comments.length > 0) {
+    log('INFO', '[github-review] comments:', JSON.stringify(payload.comments.map(c => ({ path: c.path, pos: c.position, body: c.body?.substring(0, 50) }))));
+  }
 
   try {
     const stdout = await execPromise(
       `gh api "repos/${owner}/${repo}/pulls/${prNumber}/reviews" --method POST --input "${tmpPath}"`
     );
     const result = JSON.parse(stdout || '{}');
-    console.log('[github-review] submitted successfully:', result.id);
+    log('INFO', '[github-review] submitted successfully:', result.id);
     return { success: true, reviewId: result.id, htmlUrl: result.html_url };
   } catch (err) {
-    console.error('[github-review] submission failed:', err.message);
+    const is422 = err.message && err.message.includes('422');
+    log('ERROR', '[github-review] submission failed:', err.message);
+    if (is422) {
+      log('ERROR', '[github-review] HTTP 422 payload dump:', JSON.stringify(payload, null, 2));
+      // Also persist the payload for post-mortem debugging
+      try {
+        const debugPath = path.join(getGeneratedDir(), `review-422-debug-${Date.now()}.json`);
+        fs.writeFileSync(debugPath, JSON.stringify({ payload, error: err.message, repo: `${owner}/${repo}`, prNumber }, null, 2));
+        log('ERROR', '[github-review] 422 debug payload saved to:', debugPath);
+      } catch (dumpErr) { log('ERROR', '[github-review] Failed to save 422 debug payload:', dumpErr.message); }
+    }
     return { error: err.message };
   } finally {
-    try { fs.unlinkSync(tmpPath); } catch {}
+    try { fs.unlinkSync(tmpPath); } catch (e) { console.warn('[github-review] Failed to clean up temp review file:', e.message); }
   }
 });
 
@@ -1330,9 +1455,11 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
 
     console.log('[auto-fix] Sending prompt to Hermes agent...');
 
-    // Run hermes chat with the prompt
+    // Run hermes chat with the prompt (use -q for non-interactive single query)
+    // -q must come right before the prompt text (argparse consumes the next arg as query)
+    // Don't hardcode a model — use whatever the user has configured in hermes
     const stdout = await execPromise(
-      `hermes chat -p wt ${JSON.stringify(prompt)} --model anthropic/claude-sonnet-4`,
+      `hermes chat -p wt --yolo -q ${JSON.stringify(prompt)}`,
       { maxBuffer: 50 * 1024 * 1024, timeout: 600000 }
     );
 
@@ -1489,7 +1616,7 @@ Do not wrap in markdown code fences. Return ONLY the JSON.`;
   } finally {
     // Always clean up temp audio file
     if (audioPath) {
-      try { fs.unlinkSync(audioPath); } catch {}
+      try { fs.unlinkSync(audioPath); } catch (e) { console.warn('[voice] Failed to clean up temp audio file:', e.message); }
     }
   }
 });
@@ -1560,7 +1687,7 @@ ipcMain.handle('download-github-images', async (event, { prBody }) => {
     } finally {
       // Cleanup temp file if download failed and file was created
       if (localPath) {
-        try { fs.unlinkSync(localPath); } catch {}
+        try { fs.unlinkSync(localPath); } catch (e) { console.warn('[image-download] Failed to clean up temp file:', e.message); }
       }
     }
   }
@@ -1845,7 +1972,7 @@ ipcMain.handle('auto-detect-agent', async () => {
         const privateConfigPath = path.join(privateDir, 'config.json');
         fs.mkdirSync(privateDir, { recursive: true });
         atomicWriteFileSync(privateConfigPath, JSON.stringify(appConfig, null, 2));
-      } catch {}
+      } catch (err) { console.error('[autoDetectAgent] Failed to save detected agent config:', err.message); }
       return { detected: true, agent: agent.command };
     }
   }
@@ -1903,7 +2030,7 @@ async function checkForUpdates() {
       const raw = fs.readFileSync(privateConfigPath, 'utf8');
       const parsed = JSON.parse(raw);
       autoUpdateEnabled = parsed.autoUpdate !== false;
-    } catch {}
+    } catch (err) { console.warn('[checkForUpdates] Could not read auto-update setting (using default):', err.message); }
 
     if (!autoUpdateEnabled) return;
 
@@ -1913,7 +2040,7 @@ async function checkForUpdates() {
       const raw = fs.readFileSync(privateConfigPath, 'utf8');
       const parsed = JSON.parse(raw);
       lastUpdateCheck = parsed.lastUpdateCheck || 0;
-    } catch {}
+    } catch (err) { console.warn('[checkForUpdates] Could not read last update check time:', err.message); }
 
     if (lastUpdateCheck && (Date.now() - lastUpdateCheck) < ONE_DAY) {
       return;
@@ -1955,11 +2082,11 @@ function updateLastCheckTime() {
     try {
       const raw = fs.readFileSync(privateConfigPath, 'utf8');
       config = JSON.parse(raw);
-    } catch {}
+    } catch (err) { console.warn('[updateLastCheckTime] Could not read existing config (may be first run):', err.message); }
     config.lastUpdateCheck = lastUpdateCheck;
     fs.mkdirSync(privateDir, { recursive: true });
     atomicWriteFileSync(privateConfigPath, JSON.stringify(config, null, 2));
-  } catch {}
+  } catch (err) { console.error('[updateLastCheckTime] Failed to save last update check time:', err.message); }
 }
 
 // Start auto-update check interval (every 6 hours)
@@ -2060,7 +2187,7 @@ ipcMain.handle('set-auto-update', async (event, enabled) => {
     try {
       const raw = fs.readFileSync(privateConfigPath, 'utf8');
       config = JSON.parse(raw);
-    } catch {}
+    } catch (err) { console.warn('[set-auto-update] Could not read existing config (may be first run):', err.message); }
     config.autoUpdate = enabled;
     fs.mkdirSync(privateDir, { recursive: true });
     atomicWriteFileSync(privateConfigPath, JSON.stringify(config, null, 2));
@@ -2119,7 +2246,7 @@ ipcMain.handle('get-agent-rules', async () => {
       agentsMd = await execPromise(
         `gh api repos/${owner}/${repo}/contents/AGENTS.md --jq .content | base64 -d`
       );
-    } catch {}
+    } catch (err) { console.warn('[get-agents-md] AGENTS.md not found or unreadable:', err.message); }
     return { agentsMd };
   } catch (err) {
     return { error: err.message };
@@ -2164,15 +2291,46 @@ Rules should be generalized, not specific to this one PR.
 Keep rules concise — one sentence each when possible.`;
 
   return new Promise((resolve) => {
-    const args = ['chat', '-q', '-p', rulesConfig.aiProfile || 'wt', prompt];
+    const args = ['chat', '-q', '-p', rulesConfig.aiProfile || 'wt', '-Q', prompt];
     const proc = require('child_process').execFile(aiCmd, args, { timeout: 120000 }, (err, stdout) => {
       if (err) { resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: err.message }); return; }
       try {
-        const match = stdout.match(/\{[\s\S]*\}/);
-        const parsed = match ? JSON.parse(match[0]) : {};
-        resolve({ proposals: parsed.proposedRules || [], availableFiles: parsed.availableFiles || ['AGENTS.md'] });
+        // hermes output may include banners — find the JSON object more aggressively
+        // Try multiple strategies to extract JSON
+        let parsed = null;
+        
+        // Strategy 1: find largest JSON object
+        const jsonMatches = stdout.match(/\{[\s\S]*\}/g);
+        if (jsonMatches) {
+          for (const match of jsonMatches.sort((a, b) => b.length - a.length)) {
+            try {
+              const candidate = JSON.parse(match);
+              if (candidate.proposedRules || candidate.availableFiles) {
+                parsed = candidate;
+                break;
+              }
+            } catch {}
+          }
+        }
+        
+        // Strategy 2: find JSON between ```json blocks
+        if (!parsed) {
+          const codeBlock = stdout.match(/```json\s*([\s\S]*?)```/);
+          if (codeBlock) {
+            parsed = JSON.parse(codeBlock[1].trim());
+          }
+        }
+
+        if (parsed) {
+          log('INFO', '[propose-rules] AI returned', (parsed.proposedRules || []).length, 'proposals');
+          resolve({ proposals: parsed.proposedRules || [], availableFiles: parsed.availableFiles || ['AGENTS.md'] });
+        } else {
+          log('ERROR', '[propose-rules] Failed to parse AI response. Raw output:', stdout.substring(0, 500));
+          resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: 'Failed to parse AI response' });
+        }
       } catch (e) {
-        resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: 'Failed to parse AI response', raw: stdout });
+        log('ERROR', '[propose-rules] Parse error:', e.message, 'Raw output:', stdout.substring(0, 500));
+        resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: 'Failed to parse AI response' });
       }
     });
   });
@@ -2200,7 +2358,7 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
         current = await execPromise(
           `gh api repos/${owner}/${repo}/contents/${file} --jq .content | base64 -d`
         );
-      } catch {}
+      } catch (err) { console.warn(`[propose-rules] Existing rules file ${file} not found or unreadable:`, err.message); }
       
       // Append new rules
       const additions = newRules.map(r => `- ${r}`).join('\n');
@@ -2212,7 +2370,7 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
         sha = await execPromise(
           `gh api repos/${owner}/${repo}/contents/${file} --jq .sha`
         );
-      } catch {}
+      } catch (err) { console.warn(`[propose-rules] Could not get SHA for ${file} (may be new file):`, err.message); }
       
       const payload = JSON.stringify({
         message: `Add review-derived rules to ${file}`,
@@ -2227,7 +2385,7 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
           `gh api repos/${owner}/${repo}/contents/${file} --method PUT --input "${rulesTmpPath}"`
         );
       } finally {
-        try { fs.unlinkSync(rulesTmpPath); } catch {}
+        try { fs.unlinkSync(rulesTmpPath); } catch (e) { console.warn('[propose-rules] Failed to clean up temp rules file:', e.message); }
       }
       
       results.push({ file, success: true, count: newRules.length });
@@ -2252,7 +2410,7 @@ ipcMain.handle('delete-pr-files', async (event, prNumber) => {
         deleted++;
       }
     }
-  } catch {}
+  } catch (err) { console.warn('[cleanup-pr-files] Failed to clean generated files:', err.message); }
   
   // Also delete drafts for this PR
   const draftsDir = getDraftsDir();
@@ -2265,9 +2423,9 @@ ipcMain.handle('delete-pr-files', async (event, prNumber) => {
           fs.unlinkSync(path.join(draftsDir, f));
           deleted++;
         }
-      } catch {}
+      } catch (e) { console.warn('[cleanup-pr-files] Failed to read/parse draft file:', f, e.message); }
     }
-  } catch {}
+  } catch (err) { console.warn('[cleanup-pr-files] Failed to read drafts directory:', err.message); }
   
   return { deleted };
 });
@@ -2327,18 +2485,20 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
 });
 
 // Expand diff context for a single file
-ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines }) => {
+ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha }) => {
   try {
     // Validate inputs to prevent shell injection
     const ctxLines = parseInt(contextLines, 10);
     if (isNaN(ctxLines) || ctxLines < 0 || ctxLines > 9999) {
       return { error: 'Invalid contextLines value', content: '' };
     }
-    if (!filePath || /[;&|`$(){}!<>"\n]/.test(filePath)) {
+    if (!filePath || /[;&|`$(){}!<>"]/.test(filePath)) {
       return { error: 'Invalid file path', content: '' };
     }
+    // Use PR commit range if available, otherwise fall back to working tree diff
+    const range = (baseSha && headSha) ? `${baseSha}..${headSha} ` : '';
     const diffOut = await execPromise(
-      `git diff -U${ctxLines} -- "${filePath}"`,
+      `git diff ${range}-U${ctxLines} -- "${filePath}"`,
       { cwd: repoPath, timeout: 15000 }
     );
     return { content: diffOut };

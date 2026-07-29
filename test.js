@@ -1745,6 +1745,30 @@ async function runTests() {
   `);
   assert('Copy button has feedback element', hasFeedback);
 
+  // TEST: Copy button click triggers showToast
+  const toastTriggered = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      // Mock clipboard API
+      let copiedText = '';
+      const origWriteText = navigator.clipboard.writeText;
+      navigator.clipboard.writeText = (text) => { copiedText = text; return Promise.resolve(); };
+      // Capture showToast calls
+      let toastMsg = '';
+      const origShowToast = window.showToast;
+      window.showToast = (msg, type, duration) => { toastMsg = msg; return {}; };
+      const btn = document.querySelector('.copy-file-name-btn');
+      if (!btn) return { ok: false, reason: 'no button' };
+      btn.click();
+      // Wait for promise
+      await new Promise(r => setTimeout(r, 50));
+      // Restore
+      navigator.clipboard.writeText = origWriteText;
+      window.showToast = origShowToast;
+      return { ok: toastMsg.startsWith('Copied: '), toastMsg, copiedText };
+    })()
+  `);
+  assert('Copy button click triggers showToast with file path', toastTriggered.ok, JSON.stringify(toastTriggered));
+
   // TEST: Copy button is next to file name (inside same header)
   const isInHeader = await mainWindow.webContents.executeJavaScript(`
     (() => {

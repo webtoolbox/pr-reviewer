@@ -230,12 +230,14 @@ function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
 
   for (const section of sections) {
     if (!section.trim()) continue;
-    const match = section.match(/^diff --git a\/(.+?) b\/(.+)/m);
+    const match = section.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
     if (match) {
       const bPath = match[2];
       if (bPath === targetFile) {
         if (newFileDiff.trim()) {
-          result.push(newFileDiff.trim());
+          let replacement = newFileDiff.trim();
+          if (!replacement.endsWith('\n')) replacement += '\n';
+          result.push(replacement);
         }
         continue;
       }
@@ -1093,6 +1095,89 @@ diff --git a/src/util.js b/src/util.js
     const result = replaceFileInDiff(singleDiff, 'only.js', replacement);
     expect(result).toContain('replaced');
     expect(result).not.toContain('-old');
+  });
+
+  test('trimmed newFileDiff gets trailing newline to prevent section merge', () => {
+    // Simulates execPromise stdout.trim() stripping the trailing newline
+    const multiDiff = `diff --git a/templates/admin/moderatorLogs.tpl b/templates/admin/moderatorLogs.tpl
+--- a/templates/admin/moderatorLogs.tpl
++++ b/templates/admin/moderatorLogs.tpl
+@@ -1 +1 @@
+-old
++new
+diff --git a/data/css/layout.css b/data/css/layout.css
+--- a/data/css/layout.css
++++ b/data/css/layout.css
+@@ -1 +1 @@
+-body{color:red}
++body{color:blue}`;
+    const trimmedReplacement = `diff --git a/templates/admin/moderatorLogs.tpl b/templates/admin/moderatorLogs.tpl
+--- a/templates/admin/moderatorLogs.tpl
++++ b/templates/admin/moderatorLogs.tpl
+@@ -1,3 +1,3 @@
+ context
+-old line
++new line
+ context`;
+    // trimmedReplacement has no trailing \n (simulates stdout.trim())
+    const result = replaceFileInDiff(multiDiff, 'templates/admin/moderatorLogs.tpl', trimmedReplacement);
+    // The replacement should have a trailing newline so layout.css section remains intact
+    expect(result).toContain('templates/admin/moderatorLogs.tpl');
+    expect(result).toContain('layout.css');
+    // Verify sections didn't merge: layout.css should still start on its own line
+    expect(result).toMatch(/context\ndiff --git a\/data\/css\/layout\.css/);
+    expect(result).toContain('body{color:blue}');
+  });
+
+  test('matches correct file among files sharing admin path segment', () => {
+    const diff = `diff --git a/templates/admin/moderatorLogs.tpl b/templates/admin/moderatorLogs.tpl
+--- a/templates/admin/moderatorLogs.tpl
++++ b/templates/admin/moderatorLogs.tpl
+@@ -1 +1 @@
+-old tpl
++new tpl
+diff --git a/data/css/layout.css b/data/css/layout.css
+--- a/data/css/layout.css
++++ b/data/css/layout.css
+@@ -1 +1 @@
+-old css
++new css
+diff --git a/templates/admin/moderators.tpl b/templates/admin/moderators.tpl
+--- a/templates/admin/moderators.tpl
++++ b/templates/admin/moderators.tpl
+@@ -1 +1 @@
+-old moderators
++new moderators`;
+    const replacement = `diff --git a/templates/admin/moderatorLogs.tpl b/templates/admin/moderatorLogs.tpl
+--- a/templates/admin/moderatorLogs.tpl
++++ b/templates/admin/moderatorLogs.tpl
+@@ -1,2 +1,2 @@
+ line1
+-old tpl
++expanded tpl`;
+    const result = replaceFileInDiff(diff, 'templates/admin/moderatorLogs.tpl', replacement);
+    expect(result).toContain('expanded tpl');
+    // The ORIGINAL addition line should be gone, replaced by expanded version
+    expect(result).not.toContain('+new tpl');
+    // Other files must be preserved
+    expect(result).toContain('layout.css');
+    expect(result).toContain('old css');
+    expect(result).toContain('moderators.tpl');
+    expect(result).toContain('old moderators');
+  });
+
+  test('regex handles trailing whitespace in diff header (e.g. CRLF)', () => {
+    const diff = "diff --git a/file.js b/file.js\r\n--- a/file.js\n+++ b/file.js\n@@ -1 +1 @@\n-old\n+new\n";
+    const replacement = `diff --git a/file.js b/file.js
+--- a/file.js
++++ b/file.js
+@@ -1 +1 @@
+-old
++replaced`;
+    const result = replaceFileInDiff(diff, 'file.js', replacement);
+    expect(result).toContain('+replaced');
+    // The ORIGINAL addition should be gone, replaced by the new content
+    expect(result).not.toContain('+new');
   });
 });
 
@@ -2949,5 +3034,190 @@ describe('comment button positioning and side-by-side fix', () => {
     const closestTrMatches = funcSrc.match(/\.closest\('tr'\)/g);
     expect(closestTrMatches).not.toBeNull();
     expect(closestTrMatches.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ── PR Draft Persistence ──
+
+describe('PR Draft Persistence', () => {
+  const tmpDir = path.join(os.tmpdir(), 'pr-reviewer-test-drafts-' + Date.now());
+
+  // Extract testable versions of PR draft functions (same logic as main.js)
+  function safePrNumber(prNumber) {
+    if (prNumber === null || prNumber === undefined) return null;
+    const str = String(prNumber).trim();
+    if (!/^\d+$/.test(str)) return null;
+    const num = parseInt(str, 10);
+    if (isNaN(num) || num <= 0) return null;
+    return String(num);
+  }
+
+  function getPrDraftPath(prNumber, baseDir) {
+    const safePr = safePrNumber(prNumber);
+    if (!safePr) return null;
+    return path.join(baseDir, `pr-${safePr}.json`);
+  }
+
+  function savePrDraft(prNumber, data, baseDir) {
+    try {
+      const draftPath = getPrDraftPath(prNumber, baseDir);
+      if (!draftPath) return null;
+      fs.mkdirSync(baseDir, { recursive: true });
+      const payload = {
+        comments: data.comments || [],
+        prNumber: safePrNumber(prNumber),
+        repoKey: data.repoKey || null,
+        reviewBody: data.reviewBody || '',
+        timestamp: new Date().toISOString()
+      };
+      fs.writeFileSync(draftPath, JSON.stringify(payload, null, 2));
+      return draftPath;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function loadPrDraft(prNumber, baseDir) {
+    try {
+      const draftPath = getPrDraftPath(prNumber, baseDir);
+      if (!draftPath || !fs.existsSync(draftPath)) return null;
+      const raw = fs.readFileSync(draftPath, 'utf8');
+      return JSON.parse(raw);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function deletePrDraft(prNumber, baseDir) {
+    try {
+      const draftPath = getPrDraftPath(prNumber, baseDir);
+      if (draftPath && fs.existsSync(draftPath)) {
+        fs.unlinkSync(draftPath);
+      }
+    } catch (err) { /* ignore */ }
+  }
+
+  afterAll(() => {
+    // Clean up temp dir
+    try {
+      const files = fs.readdirSync(tmpDir);
+      for (const f of files) fs.unlinkSync(path.join(tmpDir, f));
+      fs.rmdirSync(tmpDir);
+    } catch {}
+  });
+
+  test('getPrDraftPath returns correct path for valid PR number', () => {
+    expect(getPrDraftPath(42, tmpDir)).toBe(path.join(tmpDir, 'pr-42.json'));
+    expect(getPrDraftPath('123', tmpDir)).toBe(path.join(tmpDir, 'pr-123.json'));
+  });
+
+  test('getPrDraftPath returns null for invalid PR number', () => {
+    expect(getPrDraftPath(null, tmpDir)).toBeNull();
+    expect(getPrDraftPath(undefined, tmpDir)).toBeNull();
+    expect(getPrDraftPath('abc', tmpDir)).toBeNull();
+    expect(getPrDraftPath(0, tmpDir)).toBeNull();
+    expect(getPrDraftPath(-1, tmpDir)).toBeNull();
+    expect(getPrDraftPath('1; rm -rf /', tmpDir)).toBeNull();
+  });
+
+  test('savePrDraft writes file with correct structure', () => {
+    const comments = [{ file: 'main.js', line: 10, side: 'RIGHT', text: 'Fix this' }];
+    const result = savePrDraft(42, { comments, repoKey: 'owner/repo', reviewBody: 'Looks good' }, tmpDir);
+    expect(result).toBe(path.join(tmpDir, 'pr-42.json'));
+    expect(fs.existsSync(result)).toBe(true);
+
+    const data = JSON.parse(fs.readFileSync(result, 'utf8'));
+    expect(data.prNumber).toBe('42');
+    expect(data.repoKey).toBe('owner/repo');
+    expect(data.reviewBody).toBe('Looks good');
+    expect(data.comments).toHaveLength(1);
+    expect(data.comments[0].file).toBe('main.js');
+    expect(data.comments[0].text).toBe('Fix this');
+    expect(data.timestamp).toBeDefined();
+  });
+
+  test('loadPrDraft returns saved draft', () => {
+    const comments = [
+      { file: 'a.js', line: 5, side: 'LEFT', text: 'comment 1' },
+      { file: 'b.js', line: 20, side: 'RIGHT', text: 'comment 2' }
+    ];
+    savePrDraft(99, { comments, repoKey: 'org/repo' }, tmpDir);
+    const draft = loadPrDraft(99, tmpDir);
+    expect(draft).not.toBeNull();
+    expect(draft.prNumber).toBe('99');
+    expect(draft.comments).toHaveLength(2);
+    expect(draft.comments[0].text).toBe('comment 1');
+    expect(draft.comments[1].text).toBe('comment 2');
+  });
+
+  test('loadPrDraft returns null for non-existent PR', () => {
+    expect(loadPrDraft(99999, tmpDir)).toBeNull();
+  });
+
+  test('deletePrDraft removes the file', () => {
+    savePrDraft(50, { comments: [{ text: 'test' }] }, tmpDir);
+    expect(loadPrDraft(50, tmpDir)).not.toBeNull();
+    deletePrDraft(50, tmpDir);
+    expect(loadPrDraft(50, tmpDir)).toBeNull();
+  });
+
+  test('deletePrDraft does not throw for non-existent PR', () => {
+    expect(() => deletePrDraft(99999, tmpDir)).not.toThrow();
+  });
+
+  test('savePrDraft overwrites existing draft', () => {
+    savePrDraft(77, { comments: [{ text: 'old' }] }, tmpDir);
+    savePrDraft(77, { comments: [{ text: 'new1' }, { text: 'new2' }] }, tmpDir);
+    const draft = loadPrDraft(77, tmpDir);
+    expect(draft.comments).toHaveLength(2);
+    expect(draft.comments[0].text).toBe('new1');
+  });
+
+  test('savePrDraft handles empty comments', () => {
+    const result = savePrDraft(88, {}, tmpDir);
+    expect(result).not.toBeNull();
+    const draft = loadPrDraft(88, tmpDir);
+    expect(draft.comments).toEqual([]);
+    expect(draft.repoKey).toBeNull();
+    expect(draft.reviewBody).toBe('');
+  });
+
+  test('savePrDraft includes timestamp', () => {
+    const before = new Date().toISOString();
+    savePrDraft(66, { comments: [] }, tmpDir);
+    const after = new Date().toISOString();
+    const draft = loadPrDraft(66, tmpDir);
+    expect(draft.timestamp).toBeDefined();
+    expect(draft.timestamp >= before).toBe(true);
+    expect(draft.timestamp <= after).toBe(true);
+  });
+
+  test('round-trip preserves all comment fields', () => {
+    const comments = [{
+      _uid: 1,
+      file: 'src/index.ts',
+      line: 42,
+      side: 'RIGHT',
+      text: '@Hermes check this',
+      isAiTagged: true,
+      level: 'line',
+      codeContext: 'const x = 1;',
+      imageDataUrl: null
+    }];
+    savePrDraft(33, { comments, repoKey: 'webtoolbox/Website-Toolbox', reviewBody: 'body text' }, tmpDir);
+    const draft = loadPrDraft(33, tmpDir);
+    expect(draft.comments[0]._uid).toBe(1);
+    expect(draft.comments[0].file).toBe('src/index.ts');
+    expect(draft.comments[0].line).toBe(42);
+    expect(draft.comments[0].side).toBe('RIGHT');
+    expect(draft.comments[0].isAiTagged).toBe(true);
+    expect(draft.comments[0].level).toBe('line');
+    expect(draft.comments[0].codeContext).toBe('const x = 1;');
+    expect(draft.repoKey).toBe('webtoolbox/Website-Toolbox');
+  });
+
+  test('savePrDraft returns null for invalid PR number', () => {
+    expect(savePrDraft(null, { comments: [] }, tmpDir)).toBeNull();
+    expect(savePrDraft('abc', { comments: [] }, tmpDir)).toBeNull();
   });
 });
