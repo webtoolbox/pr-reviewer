@@ -3916,10 +3916,10 @@ function openCompareSlideshow(index) {
   overlay.querySelector('.compare-nav-btn.prev').addEventListener('click', () => navigateCompare('prev'));
   overlay.querySelector('.compare-nav-btn.next').addEventListener('click', () => navigateCompare('next'));
   overlay.querySelector('#compare-before-side').addEventListener('click', (e) => {
-    if (e.target.tagName !== 'IMG') toggleCompareZoom('before');
+    if (e.target.tagName !== 'IMG' && !e.target.closest('.compare-sub-nav')) toggleCompareZoom('before');
   });
   overlay.querySelector('#compare-after-side').addEventListener('click', (e) => {
-    if (e.target.tagName !== 'IMG') toggleCompareZoom('after');
+    if (e.target.tagName !== 'IMG' && !e.target.closest('.compare-sub-nav')) toggleCompareZoom('after');
   });
   overlay.querySelector('#compare-before-side img').addEventListener('click', (e) => {
     e.stopPropagation();
