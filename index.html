@@ -954,6 +954,15 @@
     /* Dark theme overrides for diff2html */
     .d2h-dark-color-scheme { background-color: #0d1117; }
 
+    /* GitHub's exact dark theme diff colors (extracted from pixel analysis) */
+    :root, :host {
+      --d2h-dark-bg-color: #0D1017 !important;
+      --d2h-dark-del-bg-color: #28171D !important;
+      --d2h-dark-del-highlight-bg-color: #562528 !important;
+      --d2h-dark-ins-bg-color: #13271C !important;
+      --d2h-dark-ins-highlight-bg-color: #1C4D32 !important;
+    }
+
     /* Ensure diff line backgrounds (green/red) take precedence over
        highlight.js token backgrounds. Without this, hljs adds background
        colors to syntax tokens that override the .d2h-ins/.d2h-del lines. */
@@ -972,11 +981,9 @@
     /* Word-level diff highlights — del/ins tags within changed lines */
     .d2h-code-line del, .d2h-code-side-line del {
       background-color: var(--d2h-dark-del-highlight-bg-color) !important;
-      color: var(--d2h-dark-del-label-color) !important;
     }
     .d2h-code-line ins, .d2h-code-side-line ins {
       background-color: var(--d2h-dark-ins-highlight-bg-color) !important;
-      color: var(--d2h-dark-ins-label-color) !important;
     }
     /* Changed lines use same red/green as pure del/ins, not orange */
     .d2h-dark-color-scheme .d2h-file-diff .d2h-del.d2h-change,

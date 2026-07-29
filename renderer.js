@@ -3933,12 +3933,20 @@ function openCompareSlideshow(index) {
   // Sub-navigation handlers for multiple images within a pair
   overlay.querySelectorAll('.compare-sub-nav').forEach(nav => {
     const side = nav.dataset.side;
+    nav.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+      });
+    });
     nav.querySelector('.compare-sub-prev')?.addEventListener('click', (e) => {
       e.stopPropagation();
+      e.preventDefault();
       navigateSubImage(side, 'prev');
     });
     nav.querySelector('.compare-sub-next')?.addEventListener('click', (e) => {
       e.stopPropagation();
+      e.preventDefault();
       navigateSubImage(side, 'next');
     });
   });
