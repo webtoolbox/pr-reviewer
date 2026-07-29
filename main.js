@@ -2498,12 +2498,25 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
     if (!filePath || /[;&|`$(){}!<>"]/.test(filePath)) {
       return { error: 'Invalid file path', content: '' };
     }
-    // Use PR commit range if available, otherwise fall back to working tree diff
-    const range = (baseSha && headSha) ? `${baseSha}..${headSha} ` : '';
-    const cmd = `git diff ${range}-U${ctxLines} -- "${filePath}"`;
-    log('INFO', '[expand-diff-context] Running:', cmd, 'cwd:', repoPath);
-    const diffOut = await execPromise(cmd, { cwd: repoPath, timeout: 15000 });
-    log('INFO', '[expand-diff-context] Got', diffOut.length, 'chars for', filePath);
+    // Use same range as generateDiff: three-dot against origin/master first, two-dot as fallback
+    let diffOut = '';
+    if (headSha) {
+      try {
+        const cmd3 = `git diff origin/master...${headSha} -U${ctxLines} -- "${filePath}"`;
+        log('INFO', '[expand-diff-context] Trying 3-dot:', cmd3);
+        diffOut = await execPromise(cmd3, { cwd: repoPath, timeout: 15000 });
+        log('INFO', '[expand-diff-context] 3-dot got', diffOut.length, 'chars');
+      } catch (e) {
+        log('INFO', '[expand-diff-context] 3-dot failed, falling back to 2-dot:', e.message);
+      }
+    }
+    if (!diffOut) {
+      const range = (baseSha && headSha) ? `${baseSha}..${headSha} ` : '';
+      const cmd2 = `git diff ${range}-U${ctxLines} -- "${filePath}"`;
+      log('INFO', '[expand-diff-context] Trying 2-dot:', cmd2);
+      diffOut = await execPromise(cmd2, { cwd: repoPath, timeout: 15000 });
+      log('INFO', '[expand-diff-context] 2-dot got', diffOut.length, 'chars');
+    }
     return { content: diffOut };
   } catch (err) {
     log('ERROR', '[expand-diff-context] failed:', err.message);
