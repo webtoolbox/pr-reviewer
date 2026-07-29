@@ -667,17 +667,18 @@ async function generateDiff(prNumber, repoKey) {
     console.warn('[generateDiff] git fetch origin master failed, will use two-dot diff');
   }
 
-  // Use three-dot diff against master to exclude merge noise, or two-dot as fallback
+  // When baseSha comes from a review, use two-dot (baseSha..headSha) to show only changes since last review
+  // When no review found, use three-dot against master to exclude merge noise
   const contextLines = appConfig.contextLines || 5;
   let diffOut;
-  if (originMasterAvailable) {
+  if (!reviewInfo && originMasterAvailable) {
     diffOut = await execPromise(
       `git diff origin/master...${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
       { cwd: repoPath }
     );
   }
   if (!diffOut) {
-    // Fallback: two-dot diff between base and head
+    // Two-dot diff between base and head (works for both review-based and PR-base ranges)
     diffOut = await execPromise(
       `git diff ${baseSha}..${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
       { cwd: repoPath }
