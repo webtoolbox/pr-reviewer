@@ -688,13 +688,21 @@ async function generateDiff(prNumber, repoKey) {
         }
 
         if (changedSinceReview.size > 0) {
-          // Use git diff for only the changed files — correct content, no merged master noise
-          const fileArgs = [...changedSinceReview].map(f => `"${f}"`).join(' ');
-          diffOut = await execPromise(
-            `git diff ${baseSha}..${headSha} -- ${fileArgs}`,
-            { cwd: repoPath, timeout: 30000 }
-          );
-          log('INFO', `[generateDiff] Using git diff for ${changedSinceReview.size} files changed since review`);
+          // Diff each non-merge commit individually to exclude merged master changes
+          const diffs = [];
+          for (const c of afterReview) {
+            try {
+              const diff = await execPromise(
+                `git diff ${c.sha}^..${c.sha}`,
+                { cwd: repoPath, timeout: 15000 }
+              );
+              if (diff) diffs.push(diff);
+            } catch {}
+          }
+          if (diffs.length > 0) {
+            diffOut = diffs.join('\n');
+            log('INFO', `[generateDiff] Combined ${diffs.length} individual commit diffs for ${changedSinceReview.size} files`);
+          }
         }
       }
     } catch (filterErr) {
