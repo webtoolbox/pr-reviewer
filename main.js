@@ -657,33 +657,11 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No files changed since last review');
   }
 
-  // Fetch origin/master for three-dot diff
-  let originMasterAvailable = true;
-  try {
-    await execPromise('git fetch origin master', { cwd: repoPath });
-  } catch {
-    // If fetch fails, three-dot diff won't work — fall back to two-dot diff
-    originMasterAvailable = false;
-    console.warn('[generateDiff] git fetch origin master failed, will use two-dot diff');
-  }
-
-  // When baseSha comes from a review, use two-dot (baseSha..headSha) to show only changes since last review
-  // When no review found, use three-dot against master to exclude merge noise
-  const contextLines = appConfig.contextLines || 5;
-  let diffOut;
-  if (!reviewInfo && originMasterAvailable) {
-    diffOut = await execPromise(
-      `git diff origin/master...${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
-      { cwd: repoPath }
-    );
-  }
-  if (!diffOut) {
-    // Two-dot diff between base and head (works for both review-based and PR-base ranges)
-    diffOut = await execPromise(
-      `git diff ${baseSha}..${headSha} --unified=${contextLines} -- ${changedFiles.map(f => `\"${f}\"`).join(' ')}`,
-      { cwd: repoPath }
-    );
-  }
+  // Use `gh pr diff` which respects merge base and excludes merged master noise
+  const diffOut = await execPromise(
+    `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
+    { timeout: 60000 }
+  );
 
   if (!diffOut || !diffOut.trim()) {
     throw new Error('Diff is empty — no changes detected between base and head commits');
