@@ -1792,7 +1792,7 @@ ipcMain.handle('download-github-images', async (event, { prBody }) => {
 });
 
 // Get commits for a PR
-ipcMain.handle('get-pr-commits', async (event, prNumber) => {
+ipcMain.handle('get-pr-commits', async (event, prNumber, baseSha) => {
   prNumber = safePrNumber(prNumber);
   if (!prNumber) return { commits: [], error: 'Invalid PR number' };
   const owner = appConfig.repoOwner || 'webtoolbox';
@@ -1801,7 +1801,17 @@ ipcMain.handle('get-pr-commits', async (event, prNumber) => {
     const stdout = await execPromise(
       `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`
     );
-    const commits = JSON.parse(stdout || '[]');
+    let commits = JSON.parse(stdout || '[]');
+
+    // Filter to only show commits since last review (after baseSha)
+    if (baseSha) {
+      const baseIdx = commits.findIndex(c => c.sha.startsWith(baseSha));
+      if (baseIdx >= 0) {
+        commits = commits.slice(baseIdx + 1);
+        log('INFO', `[get-pr-commits] Filtered to ${commits.length} commits since ${baseSha.substring(0,7)}`);
+      }
+    }
+
     return {
       commits: commits.map(c => ({
         sha: c.sha.substring(0, 7),

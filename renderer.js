@@ -3520,7 +3520,7 @@ document.addEventListener('click', (e) => {
 // Load commits when a PR is loaded
 async function loadPrCommits(prNumber) {
   try {
-    const result = await window.electronAPI.getPrCommits(prNumber);
+    const result = await window.electronAPI.getPrCommits(prNumber, currentBaseSha);
     if (result.error) {
       console.error('[commits] error:', result.error);
       return;

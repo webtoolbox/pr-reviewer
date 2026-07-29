@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadPr: (prNumber) => ipcRenderer.invoke('load-pr', prNumber),
   listPrs: () => ipcRenderer.invoke('list-prs'),
   openPrNewWindow: (prNumber) => ipcRenderer.invoke('open-pr-new-window', prNumber),
-  getPrCommits: (prNumber) => ipcRenderer.invoke('get-pr-commits', prNumber),
+  getPrCommits: (prNumber, baseSha) => ipcRenderer.invoke('get-pr-commits', prNumber, baseSha),
   getFileBlame: (data) => ipcRenderer.invoke('get-file-blame', data),
   submitGitHubReview: (data) => ipcRenderer.invoke('submit-github-review', data),
   openFileInEditor: (data) => ipcRenderer.invoke('open-file-in-editor', data),
