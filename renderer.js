@@ -485,6 +485,7 @@ function getLineNumber(lineElement, isRight) {
 // ===================== LOAD DIFF =====================
 
 function loadDiff(content, filePath) {
+  console.log('[loadDiff] Called with', content ? content.length : 0, 'chars, filePath:', filePath);
   if (!content || !content.trim()) {
     prInfo.textContent = 'Error: Empty diff file';
     resetButtons();
@@ -511,6 +512,8 @@ function loadDiff(content, filePath) {
   emptyState.style.display = 'none';
   diffContainer.style.display = 'block';
   reviewBodyContainer.style.display = 'block';
+  contentDiv.classList.add('diff-loaded');
+  console.log('[loadDiff] contentDiv:', contentDiv, 'classes right after add:', contentDiv.className);
 
   resetButtons();
 
@@ -523,6 +526,9 @@ function loadDiff(content, filePath) {
   });
 
   diffContainer.innerHTML = html;
+  console.log('[loadDiff] Rendered HTML:', html.length, 'chars, diffContainer children:', diffContainer.children.length);
+  console.log('[loadDiff] content div classes:', contentDiv.className, 'diffContainer display:', getComputedStyle(diffContainer).display);
+  console.log('[loadDiff] emptyState display:', getComputedStyle(emptyState).display, 'reviewBodyContainer display:', getComputedStyle(reviewBodyContainer).display, 'diffContainer rect:', JSON.stringify(diffContainer.getBoundingClientRect()));
 
   // Apply syntax highlighting to the rendered diff
   applySyntaxHighlighting();
@@ -1764,6 +1770,8 @@ async function submitReview(eventType) {
         // Auto-advance to next PR after successful review
         if (cachedPrList && cachedPrList.length > 0) {
             const nextPr = cachedPrList[0];
+            console.log('[auto-advance] Moving to PR #' + nextPr.number, 'repo:', nextPr.repo || 'default', 'list size:', cachedPrList.length);
+            showToast('Loading next PR #' + nextPr.number + '...', 'progress');
             // Clear previous review state before loading next PR
             reviewBody.value = '';
             try {
@@ -2439,6 +2447,7 @@ prNumberInput.addEventListener('keydown', async (e) => {
 });
 
 async function loadPrByNumber(prNumber, repoKey) {
+  console.log('[loadPr] Loading PR #' + prNumber, 'repo:', repoKey || 'default');
   prInfo.innerHTML = `<strong>Loading PR #${prNumber}...</strong>`;
   const loadingToast = showToast('Loading PR…', 'progress', 30000);
   try {
@@ -3129,13 +3138,15 @@ function renderFilteredDiff() {
  * Used by loadDiff() which renders via Diff2Html.html() (raw HTML, no highlighting).
  */
 function applySyntaxHighlighting() {
-  if (typeof window.hljs === 'undefined') return;
+  if (typeof window.hljs === 'undefined') { console.warn('[hljs] highlight.js not loaded'); return; }
 
   const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+  console.log('[hljs] Applying syntax highlighting to', wrappers.length, 'file wrappers');
   wrappers.forEach(wrapper => {
     const lang = wrapper.getAttribute('data-lang') || '';
     const hljsLanguage = lang && lang !== 'plaintext' && window.hljs.getLanguage(lang) ? lang : 'plaintext';
     const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
+    console.log('[hljs] File:', wrapper.querySelector('.d2h-file-name')?.textContent, 'lang:', lang, '→', hljsLanguage, 'lines:', codeLines.length);
     codeLines.forEach(line => {
       try {
         const text = line.textContent;

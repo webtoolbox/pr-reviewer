@@ -145,7 +145,7 @@ function sendAiMessage(message, prNumber) {
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
     log('INFO', '[ai] No chat-id configured, sending via chat -q');
     // Use hermes chat -q for non-interactive single query (hermes send requires --to)
-    const args = ['chat', '-q', '-p', 'wt', prefix + message];
+    const args = ['chat', '-p', 'wt', '-q', prefix + message];
     execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
       if (err) log('ERROR', `[${appConfig.aiCommand}] send failed:`, err.message, stderr);
       else log('INFO', `[${appConfig.aiCommand}] message sent via chat`);
@@ -940,8 +940,10 @@ ipcMain.handle('open-pr-new-window', async (event, prNumber) => {
 
 ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
   try {
+    log('INFO', '[pr] Loading PR', prNumber, 'repo:', repo || 'default');
     const result = await generateDiff(prNumber, repo);
     const content = fs.readFileSync(result.diffPath, 'utf8');
+    log('INFO', '[pr] Loaded PR', prNumber, ':', content.length, 'chars,', (content.match(/diff --git/g) || []).length, 'files');
     const fileName = `pr-${prNumber}-clean.diff`;
 
     // Use PR metadata from generateDiff() instead of a second API call
@@ -1455,13 +1457,13 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
 
     console.log('[auto-fix] Sending prompt to Hermes agent...');
 
-    // Run hermes chat with the prompt (use -q for non-interactive single query)
-    // -q must come right before the prompt text (argparse consumes the next arg as query)
-    // Don't hardcode a model — use whatever the user has configured in hermes
-    const stdout = await execPromise(
-      `hermes chat -p wt --yolo -q ${JSON.stringify(prompt)}`,
-      { maxBuffer: 50 * 1024 * 1024, timeout: 600000 }
-    );
+    // Run hermes chat with the prompt using execFile to avoid shell escaping issues
+    const { execFile } = require('child_process');
+    const stdout = await new Promise((resolve, reject) => {
+      execFile(appConfig.aiCommand, ['chat', '-p', 'wt', '--yolo', '-q', prompt], { timeout: 600000 }, (err, out) => {
+        if (err) reject(err); else resolve(out);
+      });
+    });
 
     console.log('[auto-fix] Hermes response:', stdout.substring(0, 200));
 
@@ -2286,7 +2288,7 @@ Rules should be generalized, not specific to this one PR.
 Keep rules concise — one sentence each when possible.`;
 
   return new Promise((resolve) => {
-    const args = ['chat', '-q', '-p', rulesConfig.aiProfile || 'wt', '-Q', prompt];
+    const args = ['chat', '-p', rulesConfig.aiProfile || 'wt', '-q', prompt];
     const proc = require('child_process').execFile(aiCmd, args, { timeout: 60000 }, (err, stdout) => {
       if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: err.message }); return; }
       log('INFO', '[propose-rules] AI response received, length:', stdout.length, 'chars');
