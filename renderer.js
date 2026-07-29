@@ -574,21 +574,15 @@ function loadDiff(content, filePath) {
 
   resetButtons();
 
-  const html = Diff2Html.html(content, {
+  // Use Diff2HtmlUI.draw() which handles hljs internally and preserves word-level del/ins tags
+  const diff2htmlUi = new Diff2HtmlUI(diffContainer, content, {
     drawFileList: true,
     matching: 'words',
     outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
-    colorScheme: 'dark',
-    synchronisedScroll: true,
-  });
-
-  diffContainer.innerHTML = html;
-  console.log('[loadDiff] Rendered HTML:', html.length, 'chars, diffContainer children:', diffContainer.children.length);
-  console.log('[loadDiff] content div classes:', contentDiv.className, 'diffContainer display:', getComputedStyle(diffContainer).display);
-  console.log('[loadDiff] emptyState display:', getComputedStyle(emptyState).display, 'reviewBodyContainer display:', getComputedStyle(reviewBodyContainer).display, 'diffContainer rect:', JSON.stringify(diffContainer.getBoundingClientRect()));
-
-  // Apply syntax highlighting to the rendered diff
-  applySyntaxHighlighting();
+    colorScheme: 'dark'
+  }, typeof window.hljs !== 'undefined' ? window.hljs : undefined);
+  diff2htmlUi.draw();
+  diff2htmlUi.fileListToggle(false);
   highlightUnrecognizedFiles();
 
   const fileCount = (content.match(/diff --git/g) || []).length;
