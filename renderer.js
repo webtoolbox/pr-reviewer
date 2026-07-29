@@ -1,3 +1,17 @@
+// Forward renderer console to main process log file
+(() => {
+  const orig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+  for (const level of ['log', 'warn', 'error', 'info']) {
+    console[level] = (...args) => {
+      orig[level](...args);
+      try {
+        const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+        window.electronAPI?.rendererLog(level.toUpperCase(), msg);
+      } catch {}
+    };
+  }
+})();
+
 // State
 let appConfig = {}; // Config from main process (repoOwner, repoName, etc.)
 let currentDiff = '';
@@ -1052,6 +1066,7 @@ async function handleContextExpand(fileName) {
     // Replace this file's section in currentDiffContent
     if (result.content && currentDiffContent) {
       console.log('[context-expand] Got', result.content.length, 'chars for', fileName);
+      console.log('[context-expand] First 200 chars:', result.content.substring(0, 200));
       console.log('[context-expand] currentDiffContent before:', currentDiffContent.length, 'chars');
       currentDiffContent = replaceFileInDiff(currentDiffContent, fileName, result.content);
       console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');

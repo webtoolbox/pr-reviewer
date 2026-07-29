@@ -851,6 +851,10 @@ app.on('window-all-closed', () => {
 
 // IPC handlers
 
+ipcMain.handle('renderer-log', (event, level, ...args) => {
+  log(level, '[renderer]', ...args);
+});
+
 ipcMain.handle('open-file', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const result = await dialog.showOpenDialog(win, {

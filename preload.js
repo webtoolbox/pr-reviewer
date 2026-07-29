@@ -9,6 +9,7 @@ try {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  rendererLog: (level, ...args) => ipcRenderer.invoke('renderer-log', level, ...args),
   openFile: () => ipcRenderer.invoke('open-file'),
   saveReview: (review) => ipcRenderer.invoke('save-review', review),
   saveDraft: (data) => ipcRenderer.invoke('save-draft', data),
