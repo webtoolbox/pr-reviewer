@@ -657,27 +657,25 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No files changed since last review');
   }
 
-  // Use `gh pr diff` which respects merge base and excludes merged master noise
+  // Use `gh pr diff` as baseline, then refine for since-review mode
   let diffOut = await execPromise(
     `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
     { timeout: 60000 }
   );
 
-  // If reviewing since last review, filter to only files changed in commits after the review
-  if (reviewInfo && diffOut) {
+  // If reviewing since last review, use git diff for only the files changed after review
+  if (reviewInfo && baseSha && headSha) {
     try {
-      // Get files changed by PR commits after the review
+      // Get files changed by PR commits after the review (non-merge commits only)
       const reviewCommits = await execPromise(
         `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`,
         { timeout: 15000 }
       );
       const allCommits = JSON.parse(reviewCommits || '[]');
       const reviewDate = reviewInfo.date;
-      // Filter to non-merge commits after the review date
       const afterReview = allCommits.filter(c => c.commit.committer.date > reviewDate && c.parents && c.parents.length < 2);
-      
+
       if (afterReview.length > 0 && afterReview.length < allCommits.length) {
-        // Get files changed in commits after the review
         const changedSinceReview = new Set();
         for (const c of afterReview) {
           try {
@@ -688,22 +686,20 @@ async function generateDiff(prNumber, repoKey) {
             files.split('\n').filter(Boolean).forEach(f => changedSinceReview.add(f));
           } catch {}
         }
-        
+
         if (changedSinceReview.size > 0) {
-          // Parse gh pr diff into per-file sections and keep only changed files
-          const sections = diffOut.split(/^(?=diff --git )/m);
-          const filtered = sections.filter(section => {
-            const match = section.match(/^diff --git a\/(.*?) b\//);
-            if (!match) return true; // Keep preamble
-            return changedSinceReview.has(match[1]);
-          });
-          diffOut = filtered.join('');
-          log('INFO', `[generateDiff] Filtered to ${changedSinceReview.size} files changed since review`);
+          // Use git diff for only the changed files — correct content, no merged master noise
+          const fileArgs = [...changedSinceReview].map(f => `"${f}"`).join(' ');
+          diffOut = await execPromise(
+            `git diff ${baseSha}..${headSha} -- ${fileArgs}`,
+            { cwd: repoPath, timeout: 30000 }
+          );
+          log('INFO', `[generateDiff] Using git diff for ${changedSinceReview.size} files changed since review`);
         }
       }
     } catch (filterErr) {
       log('ERROR', '[generateDiff] Failed to filter since-review files:', filterErr.message);
-      // Use full diff as fallback
+      // Fall back to gh pr diff
     }
   }
 
