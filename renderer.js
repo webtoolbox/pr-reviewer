@@ -274,11 +274,8 @@ function populateFileSidebar() {
       if (!wrapper) return;
       const hdr = wrapper.querySelector('.d2h-file-header');
       const target = hdr || wrapper;
-      // Scroll within the diff container (not window — container has overflow-y: auto)
-      const containerRect = diffContainer.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const scrollTop = diffContainer.scrollTop + (targetRect.top - containerRect.top) - 8;
-      diffContainer.scrollTo({ top: scrollTop, behavior: 'smooth' });
+      // Use scrollIntoView which works regardless of which ancestor is the scroll container
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       // Highlight active
       fileSidebarList.querySelectorAll('.sidebar-file-row, .sidebar-file-item').forEach(el => el.classList.remove('active'));
       row.classList.add('active');
