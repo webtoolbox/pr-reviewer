@@ -700,8 +700,86 @@ async function generateDiff(prNumber, repoKey) {
             } catch {}
           }
           if (diffs.length > 0) {
-            diffOut = diffs.join('\n');
-            log('INFO', `[generateDiff] Combined ${diffs.length} individual commit diffs for ${changedSinceReview.size} files`);
+            // Merge hunks for the same file so each file appears only once
+            const combined = diffs.join('\n');
+            const fileDiffs = {};
+            let currentFile = null;
+            let currentHeader = [];
+            let currentHunks = [];
+            let inHeader = false;
+
+            for (const line of combined.split('\n')) {
+              if (line.startsWith('diff --git ')) {
+                // Save previous file
+                if (currentFile && currentHeader.length > 0) {
+                  if (!fileDiffs[currentFile]) {
+                    fileDiffs[currentFile] = { header: currentHeader, hunks: [] };
+                  }
+                  fileDiffs[currentFile].hunks.push(...currentHunks);
+                }
+                // Extract file path from "diff --git a/path b/path"
+                const m = line.match(/diff --git a\/(.+?) b\/(.+?)$/);
+                currentFile = m ? m[2] : line;
+                currentHeader = [line];
+                currentHunks = [];
+                inHeader = true;
+              } else if (inHeader && (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ '))) {
+                // Use the latest --- and +++ lines (from last commit)
+                if (line.startsWith('--- ')) {
+                  currentHeader = currentHeader.filter(l => !l.startsWith('--- '));
+                  currentHeader.push(line);
+                } else if (line.startsWith('+++ ')) {
+                  currentHeader = currentHeader.filter(l => !l.startsWith('+++ '));
+                  currentHeader.push(line);
+                } else {
+                  currentHeader.push(line);
+                }
+              } else if (line.startsWith('@@ ')) {
+                inHeader = false;
+                currentHunks.push(line);
+              } else if (!inHeader) {
+                // Hunk content line
+                if (currentHunks.length > 0) {
+                  currentHunks.push(line);
+                }
+              }
+            }
+            // Save last file
+            if (currentFile && currentHeader.length > 0) {
+              if (!fileDiffs[currentFile]) {
+                fileDiffs[currentFile] = { header: currentHeader, hunks: [] };
+              }
+              fileDiffs[currentFile].hunks.push(...currentHunks);
+            }
+
+            // Reassemble: header + sorted hunks for each file
+            const merged = [];
+            for (const [path, data] of Object.entries(fileDiffs)) {
+              // Sort hunks by the line number in the @@ header
+              const hunkBlocks = [];
+              let currentBlock = [];
+              for (const line of data.hunks) {
+                if (line.startsWith('@@ ')) {
+                  if (currentBlock.length > 0) hunkBlocks.push(currentBlock);
+                  currentBlock = [line];
+                } else {
+                  currentBlock.push(line);
+                }
+              }
+              if (currentBlock.length > 0) hunkBlocks.push(currentBlock);
+              // Sort by the new-file start line number in @@ -a,b +c,d @@
+              hunkBlocks.sort((a, b) => {
+                const mA = a[0].match(/@@ -(\d+)(?:,\d+)? \+(\d+)/);
+                const mB = b[0].match(/@@ -(\d+)(?:,\d+)? \+(\d+)/);
+                return (mA ? parseInt(mA[2]) : 0) - (mB ? parseInt(mB[2]) : 0);
+              });
+              merged.push(data.header.join('\n'));
+              for (const block of hunkBlocks) {
+                merged.push(block.join('\n'));
+              }
+            }
+            diffOut = merged.join('\n');
+            log('INFO', `[generateDiff] Combined ${diffs.length} commit diffs into ${Object.keys(fileDiffs).length} files`);
           }
         }
       }
