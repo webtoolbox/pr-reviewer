@@ -94,8 +94,8 @@ function populateFileSidebar() {
 
     // Skip files whose extension is filtered out
     if (activeExtensions !== null && activeExtensions.length > 0) {
-      const fileExt = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
-      if (fileExt && !activeExtensions.includes(fileExt)) return;
+      const fileExt = fileName.includes('.') ? '.' + fileName.split('.').pop() : '(no ext)';
+      if (!activeExtensions.includes(fileExt)) return;
     }
 
     // Extract +/- counts
@@ -2880,6 +2880,8 @@ let activeExtensions = (() => {
   } catch { return null; }
 })();
 let allExtensionsInDiff = [];
+// Update filter button on startup in case extensions were persisted
+setTimeout(() => { if (typeof updateFilterButtonState === 'function') updateFilterButtonState(); }, 0);
 
 function saveActiveExtensions() {
   try {
@@ -2894,8 +2896,8 @@ function extractExtensionsFromDiff(diffContent) {
   for (const line of lines) {
     if (line.startsWith('+++ b/') || line.startsWith('--- a/')) {
       const filePath = line.substring(6);
-      const ext = filePath.includes('.') ? '.' + filePath.split('.').pop() : '';
-      if (ext) extensions.add(ext);
+      const ext = filePath.includes('.') ? '.' + filePath.split('.').pop() : '(no ext)';
+      extensions.add(ext);
     }
   }
   return Array.from(extensions).sort();
