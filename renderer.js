@@ -3878,35 +3878,31 @@ function openCompareSlideshow(index) {
   overlay.className = 'compare-overlay';
   overlay.id = 'compare-overlay';
 
-  const pair = beforeAfterPairs[compareOverlayIndex];
-  const beforeArr = Array.isArray(pair.before) ? pair.before : [pair.before];
-  const afterArr = Array.isArray(pair.after) ? pair.after : [pair.after];
-  const beforeSubHtml = beforeArr.map((url, si) => `<img src="${escapeHtml(url)}" alt="Before${beforeArr.length > 1 ? ' ' + (si+1) : ''}" class="compare-sub-img${si === 0 ? ' active' : ''}" data-sub-index="${si}">`).join('');
-  const afterSubHtml = afterArr.map((url, si) => `<img src="${escapeHtml(url)}" alt="After${afterArr.length > 1 ? ' ' + (si+1) : ''}" class="compare-sub-img${si === 0 ? ' active' : ''}" data-sub-index="${si}">`).join('');
-  const beforeSubNav = beforeArr.length > 1 ? `<div class="compare-sub-nav" data-side="before"><button class="compare-sub-prev" ${beforeArr.length <= 1 ? 'disabled' : ''}>◀</button><span class="compare-sub-counter">1/${beforeArr.length}</span><button class="compare-sub-next" ${beforeArr.length <= 1 ? 'disabled' : ''}>▶</button></div>` : '';
-  const afterSubNav = afterArr.length > 1 ? `<div class="compare-sub-nav" data-side="after"><button class="compare-sub-prev" ${afterArr.length <= 1 ? 'disabled' : ''}>◀</button><span class="compare-sub-counter">1/${afterArr.length}</span><button class="compare-sub-next" ${afterArr.length <= 1 ? 'disabled' : ''}>▶</button></div>` : '';
+  // Flatten all pairs into a single list: Before1, After1, After2, Before2, After3...
+  window._compareFlatImages = [];
+  for (const p of beforeAfterPairs) {
+    const bArr = Array.isArray(p.before) ? p.before : [p.before];
+    const aArr = Array.isArray(p.after) ? p.after : [p.after];
+    bArr.forEach(src => window._compareFlatImages.push({ src, label: 'Before' }));
+    aArr.forEach(src => window._compareFlatImages.push({ src, label: 'After' }));
+  }
+  const flat = window._compareFlatImages;
+  const current = flat[compareOverlayIndex] || flat[0];
 
   overlay.innerHTML = `
     <div class="compare-header">
-      <span class="compare-counter">${compareOverlayIndex + 1} of ${beforeAfterPairs.length}</span>
+      <span class="compare-counter">${compareOverlayIndex + 1} of ${flat.length}</span>
       <button class="compare-close" title="Close (Esc)">✕</button>
     </div>
-    <div class="compare-body">
-      <button class="compare-nav-btn prev" title="Previous (←)">◀</button>
-      <div class="compare-side" id="compare-before-side" title="Click to zoom">
-        <div class="compare-label">Before</div>
-        ${beforeSubHtml}
-        ${beforeSubNav}
+    <div class="compare-body compare-single-view">
+      <button class="compare-nav-btn prev" title="Previous (←)" ${compareOverlayIndex <= 0 ? 'disabled' : ''}>◀</button>
+      <div class="compare-side compare-single-side" id="compare-single-side" title="Click to zoom">
+        <div class="compare-label">${current.label}</div>
+        <img src="${escapeHtml(current.src)}" alt="${current.label}">
       </div>
-      <div class="compare-divider"></div>
-      <div class="compare-side" id="compare-after-side" title="Click to zoom">
-        <div class="compare-label">After</div>
-        ${afterSubHtml}
-        ${afterSubNav}
-      </div>
-      <button class="compare-nav-btn next" title="Next (→)">▶</button>
+      <button class="compare-nav-btn next" title="Next (→)" ${compareOverlayIndex >= flat.length - 1 ? 'disabled' : ''}>▶</button>
     </div>
-    <div class="compare-hint">← → Navigate pairs &nbsp;|&nbsp; ↑ ↓ Navigate images within pair &nbsp;|&nbsp; Click image to zoom &nbsp;|&nbsp; Esc Close</div>
+    <div class="compare-hint">← → Navigate images &nbsp;|&nbsp; Click image to zoom &nbsp;|&nbsp; Esc Close</div>
   `;
 
   document.body.appendChild(overlay);
@@ -3930,26 +3926,17 @@ function openCompareSlideshow(index) {
     toggleCompareZoom('after');
   });
 
-  // Sub-navigation handlers for multiple images within a pair
-  overlay.querySelectorAll('.compare-sub-nav').forEach(nav => {
-    const side = nav.dataset.side;
-    nav.querySelectorAll('button').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-      });
+  // Single image zoom handler
+  const singleSide = overlay.querySelector('#compare-single-side');
+  if (singleSide) {
+    singleSide.addEventListener('click', (e) => {
+      if (e.target.tagName !== 'IMG') toggleCompareZoom('single');
     });
-    nav.querySelector('.compare-sub-prev')?.addEventListener('click', (e) => {
+    singleSide.querySelector('img')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      e.preventDefault();
-      navigateSubImage(side, 'prev');
+      toggleCompareZoom('single');
     });
-    nav.querySelector('.compare-sub-next')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      navigateSubImage(side, 'next');
-    });
-  });
+  }
 
   updateCompareNavButtons();
 }
@@ -3961,9 +3948,10 @@ function closeCompareSlideshow() {
 }
 
 function navigateCompare(direction) {
+  const flat = window._compareFlatImages || [];
   if (direction === 'prev' && compareOverlayIndex > 0) {
     compareOverlayIndex--;
-  } else if (direction === 'next' && compareOverlayIndex < beforeAfterPairs.length - 1) {
+  } else if (direction === 'next' && compareOverlayIndex < flat.length - 1) {
     compareOverlayIndex++;
   } else {
     return;
@@ -3973,80 +3961,24 @@ function navigateCompare(direction) {
   const overlay = document.getElementById('compare-overlay');
   if (!overlay) return;
 
-  const pair = beforeAfterPairs[compareOverlayIndex];
-  const beforeArr = Array.isArray(pair.before) ? pair.before : [pair.before];
-  const afterArr = Array.isArray(pair.after) ? pair.after : [pair.after];
-  overlay.querySelector('.compare-counter').textContent = `${compareOverlayIndex + 1} of ${beforeAfterPairs.length}`;
-
-  // Rebuild before side images
-  const beforeSide = overlay.querySelector('#compare-before-side');
-  beforeSide.querySelectorAll('.compare-sub-img').forEach(el => el.remove());
-  beforeSide.querySelectorAll('.compare-sub-nav').forEach(el => el.remove());
-  const beforeLabel = beforeSide.querySelector('.compare-label');
-  beforeArr.forEach((url, si) => {
-    const img = document.createElement('img');
-    img.src = url;
-    img.alt = 'Before' + (beforeArr.length > 1 ? ' ' + (si+1) : '');
-    img.className = 'compare-sub-img' + (si === 0 ? ' active' : '');
-    img.dataset.subIndex = si;
-    beforeLabel.after(img);
-  });
-  if (beforeArr.length > 1) {
-    const nav = document.createElement('div');
-    nav.className = 'compare-sub-nav';
-    nav.dataset.side = 'before';
-    nav.innerHTML = `<button class="compare-sub-prev" disabled>◀</button><span class="compare-sub-counter">1/${beforeArr.length}</span><button class="compare-sub-next">▶</button>`;
-    beforeSide.appendChild(nav);
+  const current = flat[compareOverlayIndex];
+  overlay.querySelector('.compare-counter').textContent = `${compareOverlayIndex + 1} of ${flat.length}`;
+  const side = overlay.querySelector('#compare-single-side');
+  if (side) {
+    side.querySelector('.compare-label').textContent = current.label;
+    side.querySelector('img').src = current.src;
+    side.querySelector('img').alt = current.label;
+    side.classList.remove('zoomed', 'zoomed-active');
   }
 
-  // Rebuild after side images
-  const afterSide = overlay.querySelector('#compare-after-side');
-  afterSide.querySelectorAll('.compare-sub-img').forEach(el => el.remove());
-  afterSide.querySelectorAll('.compare-sub-nav').forEach(el => el.remove());
-  const afterLabel = afterSide.querySelector('.compare-label');
-  afterArr.forEach((url, si) => {
-    const img = document.createElement('img');
-    img.src = url;
-    img.alt = 'After' + (afterArr.length > 1 ? ' ' + (si+1) : '');
-    img.className = 'compare-sub-img' + (si === 0 ? ' active' : '');
-    img.dataset.subIndex = si;
-    afterLabel.after(img);
-  });
-  if (afterArr.length > 1) {
-    const nav = document.createElement('div');
-    nav.className = 'compare-sub-nav';
-    nav.dataset.side = 'after';
-    nav.innerHTML = `<button class="compare-sub-prev" disabled>▶</button><span class="compare-sub-counter">1/${afterArr.length}</span><button class="compare-sub-next">▶</button>`;
-    afterSide.appendChild(nav);
-  }
-
-  // Reset zoom state (beforeSide/afterSide already declared above)
-  if (beforeSide) { beforeSide.classList.remove('zoomed', 'zoomed-active'); }
-  if (afterSide) { afterSide.classList.remove('zoomed', 'zoomed-active'); }
-
-  updateCompareNavButtons();
+  // Update nav buttons
+  const prevBtn = overlay.querySelector('.compare-nav-btn.prev');
+  const nextBtn = overlay.querySelector('.compare-nav-btn.next');
+  if (prevBtn) prevBtn.disabled = compareOverlayIndex <= 0;
+  if (nextBtn) nextBtn.disabled = compareOverlayIndex >= flat.length - 1;
 }
 
-function navigateSubImage(side, direction) {
-  const overlay = document.getElementById('compare-overlay');
-  if (!overlay) return;
-  const sideEl = overlay.querySelector(`#compare-${side}-side`);
-  if (!sideEl) return;
-  const imgs = sideEl.querySelectorAll('.compare-sub-img');
-  if (imgs.length <= 1) return;
-  const nav = sideEl.querySelector('.compare-sub-nav');
-  let currentIdx = 0;
-  imgs.forEach((img, i) => { if (img.classList.contains('active')) currentIdx = i; });
-  let newIdx = direction === 'next' ? Math.min(currentIdx + 1, imgs.length - 1) : Math.max(currentIdx - 1, 0);
-  if (newIdx === currentIdx) return;
-  imgs[currentIdx].classList.remove('active');
-  imgs[newIdx].classList.add('active');
-  if (nav) {
-    nav.querySelector('.compare-sub-counter').textContent = `${newIdx + 1}/${imgs.length}`;
-    nav.querySelector('.compare-sub-prev').disabled = newIdx <= 0;
-    nav.querySelector('.compare-sub-next').disabled = newIdx >= imgs.length - 1;
-  }
-}
+
 
 function updateCompareNavButtons() {
   const overlay = document.getElementById('compare-overlay');
@@ -4100,14 +4032,6 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
     navigateCompare('next');
-  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-    // Navigate sub-images within the focused side (up=prev, down=next)
-    const focusedSide = document.querySelector('.compare-side:hover, .compare-side:focus');
-    if (focusedSide) {
-      const side = focusedSide.id === 'compare-before-side' ? 'before' : 'after';
-      e.preventDefault();
-      navigateSubImage(side, e.key === 'ArrowUp' ? 'prev' : 'next');
-    }
   }
 });
 
