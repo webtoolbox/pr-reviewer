@@ -569,6 +569,13 @@ function loadDiff(content, filePath) {
   // Scroll to top when loading a new PR
   window.scrollTo(0, 0);
 
+  // Reset description dropdown scroll position
+  const descDropdown = document.getElementById('pr-desc-dropdown');
+  if (descDropdown) {
+    descDropdown.scrollTop = 0;
+    descDropdown.classList.remove('open');
+  }
+
   // Apply extension filter to diff view on initial load
   // Only if user has explicitly unchecked extensions (null = show all, [] = hide all)
   if (activeExtensions !== null && activeExtensions.length > 0) {
@@ -1881,6 +1888,12 @@ async function submitReview(eventType) {
             currentPrNumber = null;
             prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
             resetButtons();
+            // Switch repo back to master/main when no more PRs
+            if (window.electronAPI.checkoutMaster) {
+              window.electronAPI.checkoutMaster(currentRepoKey || '').then(r => {
+                if (r.branch) showToast('Switched to ' + r.branch + ' branch', 'success');
+              });
+            }
           }
       }
     }
