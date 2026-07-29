@@ -330,6 +330,46 @@ function cleanupOldFiles() {
   }
 }
 
+// Clean up auto-fix worktrees left behind by hermes or previous runs
+function cleanupWorktrees() {
+  const worktreesDir = path.join(app.getPath('userData'), 'worktrees');
+  if (!fs.existsSync(worktreesDir)) return;
+
+  try {
+    const entries = fs.readdirSync(worktreesDir);
+    let cleaned = 0;
+    for (const entry of entries) {
+      const worktreePath = path.join(worktreesDir, entry);
+      try {
+        // Check if it's a directory (worktree) that's not currently in use
+        const stat = fs.statSync(worktreePath);
+        if (!stat.isDirectory()) continue;
+
+        // Try to remove the worktree via git, falling back to rm -rf
+        const repoPath = getLocalRepoPath(`${appConfig.repoOwner}/${appConfig.repoName}`);
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, timeout: 10000 });
+        } catch {
+          // git worktree remove failed, try direct delete
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+        }
+        cleaned++;
+        log('INFO', `[cleanup] Removed worktree: ${entry}`);
+      } catch (err) {
+        log('ERROR', `[cleanup] Failed to remove worktree ${entry}:`, err.message);
+      }
+    }
+    if (cleaned > 0) {
+      // Prune any stale worktree references
+      const repoPath = getLocalRepoPath(`${appConfig.repoOwner}/${appConfig.repoName}`);
+      try { execSync('git worktree prune', { cwd: repoPath, timeout: 5000 }); } catch {}
+      log('INFO', `[cleanup] Cleaned up ${cleaned} worktree(s)`);
+    }
+  } catch (err) {
+    log('ERROR', '[cleanup] Error scanning worktrees:', err.message);
+  }
+}
+
 // Draft management
 function getDraftPath(diffFilePath) {
   const draftDir = getDraftsDir();
@@ -834,6 +874,7 @@ app.whenReady().then(() => {
   const cleanup = appConfig.cleanup || {};
   if (cleanup.runOnStartup !== false) {
     cleanupOldFiles();
+    cleanupWorktrees();
   }
 
   // Create initial window with CLI args
@@ -1536,6 +1577,16 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
   } catch (err) {
     log('ERROR', '[auto-fix] Failed:', err.message);
     return { error: err.message };
+  } finally {
+    // Always clean up the worktree, even if hermes failed
+    if (worktreePath) {
+      try {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+        log('INFO', '[auto-fix] Cleaned up worktree:', worktreePath);
+      } catch (cleanErr) {
+        log('ERROR', '[auto-fix] Failed to clean up worktree:', cleanErr.message);
+      }
+    }
   }
 });
 
