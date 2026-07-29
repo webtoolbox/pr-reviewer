@@ -651,6 +651,11 @@ function restoreDraft(draft) {
   console.log('[restoreDraft] Restoring', draftComments.length, 'comments');
   for (const c of draftComments) {
     if (!c._uid) c._uid = ++commentUidCounter;
+    // Verify the comment's target line exists in current diff before adding
+    if (c.level !== 'file' && !findDiffLineRow(c.file, c.line, c.side)) {
+      console.warn('[restoreDraft] Skipping stale comment:', c.file, c.line, c.side);
+      continue;
+    }
     comments.push(c);
     if (c.level === 'file') {
       // Restore file-level comment marker
@@ -1477,20 +1482,10 @@ function renderLineCommentMarker(comment) {
     if (lineRow) {
       lineRow.parentNode.insertBefore(marker, lineRow.nextSibling);
     } else {
-      // Fallback: insert at top of the file's diff section
-      const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
-      for (const wrapper of fileWrappers) {
-        const nameEl = wrapper.querySelector('.d2h-file-name');
-        if (nameEl && nameEl.textContent.trim() === comment.file) {
-          const table = wrapper.querySelector('table');
-          if (table) {
-            const firstRow = table.querySelector('tbody tr');
-            if (firstRow) firstRow.parentNode.insertBefore(marker, firstRow);
-            else table.appendChild(marker);
-          }
-          break;
-        }
-      }
+      // Comment line not found in current diff — skip it (stale line numbers)
+      console.warn('[restoreDraft] Skipping comment — line not found:', comment.file, comment.line, comment.side);
+      marker.remove();
+      return;
     }
   }
 
