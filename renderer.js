@@ -566,6 +566,9 @@ function loadDiff(content, filePath) {
   addContextButtons();
   showReviewButtons();
 
+  // Scroll to top when loading a new PR
+  window.scrollTo(0, 0);
+
   // Apply extension filter to diff view on initial load
   // Only if user has explicitly unchecked extensions (null = show all, [] = hide all)
   if (activeExtensions !== null && activeExtensions.length > 0) {
@@ -1013,23 +1016,79 @@ function updateContextButtonStates(fileName, wrapper) {
   const btnUp = wrapper.querySelector('.context-expand-btn[data-direction="up"]');
   const btnDown = wrapper.querySelector('.context-expand-btn[data-direction="down"]');
 
+  // Parse hunk headers to check if we're already at file boundaries
+  const hunkHeaders = wrapper.querySelectorAll('.d2h-code-line-ins');
+  const hunkLines = [];
+  wrapper.querySelectorAll('.d2h-code-linenumber .line-num1, .d2h-code-linenumber .line-num2').forEach(el => {
+    const num = parseInt(el.textContent.trim(), 10);
+    if (!isNaN(num)) hunkLines.push(num);
+  });
+
+  // Check if first hunk starts near line 1 (no more above to show)
+  const firstHunkHeaders = wrapper.querySelectorAll('.d2h-code-line-ins');
+  let startsAtTop = false;
+  let endsAtBottom = false;
+
+  // Parse @@ headers to find the range of the diff
+  const diffTable = wrapper.querySelector('.d2h-diff-table');
+  let firstOldStart = Infinity, lastOldEnd = 0;
+  if (diffTable) {
+    const allRows = diffTable.querySelectorAll('tbody tr');
+    for (const row of allRows) {
+      const insCell = row.querySelector('.d2h-ins');
+      if (insCell) {
+        const match = insCell.textContent.match(/@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@/);
+        if (match) {
+          const oldStart = parseInt(match[1], 10);
+          const oldCount = parseInt(match[2] || '1', 10);
+          const newStart = parseInt(match[3], 10);
+          const newCount = parseInt(match[4] || '1', 10);
+          if (oldStart < firstOldStart) firstOldStart = oldStart;
+          const oldEnd = oldStart + oldCount;
+          const newEnd = newStart + newCount;
+          if (oldEnd > lastOldEnd) lastOldEnd = oldEnd;
+          if (newEnd > lastOldEnd) lastOldEnd = newEnd;
+          if (oldStart <= 1 || newStart <= 1) startsAtTop = true;
+        }
+      }
+    }
+  }
+
+  // Check last line number in the diff table
+  if (diffTable) {
+    const lineNums = diffTable.querySelectorAll('.line-num1, .line-num2');
+    let maxLine = 0;
+    lineNums.forEach(el => {
+      const num = parseInt(el.textContent.trim(), 10);
+      if (!isNaN(num) && num > maxLine) maxLine = num;
+    });
+    // If max visible line is close to the last hunk end, we're at the bottom
+    if (maxLine > 0 && lastOldEnd > 0 && maxLine >= lastOldEnd - 1) {
+      endsAtBottom = true;
+    }
+  }
+
+  // If max context reached, also consider it at boundaries (nothing more to fetch)
   if (maxReached) {
-    if (btnUp) {
-      btnUp.disabled = true;
-      btnUp.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/></svg> No more lines`;
+    startsAtTop = true;
+    endsAtBottom = true;
+  }
+
+  if (btnUp) {
+    if (startsAtTop) {
+      btnUp.style.display = 'none';
+    } else {
+      btnUp.style.display = '';
+      btnUp.disabled = maxReached;
     }
-    if (btnDown) {
-      btnDown.disabled = true;
-      btnDown.innerHTML = `No more lines <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
-    }
-  } else {
-    if (btnUp) {
-      btnUp.disabled = false;
-      btnUp.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/></svg> Show more lines above`;
-    }
-    if (btnDown) {
-      btnDown.disabled = false;
-      btnDown.innerHTML = `Show more lines below <svg viewBox="0 0 16 16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 111.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>`;
+  }
+
+  if (btnDown) {
+    if (endsAtBottom) {
+      btnDown.style.display = 'none';
+    } else {
+      btnDown.style.display = '';
+      btnDown.disabled = maxReached;
     }
   }
 }
