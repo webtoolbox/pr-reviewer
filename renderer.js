@@ -609,11 +609,14 @@ function loadDiff(content, filePath) {
   addContextButtons();
   showReviewButtons();
 
-  // Restore persisted comments from previous session
+  // Restore persisted comments from previous session (deduplicate by _uid)
   const savedComments = loadCommentsFromStorage();
   if (savedComments.length > 0) {
+    const existingUids = new Set(comments.map(c => c._uid));
     for (const c of savedComments) {
       c._uid = c._uid || ++commentUidCounter;
+      if (existingUids.has(c._uid)) continue;
+      existingUids.add(c._uid);
       comments.push(c);
       if (c.level === 'file') {
         renderFileCommentMarker(c);
