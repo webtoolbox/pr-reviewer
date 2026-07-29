@@ -1725,9 +1725,11 @@ async function submitReview(eventType) {
             feedback.push({ file: c.file, line: c.line, text: c.text });
           }
         }
-        let rulesDialogShown = false;
+        // Run rules analysis in background — don't block auto-advance
         if (feedback.length > 0) {
-          rulesDialogShown = await showRulesDialog(feedback);
+          showRulesDialog(feedback).catch(err => {
+            console.warn('[rules] Background rules analysis error:', err.message);
+          });
         }
 
         // Auto-fix with AI: trigger Hermes agent to create a fix PR (only for request_changes)
@@ -1759,11 +1761,8 @@ async function submitReview(eventType) {
           }
         }
 
-        // Auto-advance to next PR after successful review.
-        // Skip if the rules dialog was shown — its Save/Cancel handlers
-        // call cleanupAndLoadNext() which handles the transition.
-        if (!rulesDialogShown) {
-          if (cachedPrList && cachedPrList.length > 0) {
+        // Auto-advance to next PR after successful review
+        if (cachedPrList && cachedPrList.length > 0) {
             const nextPr = cachedPrList[0];
             // Clear previous review state before loading next PR
             reviewBody.value = '';
@@ -1779,7 +1778,6 @@ async function submitReview(eventType) {
             prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
             resetButtons();
           }
-        }
       }
     }
   } catch (err) {
@@ -4045,22 +4043,8 @@ async function cleanupAndLoadNext() {
   // Delete temp files
   await window.electronAPI.deletePrFiles(prNum);
   
-  // Load next PR
-  const nextResult = await window.electronAPI.getNextPr({ prNumber: prNum, repo: currentRepoKey });
-  if (nextResult.pr) {
-    reviewBody.value = '';
-    try {
-      await loadPrByNumber(nextResult.pr.number, nextResult.pr.repo || currentRepoKey);
-    } catch (advanceErr) {
-      console.error('[cleanupAndLoadNext] Failed to load next PR:', advanceErr);
-      prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
-      resetButtons();
-    }
-  } else {
-    currentPrNumber = null;
-    prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
-    resetButtons();
-  }
+  // Rules analysis now runs in background (non-blocking), so auto-advance
+  // already happened. Just close the dialog — don't load next PR again.
 }
 
 // ===================== PREFERENCES DIALOG =====================

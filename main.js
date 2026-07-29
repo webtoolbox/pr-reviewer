@@ -2278,13 +2278,8 @@ Analyze the feedback. For each piece of feedback that is NOT already covered by 
 1. Propose a brief, generalized rule that would prevent similar issues
 2. Recommend which file it belongs in (AGENTS.md for general rules, or the appropriate referenced file for language-specific rules)
 
-Reply with ONLY a JSON object:
-{
-  "proposedRules": [
-    {"rule": "...", "file": "path/to/file.md", "reason": "brief reason"}
-  ],
-  "availableFiles": ["AGENTS.md", ".github/instructions/perl.instructions.md", ...]
-}
+IMPORTANT: Your entire response MUST be ONLY a valid JSON object. No markdown, no explanation, no text before or after. Just the raw JSON object:
+{"proposedRules": [{"rule": "...", "file": "path/to/file.md", "reason": "brief reason"}], "availableFiles": ["AGENTS.md", ".github/instructions/perl.instructions.md", ...]}
 
 If all feedback is already covered, return: {"proposedRules": [], "availableFiles": [...]}
 Rules should be generalized, not specific to this one PR.
@@ -2292,8 +2287,10 @@ Keep rules concise — one sentence each when possible.`;
 
   return new Promise((resolve) => {
     const args = ['chat', '-q', '-p', rulesConfig.aiProfile || 'wt', '-Q', prompt];
-    const proc = require('child_process').execFile(aiCmd, args, { timeout: 120000 }, (err, stdout) => {
-      if (err) { resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: err.message }); return; }
+    const proc = require('child_process').execFile(aiCmd, args, { timeout: 60000 }, (err, stdout) => {
+      if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: err.message }); return; }
+      log('INFO', '[propose-rules] AI response received, length:', stdout.length, 'chars');
+      log('INFO', '[propose-rules] Raw response (first 500):', stdout.substring(0, 500));
       try {
         // hermes output may include banners — find the JSON object more aggressively
         // Try multiple strategies to extract JSON

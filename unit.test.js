@@ -2676,46 +2676,31 @@ describe('Rules dialog auto-advance fix', () => {
     expect(falseReturns).toBeGreaterThanOrEqual(1);
   });
 
-  test('submitReview skips auto-advance when rules dialog was shown', () => {
+  test('submitReview runs rules analysis in background (non-blocking)', () => {
     const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
     const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
-    // Should check rulesDialogShown before auto-advancing
-    expect(submitSrc).toContain('rulesDialogShown');
-    expect(submitSrc).toContain('if (!rulesDialogShown)');
+    // Rules analysis should run in background, not block auto-advance
+    expect(submitSrc).toContain('showRulesDialog(feedback)');
+    expect(submitSrc).toContain('.catch(');
+    // Should NOT await showRulesDialog
+    expect(submitSrc).not.toContain('await showRulesDialog');
   });
 
-  test('cleanupAndLoadNext passes {prNumber, repo} to getNextPr', () => {
+  test('cleanupAndLoadNext deletes temp files', () => {
     const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
     const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
     const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
-    // Should pass an object with prNumber and repo, not a bare number
-    expect(funcSrc).toContain('getNextPr({ prNumber:');
-    expect(funcSrc).toContain('repo: currentRepoKey');
-    // Should NOT pass a bare number (old bug)
-    expect(funcSrc).not.toMatch(/getNextPr\(prNum\)/);
+    expect(funcSrc).toContain('deletePrFiles(prNum)');
   });
 
-  test('cleanupAndLoadNext clears reviewBody before loading next PR', () => {
+  test('cleanupAndLoadNext does not auto-advance (handled by submitReview)', () => {
     const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
     const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
     const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
-    expect(funcSrc).toContain("reviewBody.value = ''");
-  });
-
-  test('cleanupAndLoadNext has try/catch around loadPrByNumber', () => {
-    const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
-    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
-    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
-    expect(funcSrc).toContain('catch (advanceErr)');
-  });
-
-  test('cleanupAndLoadNext handles "no more PRs" case', () => {
-    const funcStart = rendererSource.indexOf('async function cleanupAndLoadNext()');
-    const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 10);
-    const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
-    expect(funcSrc).toContain('No more PRs to review');
-    expect(funcSrc).toContain('resetButtons()');
+    // Should NOT call getNextPr or loadPrByNumber — auto-advance is in submitReview
+    expect(funcSrc).not.toContain('getNextPr');
+    expect(funcSrc).not.toContain('loadPrByNumber');
   });
 });
 
