@@ -939,7 +939,7 @@ function addCopyFileNameButtons() {
 
 // ===================== CONTEXT EXPAND BUTTONS =====================
 
-const CONTEXT_INCREMENT = 3;
+const CONTEXT_INCREMENT = 6;
 const CONTEXT_INITIAL = 3;
 const CONTEXT_MAX = 60;
 
@@ -1051,7 +1051,11 @@ async function handleContextExpand(fileName) {
 
     // Replace this file's section in currentDiffContent
     if (result.content && currentDiffContent) {
+      console.log('[context-expand] Got', result.content.length, 'chars for', fileName);
+      console.log('[context-expand] currentDiffContent before:', currentDiffContent.length, 'chars');
       currentDiffContent = replaceFileInDiff(currentDiffContent, fileName, result.content);
+      console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');
+      console.log('[context-expand] File still present:', currentDiffContent.includes(fileName));
 
       // Save scroll position and target file position before re-render
       const scrollTop = window.pageYOffset || document.documentElement.scrollTop;

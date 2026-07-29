@@ -2496,10 +2496,10 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
     }
     // Use PR commit range if available, otherwise fall back to working tree diff
     const range = (baseSha && headSha) ? `${baseSha}..${headSha} ` : '';
-    const diffOut = await execPromise(
-      `git diff ${range}-U${ctxLines} -- "${filePath}"`,
-      { cwd: repoPath, timeout: 15000 }
-    );
+    const cmd = `git diff ${range}-U${ctxLines} -- "${filePath}"`;
+    log('INFO', '[expand-diff-context] Running:', cmd, 'cwd:', repoPath);
+    const diffOut = await execPromise(cmd, { cwd: repoPath, timeout: 15000 });
+    log('INFO', '[expand-diff-context] Got', diffOut.length, 'chars for', filePath);
     return { content: diffOut };
   } catch (err) {
     log('ERROR', '[expand-diff-context] failed:', err.message);
