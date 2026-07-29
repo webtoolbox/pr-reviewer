@@ -1482,7 +1482,7 @@ ${commentSummary}${bodySummary}
 
 IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the format: PR_URL: https://github.com/${owner}/${repo}/pull/<number>`;
 
-    console.log('[auto-fix] Sending prompt to Hermes agent...');
+    log('INFO', '[auto-fix] Starting auto-fix for PR #' + prNumber + ' in ' + owner + '/' + repo);
 
     // Run hermes chat with the prompt using execFile to avoid shell escaping issues
     const { execFile } = require('child_process');
@@ -1492,7 +1492,7 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
       });
     });
 
-    console.log('[auto-fix] Hermes response:', stdout.substring(0, 200));
+    log('INFO', '[auto-fix] Hermes response:', stdout.substring(0, 200));
 
     // Extract PR URL from response
     const prUrlMatch = stdout.match(/PR_URL:\s*(https:\/\/[^\s]+)/i);
@@ -1503,6 +1503,7 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
     const newPrNumber = prNumMatch ? prNumMatch[1] : null;
 
     if (prUrl) {
+      log('INFO', '[auto-fix] Success! Fix PR created:', prUrl, 'PR#', newPrNumber);
       return { success: true, prUrl, prNumber: newPrNumber };
     }
 
@@ -1513,9 +1514,10 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
       return { success: true, prUrl: anyPrUrl[0], prNumber: num ? num[1] : null };
     }
 
+    log('ERROR', '[auto-fix] Agent did not return a PR URL. Output:', stdout.substring(0, 500));
     return { success: false, error: 'Agent did not return a PR URL. Output: ' + stdout.substring(0, 500) };
   } catch (err) {
-    console.error('[auto-fix] Failed:', err.message);
+    log('ERROR', '[auto-fix] Failed:', err.message);
     return { error: err.message };
   }
 });
