@@ -3401,6 +3401,9 @@ function renderFilteredDiff() {
   // (.cgi is mapped already, but extensionless Perl scripts need detection)
   highlightUnrecognizedFiles();
 
+  // Remove old context buttons before re-adding
+  diffContainer.querySelectorAll('.context-expand-btn').forEach(b => b.remove());
+
   // Re-add comment buttons
   addCommentButtons();
   addFileCommentButtons();
