@@ -673,7 +673,8 @@ async function generateDiff(prNumber, repoKey) {
       );
       const allCommits = JSON.parse(reviewCommits || '[]');
       const reviewDate = reviewInfo.date;
-      const afterReview = allCommits.filter(c => c.commit.committer.date > reviewDate);
+      // Filter to non-merge commits after the review date
+      const afterReview = allCommits.filter(c => c.commit.committer.date > reviewDate && c.parents && c.parents.length < 2);
       
       if (afterReview.length > 0 && afterReview.length < allCommits.length) {
         // Get files changed in commits after the review
