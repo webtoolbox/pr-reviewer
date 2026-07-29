@@ -609,24 +609,7 @@ function loadDiff(content, filePath) {
   addContextButtons();
   showReviewButtons();
 
-  // Restore persisted comments from previous session (deduplicate by _uid)
-  const savedComments = loadCommentsFromStorage();
-  if (savedComments.length > 0) {
-    const existingUids = new Set(comments.map(c => c._uid));
-    for (const c of savedComments) {
-      c._uid = c._uid || ++commentUidCounter;
-      if (existingUids.has(c._uid)) continue;
-      existingUids.add(c._uid);
-      comments.push(c);
-      if (c.level === 'file') {
-        renderFileCommentMarker(c);
-      } else {
-        renderLineCommentMarker(c);
-      }
-    }
-    updateCommentCount();
-    updateCommentNav();
-  }
+
 
   // Scroll to top when loading a new PR
   window.scrollTo(0, 0);
@@ -664,7 +647,9 @@ function restoreDraft(draft) {
   if (draft.prNumber) prNumberInput.value = draft.prNumber;
   if (draft.reviewBody) reviewBody.value = draft.reviewBody;
 
-  for (const c of draft.comments || []) {
+  const draftComments = draft.comments || [];
+  console.log('[restoreDraft] Restoring', draftComments.length, 'comments');
+  for (const c of draftComments) {
     if (!c._uid) c._uid = ++commentUidCounter;
     comments.push(c);
     if (c.level === 'file') {
@@ -1453,6 +1438,7 @@ function submitComment() {
     imageDataUrl: imageDataUrl || null
   };
   comments.push(comment);
+  console.log('[comments] Added comment, total now:', comments.length, 'file:', comment.file, 'line:', comment.line);
 
   if (level === 'file') {
     renderFileCommentMarker(comment);
@@ -1463,7 +1449,6 @@ function submitComment() {
   commentTarget = null;
   updateCommentCount();
   updateCommentNav();
-  saveCommentsToStorage();
   autoSaveDraft();
 }
 
@@ -1653,7 +1638,6 @@ function deleteComment(marker) {
   }
   updateCommentCount();
   updateCommentNav();
-  saveCommentsToStorage();
   autoSaveDraft();
 }
 
@@ -1866,7 +1850,6 @@ async function submitReview(eventType) {
         showToast(ghMsg, 'success', 8000);
 
         // Clear persisted comments after successful submission
-        clearCommentsFromStorage();
 
         // Delete PR draft after successful GitHub submission
         if (review.prNumber) {
