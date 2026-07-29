@@ -3742,11 +3742,18 @@ function togglePrDescDropdown() {
     const imgs = dropdown.querySelectorAll('img');
     let hasLargeImg = false;
     for (const img of imgs) {
-      if (img.naturalWidth > 600) { hasLargeImg = true; break; }
+      if (img.naturalWidth > 600 || img.naturalHeight > 400) { hasLargeImg = true; break; }
     }
     if (hasLargeImg) {
       dropdown.style.width = '95vw';
       dropdown.style.maxWidth = '95vw';
+      dropdown.style.maxHeight = '85vh';
+      dropdown.style.overflow = 'auto';
+      // Also make images responsive within the wider dropdown
+      dropdown.querySelectorAll('img').forEach(img => {
+        img.style.maxWidth = '100%';
+        img.style.height = 'auto';
+      });
     }
   }, 50);
 
@@ -3776,83 +3783,83 @@ function detectBeforeAfterPairs(prBody) {
   const pairs = [];
   const lines = prBody.split('\n');
   // Match both markdown ![alt](url) and HTML <img src="url"> tags (http, https, or file://)
-  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\\s)]+)\)|src="((?:https?|file):\/\/[^"]+)"/;
+  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\\s)]+)\)|src="((?:https?|file):\/\/[^"]+)"/g;
 
-  // Pattern 1: Look for "before" label followed by image, then "after" label followed by image
-  // Supports: ## Before, ### Before, **Before:**, *Before:* etc.
-  for (let i = 0; i < lines.length - 1; i++) {
-    const line = lines[i].trim();
-    const nextLine = lines[i + 1] ? lines[i + 1].trim() : '';
-
-    // Check if current line has a "before" indicator
-    const beforeMatch = line.match(/^#{1,6}\s+.*before/i) ||
-                        line.match(/^\*{1,2}\s*before\s*:?\s*\*{0,2}/i) ||
-                        line.match(/^before(?:\s+\d+)?\s*:/i);
-
-    if (beforeMatch) {
-      // Look for an image URL on this line or the next few lines (up to 3 lines ahead)
-      let beforeUrl = null;
-      for (let j = i; j <= Math.min(i + 3, lines.length - 1); j++) {
-        const imgMatch = lines[j].match(imageUrlRegex);
-        if (imgMatch) {
-          beforeUrl = imgMatch[1] || imgMatch[2]; // markdown or HTML
-          break;
-        }
-      }
-
-      if (beforeUrl) {
-        // Now look for "after" label within the next ~10 lines
-        for (let k = i + 1; k <= Math.min(i + 10, lines.length - 1); k++) {
-          const afterLine = lines[k].trim();
-          const afterMatch = afterLine.match(/^#{1,6}\s+.*after/i) ||
-                             afterLine.match(/^\*{1,2}\s*after\s*:?\s*\*{0,2}/i) ||
-                             afterLine.match(/^after(?:\s+\d+)?\s*:/i);
-
-          if (afterMatch) {
-            // Look for image URL on this line or next few lines
-            for (let m = k; m <= Math.min(k + 3, lines.length - 1); m++) {
-              const afterImgMatch = lines[m].match(imageUrlRegex);
-              if (afterImgMatch) {
-                pairs.push({ before: beforeUrl, after: afterImgMatch[1] || afterImgMatch[2] });
-                break;
-              }
-            }
-            break; // Found the after pair, stop looking
-          }
-        }
+  // Collect all images from a range of lines
+  function collectImages(fromLine, toLine) {
+    const urls = [];
+    for (let j = fromLine; j <= Math.min(toLine, lines.length - 1); j++) {
+      const line = lines[j];
+      let m;
+      imageUrlRegex.lastIndex = 0;
+      while ((m = imageUrlRegex.exec(line)) !== null) {
+        urls.push(m[1] || m[2]);
       }
     }
+    return urls;
   }
 
-  // Pattern 2: If no pairs found via headings, try sequential image detection
-  // Look for images near standalone "before"/"after" text
-  if (pairs.length === 0) {
-    let pendingBefore = null;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+  function isBeforeLabel(line) {
+    return /^#{1,6}\s+.*before/i.test(line) ||
+           /^\*{1,2}\s*before\s*:?\s*\*{0,2}/i.test(line) ||
+           /^before(?:\s+\d+)?\s*:/i.test(line) ||
+           /^(?:before)\s*:?\s*$/i.test(line) ||
+           /^\*{1,2}\s*(?:before)\s*:?\s*\*{0,2}$/i.test(line);
+  }
 
-      // Check for standalone before/after text (not headings)
-      const isBeforeLine = /^(?:before|after)\s*:?\s*$/i.test(line) ||
-                           /^\*{1,2}\s*(?:before|after)\s*:?\s*\*{0,2}$/i.test(line);
+  function isAfterLabel(line) {
+    return /^#{1,6}\s+.*after/i.test(line) ||
+           /^\*{1,2}\s*after\s*:?\s*\*{0,2}/i.test(line) ||
+           /^after(?:\s+\d+)?\s*:/i.test(line) ||
+           /^(?:after)\s*:?\s*$/i.test(line) ||
+           /^\*{1,2}\s*(?:after)\s*:?\s*\*{0,2}$/i.test(line);
+  }
 
-      if (isBeforeLine) {
-        const isBefore = /^before/i.test(line);
-        // Look for image on this line or next 2 lines
-        for (let j = i; j <= Math.min(i + 2, lines.length - 1); j++) {
-          const imgMatch = lines[j].match(imageUrlRegex);
-          if (imgMatch) {
-            const url = imgMatch[1] || imgMatch[2]; // markdown or HTML
-            if (isBefore) {
-              pendingBefore = url;
-            } else if (pendingBefore) {
-              pairs.push({ before: pendingBefore, after: url });
-              pendingBefore = null;
-            }
-            break;
-          }
-        }
+  // Find all before/after sections and collect ALL images under each
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!isBeforeLabel(line)) continue;
+
+    // Collect all images between this "Before:" label and the next "After:" label
+    let beforeImages = [];
+    let afterImages = [];
+    let afterStart = -1;
+
+    // Find the next "After:" label
+    for (let k = i + 1; k <= Math.min(i + 20, lines.length - 1); k++) {
+      if (isAfterLabel(lines[k].trim())) {
+        afterStart = k;
+        break;
       }
     }
+
+    if (afterStart < 0) continue;
+
+    // Collect before images: from line after "Before:" to line before "After:"
+    beforeImages = collectImages(i + 1, afterStart - 1);
+
+    // Collect after images: from line after "After:" to next before/after heading or end
+    let afterEnd = lines.length - 1;
+    for (let k = afterStart + 1; k < lines.length; k++) {
+      const l = lines[k].trim();
+      if (isBeforeLabel(l) || isAfterLabel(l)) {
+        afterEnd = k - 1;
+        break;
+      }
+      // Also stop at a new heading (### ...) that's not before/after
+      if (/^#{1,6}\s+/.test(l) && !isBeforeLabel(l) && !isAfterLabel(l)) {
+        afterEnd = k - 1;
+        break;
+      }
+    }
+    afterImages = collectImages(afterStart + 1, afterEnd);
+
+    if (beforeImages.length > 0 && afterImages.length > 0) {
+      pairs.push({ before: beforeImages, after: afterImages });
+    }
+
+    // Skip past this section
+    i = afterEnd;
   }
 
   return pairs;
@@ -3871,6 +3878,14 @@ function openCompareSlideshow(index) {
   overlay.className = 'compare-overlay';
   overlay.id = 'compare-overlay';
 
+  const pair = beforeAfterPairs[compareOverlayIndex];
+  const beforeArr = Array.isArray(pair.before) ? pair.before : [pair.before];
+  const afterArr = Array.isArray(pair.after) ? pair.after : [pair.after];
+  const beforeSubHtml = beforeArr.map((url, si) => `<img src="${escapeHtml(url)}" alt="Before${beforeArr.length > 1 ? ' ' + (si+1) : ''}" class="compare-sub-img${si === 0 ? ' active' : ''}" data-sub-index="${si}">`).join('');
+  const afterSubHtml = afterArr.map((url, si) => `<img src="${escapeHtml(url)}" alt="After${afterArr.length > 1 ? ' ' + (si+1) : ''}" class="compare-sub-img${si === 0 ? ' active' : ''}" data-sub-index="${si}">`).join('');
+  const beforeSubNav = beforeArr.length > 1 ? `<div class="compare-sub-nav" data-side="before"><button class="compare-sub-prev" ${beforeArr.length <= 1 ? 'disabled' : ''}>◀</button><span class="compare-sub-counter">1/${beforeArr.length}</span><button class="compare-sub-next" ${beforeArr.length <= 1 ? 'disabled' : ''}>▶</button></div>` : '';
+  const afterSubNav = afterArr.length > 1 ? `<div class="compare-sub-nav" data-side="after"><button class="compare-sub-prev" ${afterArr.length <= 1 ? 'disabled' : ''}>◀</button><span class="compare-sub-counter">1/${afterArr.length}</span><button class="compare-sub-next" ${afterArr.length <= 1 ? 'disabled' : ''}>▶</button></div>` : '';
+
   overlay.innerHTML = `
     <div class="compare-header">
       <span class="compare-counter">${compareOverlayIndex + 1} of ${beforeAfterPairs.length}</span>
@@ -3880,16 +3895,18 @@ function openCompareSlideshow(index) {
       <button class="compare-nav-btn prev" title="Previous (←)">◀</button>
       <div class="compare-side" id="compare-before-side" title="Click to zoom">
         <div class="compare-label">Before</div>
-        <img src="${escapeHtml(beforeAfterPairs[compareOverlayIndex].before)}" alt="Before">
+        ${beforeSubHtml}
+        ${beforeSubNav}
       </div>
       <div class="compare-divider"></div>
       <div class="compare-side" id="compare-after-side" title="Click to zoom">
         <div class="compare-label">After</div>
-        <img src="${escapeHtml(beforeAfterPairs[compareOverlayIndex].after)}" alt="After">
+        ${afterSubHtml}
+        ${afterSubNav}
       </div>
       <button class="compare-nav-btn next" title="Next (→)">▶</button>
     </div>
-    <div class="compare-hint">← → Navigate &nbsp;|&nbsp; Click image to zoom &nbsp;|&nbsp; Esc Close</div>
+    <div class="compare-hint">← → Navigate pairs &nbsp;|&nbsp; ↑ ↓ Navigate images within pair &nbsp;|&nbsp; Click image to zoom &nbsp;|&nbsp; Esc Close</div>
   `;
 
   document.body.appendChild(overlay);
@@ -3911,6 +3928,19 @@ function openCompareSlideshow(index) {
   overlay.querySelector('#compare-after-side img').addEventListener('click', (e) => {
     e.stopPropagation();
     toggleCompareZoom('after');
+  });
+
+  // Sub-navigation handlers for multiple images within a pair
+  overlay.querySelectorAll('.compare-sub-nav').forEach(nav => {
+    const side = nav.dataset.side;
+    nav.querySelector('.compare-sub-prev')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigateSubImage(side, 'prev');
+    });
+    nav.querySelector('.compare-sub-next')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigateSubImage(side, 'next');
+    });
   });
 
   updateCompareNavButtons();
@@ -3936,19 +3966,78 @@ function navigateCompare(direction) {
   if (!overlay) return;
 
   const pair = beforeAfterPairs[compareOverlayIndex];
+  const beforeArr = Array.isArray(pair.before) ? pair.before : [pair.before];
+  const afterArr = Array.isArray(pair.after) ? pair.after : [pair.after];
   overlay.querySelector('.compare-counter').textContent = `${compareOverlayIndex + 1} of ${beforeAfterPairs.length}`;
-  const beforeImg = overlay.querySelector('#compare-before-side img');
-  const afterImg = overlay.querySelector('#compare-after-side img');
-  if (beforeImg) beforeImg.src = pair.before;
-  if (afterImg) afterImg.src = pair.after;
 
-  // Reset zoom state
+  // Rebuild before side images
   const beforeSide = overlay.querySelector('#compare-before-side');
+  beforeSide.querySelectorAll('.compare-sub-img').forEach(el => el.remove());
+  beforeSide.querySelectorAll('.compare-sub-nav').forEach(el => el.remove());
+  const beforeLabel = beforeSide.querySelector('.compare-label');
+  beforeArr.forEach((url, si) => {
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = 'Before' + (beforeArr.length > 1 ? ' ' + (si+1) : '');
+    img.className = 'compare-sub-img' + (si === 0 ? ' active' : '');
+    img.dataset.subIndex = si;
+    beforeLabel.after(img);
+  });
+  if (beforeArr.length > 1) {
+    const nav = document.createElement('div');
+    nav.className = 'compare-sub-nav';
+    nav.dataset.side = 'before';
+    nav.innerHTML = `<button class="compare-sub-prev" disabled>◀</button><span class="compare-sub-counter">1/${beforeArr.length}</span><button class="compare-sub-next">▶</button>`;
+    beforeSide.appendChild(nav);
+  }
+
+  // Rebuild after side images
   const afterSide = overlay.querySelector('#compare-after-side');
+  afterSide.querySelectorAll('.compare-sub-img').forEach(el => el.remove());
+  afterSide.querySelectorAll('.compare-sub-nav').forEach(el => el.remove());
+  const afterLabel = afterSide.querySelector('.compare-label');
+  afterArr.forEach((url, si) => {
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = 'After' + (afterArr.length > 1 ? ' ' + (si+1) : '');
+    img.className = 'compare-sub-img' + (si === 0 ? ' active' : '');
+    img.dataset.subIndex = si;
+    afterLabel.after(img);
+  });
+  if (afterArr.length > 1) {
+    const nav = document.createElement('div');
+    nav.className = 'compare-sub-nav';
+    nav.dataset.side = 'after';
+    nav.innerHTML = `<button class="compare-sub-prev" disabled>▶</button><span class="compare-sub-counter">1/${afterArr.length}</span><button class="compare-sub-next">▶</button>`;
+    afterSide.appendChild(nav);
+  }
+
+  // Reset zoom state (beforeSide/afterSide already declared above)
   if (beforeSide) { beforeSide.classList.remove('zoomed', 'zoomed-active'); }
   if (afterSide) { afterSide.classList.remove('zoomed', 'zoomed-active'); }
 
   updateCompareNavButtons();
+}
+
+function navigateSubImage(side, direction) {
+  const overlay = document.getElementById('compare-overlay');
+  if (!overlay) return;
+  const sideEl = overlay.querySelector(`#compare-${side}-side`);
+  if (!sideEl) return;
+  const imgs = sideEl.querySelectorAll('.compare-sub-img');
+  if (imgs.length <= 1) return;
+  const nav = sideEl.querySelector('.compare-sub-nav');
+  let currentIdx = 0;
+  imgs.forEach((img, i) => { if (img.classList.contains('active')) currentIdx = i; });
+  let newIdx = direction === 'next' ? Math.min(currentIdx + 1, imgs.length - 1) : Math.max(currentIdx - 1, 0);
+  if (newIdx === currentIdx) return;
+  imgs[currentIdx].classList.remove('active');
+  imgs[newIdx].classList.add('active');
+  if (nav) {
+    nav.querySelector('.compare-sub-counter').textContent = `${newIdx + 1}/${imgs.length}`;
+    nav.querySelector('.compare-sub-prev').disabled = newIdx <= 0;
+    nav.querySelector('.compare-sub-next').disabled = newIdx >= imgs.length - 1;
+  }
 }
 
 function updateCompareNavButtons() {
@@ -4003,6 +4092,14 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
     navigateCompare('next');
+  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    // Navigate sub-images within the focused side (up=prev, down=next)
+    const focusedSide = document.querySelector('.compare-side:hover, .compare-side:focus');
+    if (focusedSide) {
+      const side = focusedSide.id === 'compare-before-side' ? 'before' : 'after';
+      e.preventDefault();
+      navigateSubImage(side, e.key === 'ArrowUp' ? 'prev' : 'next');
+    }
   }
 });
 
