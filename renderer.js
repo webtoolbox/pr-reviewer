@@ -372,6 +372,39 @@ if (btnToggleSidebar && fileSidebar) {
 // ===================== AUTO-SAVE =====================
 
 let saveTimeout = null;
+// Persist unsent comments to localStorage
+function saveCommentsToStorage() {
+  try {
+    const prKey = currentPrNumber ? `pr-reviewer-comments-${currentPrNumber}` : null;
+    if (!prKey) return;
+    // Strip non-serializable fields (DOM elements, imageDataUrl can be large)
+    const serializable = comments.map(c => ({
+      _uid: c._uid, file: c.file, line: c.line, side: c.side,
+      text: c.text, isAiTagged: c.isAiTagged, level: c.level,
+      codeContext: c.codeContext, imageDataUrl: c.imageDataUrl
+    }));
+    localStorage.setItem(prKey, JSON.stringify(serializable));
+  } catch {}
+}
+
+// Restore unsent comments from localStorage
+function loadCommentsFromStorage() {
+  try {
+    const prKey = currentPrNumber ? `pr-reviewer-comments-${currentPrNumber}` : null;
+    if (!prKey) return [];
+    const stored = localStorage.getItem(prKey);
+    return stored ? JSON.parse(stored) : [];
+  } catch { return []; }
+}
+
+// Clear persisted comments (after successful submission)
+function clearCommentsFromStorage() {
+  try {
+    const prKey = currentPrNumber ? `pr-reviewer-comments-${currentPrNumber}` : null;
+    if (prKey) localStorage.removeItem(prKey);
+  } catch {}
+}
+
 function autoSaveDraft() {
   if (!currentFilePath) return;
   clearTimeout(saveTimeout);
@@ -575,6 +608,22 @@ function loadDiff(content, filePath) {
   populateFileSidebar();
   addContextButtons();
   showReviewButtons();
+
+  // Restore persisted comments from previous session
+  const savedComments = loadCommentsFromStorage();
+  if (savedComments.length > 0) {
+    for (const c of savedComments) {
+      c._uid = c._uid || ++commentUidCounter;
+      comments.push(c);
+      if (c.level === 'file') {
+        renderFileCommentMarker(c);
+      } else {
+        renderLineCommentMarker(c);
+      }
+    }
+    updateCommentCount();
+    updateCommentNav();
+  }
 
   // Scroll to top when loading a new PR
   window.scrollTo(0, 0);
@@ -1411,6 +1460,7 @@ function submitComment() {
   commentTarget = null;
   updateCommentCount();
   updateCommentNav();
+  saveCommentsToStorage();
   autoSaveDraft();
 }
 
@@ -1600,6 +1650,7 @@ function deleteComment(marker) {
   }
   updateCommentCount();
   updateCommentNav();
+  saveCommentsToStorage();
   autoSaveDraft();
 }
 
@@ -1810,6 +1861,9 @@ async function submitReview(eventType) {
                       eventType === 'request_changes' ? '✓ Changes requested on GitHub' :
                       '✓ Comment submitted to GitHub';
         showToast(ghMsg, 'success', 8000);
+
+        // Clear persisted comments after successful submission
+        clearCommentsFromStorage();
 
         // Delete PR draft after successful GitHub submission
         if (review.prNumber) {
