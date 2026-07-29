@@ -1216,12 +1216,13 @@ async function handleContextExpand(fileName) {
 
       // Safety: if expanded diff would shrink the section, keep the original
       const sections = currentDiffContent.split(/(?=^diff --git )/m);
-      const targetSection = sections.find(s => {
+      const targetSections = sections.filter(s => {
         const m = s.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
         return m && m[2] === fileName;
       });
-      if (targetSection && result.content.trim().length < targetSection.trim().length) {
-        console.log('[context-expand] Expanded diff is smaller than original, keeping original');
+      const targetSectionLen = targetSections.reduce((sum, s) => sum + s.trim().length, 0);
+      if (targetSectionLen > 0 && result.content.trim().length < targetSectionLen * 0.5) {
+        console.log('[context-expand] Expanded diff is less than half the original, keeping original');
         return;
       }
 
