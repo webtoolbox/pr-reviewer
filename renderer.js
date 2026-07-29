@@ -1489,6 +1489,7 @@ function renderLineCommentMarker(comment) {
 
 function findDiffLineRow(fileName, lineNum, side) {
   if (!diffContainer || !fileName || !lineNum) return null;
+  const targetLine = parseInt(lineNum, 10);
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
   for (const wrapper of fileWrappers) {
     const nameEl = wrapper.querySelector('.d2h-file-name');
@@ -1505,10 +1506,10 @@ function findDiffLineRow(fileName, lineNum, side) {
 
       if (side === 'RIGHT' && num2El) {
         const num = parseInt(num2El.textContent.trim(), 10);
-        if (num === lineNum) return row;
+        if (num === targetLine) return row;
       } else if (side === 'LEFT' && num1El) {
         const num = parseInt(num1El.textContent.trim(), 10);
-        if (num === lineNum) return row;
+        if (num === targetLine) return row;
       } else {
         // Fallback: check both line numbers
         const num1 = num1El ? parseInt(num1El.textContent.trim(), 10) : NaN;
