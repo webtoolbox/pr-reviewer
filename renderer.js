@@ -1337,11 +1337,6 @@ async function handleContextExpand(fileName) {
             });
           }
 
-          // Restore scroll: keep the wrapper at roughly the same screen position
-          const newRect = newWrapper.getBoundingClientRect();
-          const delta = newRect.top - oldRect.top;
-          window.scrollTo(0, scrollRef + delta);
-
           // Re-add comment buttons, context buttons for this wrapper
           addCommentButtonsForWrapper(newWrapper, fileName);
           addContextButtonsForWrapper(newWrapper, fileName);
