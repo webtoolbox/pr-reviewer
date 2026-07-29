@@ -1066,55 +1066,32 @@ function addContextButtons() {
 }
 
 function addInterHunkExpandButtons(fileName, wrapper) {
-  const rows = wrapper.querySelectorAll('table tr');
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const lineNum1 = row.querySelector('.line-num1');
-    const lineNum2 = row.querySelector('.line-num2');
-    // Skip header rows without line number cells
-    if (!lineNum1 || !lineNum2) continue;
-    // Gap row: both line numbers empty, no prefix
-    const isEmpty = !lineNum1.textContent.trim() && !lineNum2.textContent.trim();
-    if (!isEmpty) continue;
-    // Check if there's a real gap (next row has a jump in line numbers)
-    let nextRow = null;
-    for (let j = i + 1; j < rows.length; j++) {
-      const nr = rows[j];
-      const nl1 = nr.querySelector('.line-num1');
-      const nl2 = nr.querySelector('.line-num2');
-      if (nl1 && nl2 && (nl1.textContent.trim() || nl2.textContent.trim())) {
-        nextRow = nr;
-        break;
-      }
-    }
-    if (!nextRow) continue;
-    // Get the gap size
-    const prevNum = parseInt(lineNum1.textContent.trim() || lineNum2.textContent.trim()) || 0;
-    // Find the last non-empty row before this gap
-    let prevRow = null;
-    for (let j = i - 1; j >= 0; j--) {
-      const pr = rows[j];
-      const pl1 = pr.querySelector('.line-num1');
-      const pl2 = pr.querySelector('.line-num2');
-      if (pl1 && pl2 && (pl1.textContent.trim() || pl2.textContent.trim())) {
-        prevRow = pr;
-        break;
-      }
-    }
-    if (!prevRow) continue;
+  // Hunk boundaries are d2h-info rows containing @@ headers.
+  // Replace the @@ header text with an expand button (skip the first hunk header
+  // since the file already has top/bottom expand buttons).
+  const infoRows = wrapper.querySelectorAll('tr .d2h-info');
+  let hunkIndex = 0;
+  for (const cell of infoRows) {
+    const row = cell.closest('tr');
+    if (!row) continue;
+    hunkIndex++;
+    // Skip the first @@ header — expand buttons at file top/bottom cover that
+    if (hunkIndex <= 1) continue;
 
-    // Add expand button in the gap row
-    const cell = row.querySelector('td');
-    if (!cell) continue;
-    cell.innerHTML = '';
+    // Replace the @@ text with a compact expand button
+    const codeCell = row.querySelector('td.d2h-info:not(.d2h-code-linenumber)') || row.querySelectorAll('td')[1];
+    if (!codeCell) continue;
+    const origText = codeCell.textContent.trim();
+    codeCell.innerHTML = '';
     const btn = document.createElement('button');
     btn.className = 'context-expand-btn context-expand-inter';
     btn.dataset.fileName = fileName;
-    btn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M8 2a.75.75 0 01.75.75v4.5h4.5a.75.75 0 010 1.5h-4.5v4.5a.75.75 0 01-1.5 0v-4.5h-4.5a.75.75 0 010-1.5h4.5v-4.5A.75.75 0 018 2z"/></svg> Expand`;
+    btn.title = origText;
+    btn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M8 2a.75.75 0 01.75.75v4.5h4.5a.75.75 0 010 1.5h-4.5v4.5a.75.75 0 01-1.5 0v-4.5h-4.5a.75.75 0 010-1.5h4.5v-4.5A.75.75 0 018 2z"/></svg> Expand context`;
     btn.addEventListener('click', () => handleContextExpand(fileName, wrapper));
-    cell.appendChild(btn);
-    cell.style.textAlign = 'center';
-    cell.style.padding = '2px 0';
+    codeCell.appendChild(btn);
+    codeCell.style.textAlign = 'center';
+    codeCell.style.padding = '2px 0';
   }
 }
 
