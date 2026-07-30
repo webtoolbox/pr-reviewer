@@ -1686,8 +1686,8 @@ ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBod
       currentUserLogin = await execPromise('gh api user --jq .login');
     }
 
-    // Collect all participants except the current user
-    const allParticipants = new Set([prAuthor, ...assignees, ...requestedReviewers]);
+    // Collect owner + assignees (not requested reviewers — they were just asked to review)
+    const allParticipants = new Set([prAuthor, ...assignees]);
     allParticipants.delete(currentUserLogin);
     const participants = [...allParticipants];
 
