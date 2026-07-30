@@ -89,7 +89,7 @@ function loadConfig() {
       awsRegion: 'us-east-1'
     },
     autoFix: {
-      enabled: true
+      enabled: false
     }
   };
 
@@ -2164,7 +2164,7 @@ ipcMain.handle('get-config', async () => ({
   diff: appConfig.diff || {},
   cleanup: appConfig.cleanup || {},
   rules: appConfig.rules || { enabled: false },
-  autoFix: appConfig.autoFix || { enabled: true }
+  autoFix: appConfig.autoFix || { enabled: false }
 }));
 
 ipcMain.handle('open-external', async (event, url) => {

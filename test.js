@@ -689,7 +689,7 @@ async function runTests() {
   const autoFixConfig = await mainWindow.webContents.executeJavaScript(
     `window.electronAPI.getConfig().then(c => c.autoFix)`
   );
-  assert('Config has autoFix settings', autoFixConfig && autoFixConfig.enabled === true,
+  assert('Config has autoFix settings', autoFixConfig && autoFixConfig.enabled === false,
     `enabled=${autoFixConfig ? autoFixConfig.enabled : 'undefined'}`);
 
   // TEST: autoFixWithAi returns success for valid PR

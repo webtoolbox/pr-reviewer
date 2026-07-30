@@ -1950,7 +1950,7 @@ async function submitReview(eventType) {
           (async () => {
             try {
               const autoFixConfig = await window.electronAPI.getConfig();
-              const autoFixEnabled = autoFixConfig.autoFix && autoFixConfig.autoFix.enabled !== false;
+              const autoFixEnabled = autoFixConfig.autoFix && autoFixConfig.autoFix.enabled === true;
               if (autoFixEnabled) {
                 showToast('🤖 Auto-fixing with AI...', 'progress', 30000);
                 const autoFixComments = comments
