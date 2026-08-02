@@ -11,17 +11,17 @@ jobs:
         include:
           - os: ubuntu-latest
             test_cmd: xvfb-run npx jest --no-coverage && xvfb-run npx electron test.js
-            build_cmd: npx electron-builder --linux
+            build_cmd: npx electron-builder --linux --publish never
             artifact: linux-build
             path: dist/*.deb
           - os: windows-latest
             test_cmd: echo "Skipping tests on Windows"
-            build_cmd: npx electron-builder --win
+            build_cmd: npx electron-builder --win --publish never
             artifact: windows-build
             path: dist/*.exe
           - os: macos-latest
             test_cmd: echo "Skipping tests on macOS (run locally)"
-            build_cmd: npm run build
+            build_cmd: npx electron-builder --mac --publish never
             artifact: macos-build
             path: dist/*.dmg
 
