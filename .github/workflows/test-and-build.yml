@@ -10,7 +10,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            test_cmd: xvfb-run npx jest --no-coverage && xvfb-run npx electron test.js
+            test_cmd: xvfb-run npx jest --no-coverage && git show --format= --no-renames HEAD > /tmp/test-full.diff && xvfb-run npx electron test.js /tmp/test-full.diff
             build_cmd: npx electron-builder --linux --publish never
             artifact: linux-build
             path: |
