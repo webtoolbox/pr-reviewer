@@ -577,6 +577,7 @@ function loadDiff(content, filePath) {
   if (filePath) currentFilePath = filePath;
   comments = [];
   fileCommentCounts = {};
+  if (btnPrComment) btnPrComment.classList.remove('active'); // reset comment indicator for new PR
   parsedDiff = parseDiffLineNumbers(content);
 
   emptyState.style.display = 'none';
@@ -1890,6 +1891,9 @@ async function submitReview(eventType) {
     if (askCount > 0) msg += ` (${askCount} AI responses received)`;
     showToast(msg, 'success', 6000);
 
+    // If a PR comment was submitted via the header comment button, mark it active
+    if (review.body && btnPrComment) btnPrComment.classList.add('active');
+
     // Toast for AI messages sent
     if (aiCount > 0) {
       showToast(`✓ ${aiCount} comment${aiCount > 1 ? 's' : ''} sent to AI agent`, 'info', 6000);
@@ -2081,8 +2085,11 @@ btnApprove.addEventListener('click', () => {
 btnRequestChanges.addEventListener('click', () => submitReview('request_changes'));
 btnComment.addEventListener('click', () => submitReview('comment'));
 
-// Auto-save on review body change
-reviewBody.addEventListener('input', () => autoSaveDraft());
+// Auto-save on review body change + reflect active (blue) state while a comment is being written
+reviewBody.addEventListener('input', () => {
+  autoSaveDraft();
+  if (btnPrComment) btnPrComment.classList.toggle('active', reviewBody.value.trim().length > 0);
+});
 
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {

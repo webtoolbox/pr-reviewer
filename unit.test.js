@@ -3318,6 +3318,14 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain('prCommentPanel.classList.toggle');
   });
 
+  test('PR comment button turns blue after a comment is left and resets on new PR', () => {
+    expect(indexHtml).toContain('#btn-pr-comment.active { background: #388bfd');
+    expect(rendererSource).toContain("btnPrComment.classList.add('active')");
+    expect(rendererSource).toContain("btnPrComment.classList.remove('active')");
+    // Blue reflects a comment being written in the box, and resets on PR switch
+    expect(rendererSource).toContain("btnPrComment.classList.toggle('active', reviewBody.value.trim().length > 0)");
+  });
+
   test('renderer.js prefFields includes hermesProfile', () => {
     expect(rendererSource).toContain("{ id: 'pref-hermes-profile', key: 'hermesProfile', type: 'text' }");
   });
