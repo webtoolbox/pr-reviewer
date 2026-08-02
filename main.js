@@ -72,6 +72,7 @@ function loadConfig() {
     aiSendArgs: ['send', '--to'],
     aiChatId: null,
     aiTagPrefix: '@Hermes',
+    hermesProfile: 'wt',
     reviewSaveDir: '',  // Will default to app userData/reviews
     prFilter: { reviewRequested: true, titleContains: '' },
     repoOwner: '',
@@ -145,7 +146,7 @@ function sendAiMessage(message, prNumber) {
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
     log('INFO', '[ai] No chat-id configured, sending via chat -q');
     // Use hermes chat -q for non-interactive single query (hermes send requires --to)
-    const args = ['chat', '-p', 'wt', '-q', prefix + message];
+    const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-q', prefix + message];
     execFile(appConfig.aiCommand, args, (err, stdout, stderr) => {
       if (err) log('ERROR', `[${appConfig.aiCommand}] send failed:`, err.message, stderr);
       else log('INFO', `[${appConfig.aiCommand}] message sent via chat`);
@@ -164,17 +165,115 @@ function sendAiMessage(message, prNumber) {
 function askAiQuestion(question, prNumber) {
   return new Promise((resolve) => {
     const prefix = prNumber ? `[PR #${prNumber}] ` : '';
-    const args = ['chat', '-q', prefix + question];
+    const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-q', prefix + question];
+    log('INFO', `[ask] Sending question (first 100): ${(prefix + question).substring(0, 100)}`);
     execFile(appConfig.aiCommand, args, { timeout: 120000 }, (err, stdout) => {
       if (err) {
         log('ERROR', `[${appConfig.aiCommand}] ask failed:`, err.message);
         resolve({ error: err.message });
       } else {
-        resolve({ response: stdout.trim() });
+        log('INFO', `[ask] Response received: ${stdout.length} chars`);
+        resolve({ response: cleanHermesResponse(stdout) });
       }
     });
   });
 }
+
+// Fetch lightweight PR context (title + branches) for the AI chat dropdown
+async function getPrChatContext(prNumber, repoKey) {
+  if (!prNumber) return '';
+  let owner = appConfig.repoOwner || '';
+  let repo = appConfig.repoName || '';
+  if (repoKey && repoKey.includes('/')) {
+    [owner, repo] = repoKey.split('/');
+  }
+  if (!owner || !repo) return `PR #${prNumber}`;
+  try {
+    const out = await execPromise(
+      `gh pr view ${prNumber} --repo ${owner}/${repo} --json title,headRefName,baseRefName --jq '{title,headRefName,baseRefName}'`,
+      { timeout: 15000 }
+    );
+    const info = JSON.parse(out.trim());
+    return `PR #${prNumber} in ${owner}/${repo}${info.title ? ': ' + info.title : ''} (${info.baseRefName || '?'} <- ${info.headRefName || '?'})`;
+  } catch (err) {
+    log('WARN', '[ai-chat] Failed to fetch PR context:', err.message);
+    return `PR #${prNumber} in ${owner}/${repo}`;
+  }
+}
+
+// Build a conversational prompt embedding prior messages for back-and-forth chat
+function buildChatPrompt(context, history, message) {
+  const lines = [
+    'You are an AI coding assistant helping review a pull request in the PR Reviewer desktop app.',
+    "Answer the user's questions about the code, the branch, or the pull request concisely and helpfully."
+  ];
+  if (context) lines.push('Current pull request context: ' + context);
+  lines.push('');
+  lines.push('Conversation so far:');
+  const hist = Array.isArray(history) ? history : [];
+  if (hist.length === 0) lines.push('(none)');
+  for (const h of hist) {
+    if (h && typeof h.content === 'string') {
+      lines.push((h.role === 'user' ? 'User' : 'Assistant') + ': ' + h.content);
+    }
+  }
+  lines.push('');
+  lines.push('User: ' + message);
+  lines.push('Assistant:');
+  return lines.join('\n');
+}
+
+// Strip hermes CLI UI chrome from `chat -q` output so the user sees only the
+// answer: leading "Warning:" banners, the echoed prompt block, box-drawing UI
+// (╭─ Hermes ─╮ ... ╰──╯), and the session footer ("Resume session...", etc.).
+function cleanHermesResponse(stdout) {
+  if (!stdout) return '';
+  let text = stdout;
+
+  // Strip leading warning/banner lines (e.g. "Warning: Unknown toolsets: ...")
+  text = text.replace(/^(?:Warning:[^\n]*\n*)+/g, '');
+
+  // If hermes drew a box (the final answer is in the last ╭─...╮ block), extract it.
+  const lastBoxStart = text.lastIndexOf('╭');
+  if (lastBoxStart !== -1) {
+    const boxEnd = text.indexOf('╰', lastBoxStart);
+    const nl = text.indexOf('\n', lastBoxStart);
+    if (boxEnd !== -1 && nl !== -1 && nl < boxEnd) {
+      text = text.substring(nl + 1, boxEnd);
+    }
+  } else {
+    // No box UI — drop the echoed prompt block and keep whatever follows it.
+    const asstIdx = text.lastIndexOf('Assistant:');
+    if (asstIdx !== -1) {
+      text = text.substring(asstIdx + 'Assistant:'.length);
+    }
+  }
+
+  // Strip the session footer
+  text = text.replace(/\n\s*Resume (?:this session|session) with:[\s\S]*$/i, '');
+  text = text.replace(/\n\s*Session:\s*[\w\d_-]+[\s\S]*$/i, '');
+  text = text.replace(/\n\s*(Duration|Messages):\s*[\s\S]*$/i, '');
+
+  return text.trim();
+}
+
+// AI chat IPC: send a message with conversation history, get a response
+ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history }) => {
+  const prompt = buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '');
+  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-q', prompt];
+  log('INFO', `[ai-chat] Sending (first 100): ${prompt.substring(0, 100)}`);
+  return new Promise((resolve) => {
+    execFile(appConfig.aiCommand, args, { timeout: 120000 }, (err, stdout) => {
+      if (err) {
+        log('ERROR', '[ai-chat] failed:', err.message);
+        resolve({ error: err.message });
+      } else {
+        log('INFO', `[ai-chat] Response received: ${stdout.length} chars`);
+        resolve({ response: cleanHermesResponse(stdout) });
+      }
+    });
+  });
+});
 
 function expandPath(p) {
   if (p && p.startsWith('~')) {
@@ -516,32 +615,11 @@ async function findLastCommitBefore(owner, repo, prNumber, targetDate) {
   return result;
 }
 
-// Generate diff for a PR — supports full diff or since-last-review
-async function generateDiff(prNumber, repoKey) {
-  const safePr = safePrNumber(prNumber);
-  if (!safePr) throw new Error(`Invalid PR number: ${prNumber}`);
-  prNumber = safePr;
-  const repoPath = getLocalRepoPath(repoKey);
-  let owner, repo;
-  if (repoKey && repoKey.includes('/')) {
-    [owner, repo] = repoKey.split('/');
-  } else {
-    owner = appConfig.repoOwner || 'webtoolbox';
-    repo = appConfig.repoName || 'Website-Toolbox';
-  }
-  const diffMode = (appConfig.diff || {}).mode || 'since-review';
-
-  // Get HEAD SHA + PR metadata in a single API call (was two separate calls)
-  const prJson = await execPromise(
-    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,title,author,assignees,body --jq '{headRefOid: .headRefOid, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
-  );
-  const prData = JSON.parse(prJson || '{}');
-  const headSha = prData.headRefOid;
-
-  if (!headSha) {
-    throw new Error('Could not get PR HEAD SHA');
-  }
-
+// Resolve the base SHA for a PR (the commit a review's diff is measured against).
+// For 'since-review' mode this is the most recent non-COMMENTED review's commit;
+// otherwise (or if no review) it's the PR's base branch SHA. Runs independent of
+// gh pr view / gh pr diff so it can execute in parallel with them.
+async function resolveBaseSha(owner, repo, prNumber, diffMode) {
   let baseSha = null;
   let reviewInfo = null;
 
@@ -592,26 +670,85 @@ async function generateDiff(prNumber, repoKey) {
     reviewInfo = null;
   }
 
+  return { baseSha, reviewInfo };
+}
+
+// Run an async function over an array with a bounded concurrency limit.
+// Preserves order of results. Used to parallelize independent per-commit
+// git operations without spawning unbounded numbers of child processes.
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let i = 0;
+  async function worker() {
+    while (true) {
+      const idx = i++;
+      if (idx >= items.length) return;
+      results[idx] = await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// Generate diff for a PR — supports full diff or since-last-review
+async function generateDiff(prNumber, repoKey) {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) throw new Error(`Invalid PR number: ${prNumber}`);
+  prNumber = safePr;
+  const repoPath = getLocalRepoPath(repoKey);
+  let owner, repo;
+  if (repoKey && repoKey.includes('/')) {
+    [owner, repo] = repoKey.split('/');
+  } else {
+    owner = appConfig.repoOwner || 'webtoolbox';
+    repo = appConfig.repoName || 'Website-Toolbox';
+  }
+  const diffMode = (appConfig.diff || {}).mode || 'since-review';
+
+  // Run the three independent API calls in parallel:
+  //  - gh pr view   (HEAD SHA + PR metadata)
+  //  - gh pr diff   (full unified diff — used for reverted-file filtering + fallback)
+  //  - resolveBaseSha (review lookup → base SHA)
+  const prViewPromise = execPromise(
+    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,title,author,assignees,body --jq '{headRefOid: .headRefOid, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
+  );
+  const prDiffPromise = execPromise(
+    `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
+    { timeout: 60000 }
+  );
+  const basePromise = resolveBaseSha(owner, repo, prNumber, diffMode);
+
+  const results = await Promise.all([prViewPromise, prDiffPromise, basePromise]);
+  const prJson = results[0];
+  let diffOut = results[1];
+  const baseResult = results[2];
+
+  const prData = JSON.parse(prJson || '{}');
+  const headSha = prData.headRefOid;
+
+  if (!headSha) {
+    throw new Error('Could not get PR HEAD SHA');
+  }
+
+  const baseSha = baseResult.baseSha;
+  const reviewInfo = baseResult.reviewInfo;
+
   log('INFO', '[generateDiff] baseSha:', baseSha ? baseSha.substring(0,7) : 'null', 'headSha:', headSha ? headSha.substring(0,7) : 'null', 'reviewInfo:', reviewInfo ? JSON.stringify(reviewInfo) : 'null', 'diffMode:', diffMode);
 
   if (baseSha === headSha) {
     throw new Error('No new commits since last review');
   }
 
-  // On a shallow clone, fetching individual SHAs is very slow.
-  // Fetch the PR branch first — this brings in both headSha and baseSha in one network call.
-  log('INFO', `[generateDiff] Fetching PR ${prNumber} branch from origin`);
-  try {
-    await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 60000 });
-    log('INFO', `[generateDiff] Fetched PR branch successfully`);
-  } catch (fetchErr) {
-    log('ERROR', `[generateDiff] PR branch fetch failed:`, fetchErr.message);
-  }
-
-  // Also fetch master to keep it up to date
-  try {
-    await execPromise('git fetch origin master --depth=1', { cwd: repoPath, timeout: 30000 });
-  } catch {}
+  // Fetch the PR branch and master in parallel (both independent network calls).
+  // On a shallow clone, fetching the PR branch brings in both headSha and baseSha.
+  log('INFO', `[generateDiff] Fetching PR ${prNumber} branch + master from origin`);
+  const [prFetch, masterFetch] = await Promise.allSettled([
+    execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 60000 }),
+    execPromise('git fetch origin master --depth=1', { cwd: repoPath, timeout: 30000 })
+  ]);
+  if (prFetch.status === 'fulfilled') log('INFO', '[generateDiff] Fetched PR branch successfully');
+  else log('ERROR', '[generateDiff] PR branch fetch failed:', prFetch.reason && prFetch.reason.message);
+  if (masterFetch.status === 'rejected') log('ERROR', '[generateDiff] master fetch failed:', masterFetch.reason && masterFetch.reason.message);
 
   // Check if SHAs are now available; if not, try individual fetch as last resort
   async function shaExists(sha) {
@@ -657,11 +794,14 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No files changed since last review');
   }
 
-  // Use `gh pr diff` as baseline, then refine for since-review mode
-  let diffOut = await execPromise(
-    `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
-    { timeout: 60000 }
-  );
+  // Extract file paths from the unified diff — used to filter per-commit diffs later
+  const unifiedDiffFiles = new Set();
+  for (const line of (diffOut || '').split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      const match = line.match(/b\/(.+)$/);
+      if (match) unifiedDiffFiles.add(match[1]);
+    }
+  }
 
   // If reviewing since last review, use git diff for only the files changed after review
   if (reviewInfo && baseSha && headSha) {
@@ -677,28 +817,31 @@ async function generateDiff(prNumber, repoKey) {
 
       if (afterReview.length > 0 && afterReview.length < allCommits.length) {
         const changedSinceReview = new Set();
-        for (const c of afterReview) {
+        // Fetch changed files per commit in parallel (bounded concurrency)
+        const fileLists = await mapLimit(afterReview, 4, async (c) => {
           try {
-            const files = await execPromise(
+            return await execPromise(
               `git diff-tree --no-commit-id --name-only -r ${c.sha}`,
               { cwd: repoPath }
             );
-            files.split('\n').filter(Boolean).forEach(f => changedSinceReview.add(f));
-          } catch {}
+          } catch { return ''; }
+        });
+        for (const files of fileLists) {
+          files.split('\n').filter(Boolean).forEach(f => changedSinceReview.add(f));
         }
 
         if (changedSinceReview.size > 0) {
           // Diff each non-merge commit individually to exclude merged master changes
-          const diffs = [];
-          for (const c of afterReview) {
+          // (read-only git ops — safe to run in parallel, bounded concurrency)
+          const commitDiffs = await mapLimit(afterReview, 4, async (c) => {
             try {
-              const diff = await execPromise(
+              return await execPromise(
                 `git diff ${c.sha}^..${c.sha}`,
                 { cwd: repoPath, timeout: 15000 }
               );
-              if (diff) diffs.push(diff);
-            } catch {}
-          }
+            } catch { return ''; }
+          });
+          const diffs = commitDiffs.filter(d => d);
           if (diffs.length > 0) {
             // Merge hunks for the same file so each file appears only once
             const combined = diffs.join('\n');
@@ -780,6 +923,24 @@ async function generateDiff(prNumber, repoKey) {
             }
             diffOut = merged.join('\n');
             log('INFO', `[generateDiff] Combined ${diffs.length} commit diffs into ${Object.keys(fileDiffs).length} files`);
+
+            // Filter out files that don't appear in gh pr diff
+            // (modified then reverted — net zero change)
+            if (unifiedDiffFiles.size > 0) {
+              const sections = diffOut.split(/^(?=diff --git )/m);
+              const filtered = sections.filter(section => {
+                const match = section.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
+                if (!match) return true; // Keep preamble
+                const filePath = match[2];
+                if (!unifiedDiffFiles.has(filePath)) {
+                  log('INFO', `[generateDiff] Filtering out ${filePath} — not in unified diff (reverted)`);
+                  return false;
+                }
+                return true;
+              });
+              diffOut = filtered.join('');
+              log('INFO', `[generateDiff] After filtering: ${unifiedDiffFiles.size} files in unified diff`);
+            }
           }
         }
       }
@@ -1121,6 +1282,17 @@ ipcMain.handle('open-pr-new-window', async (event, prNumber) => {
 
 ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
   try {
+    const safePr = safePrNumber(prNumber);
+    const cacheKey = `${safePr}:${repo || 'default'}`;
+    
+    // Check prefetch cache first — instant return if already fetched
+    const prefetched = prefetchCache[cacheKey];
+    if (prefetched && prefetched !== 'in-progress') {
+      delete prefetchCache[cacheKey];
+      log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
+      return prefetched;
+    }
+    
     log('INFO', '[pr] Loading PR', prNumber, 'repo:', repo || 'default');
     const result = await generateDiff(prNumber, repo);
     const content = fs.readFileSync(result.diffPath, 'utf8');
@@ -1154,6 +1326,107 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
     return { error: err.message };
   }
 });
+
+// Fast PR metadata — title, author, assignees (no diff generation)
+// Returns in ~1-2s vs 10-30s for full load-pr
+ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) return { error: 'Invalid PR number' };
+  let owner, repoName;
+  if (repo && repo.includes('/')) {
+    [owner, repoName] = repo.split('/');
+  } else {
+    owner = appConfig.repoOwner || 'webtoolbox';
+    repoName = appConfig.repoName || 'Website-Toolbox';
+  }
+  try {
+    log('INFO', '[get-pr-info] Fetching metadata for PR #' + safePr);
+    const prJson = await execPromise(
+      `gh pr view ${safePr} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,changedFiles --jq '{title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles}'`,
+      { timeout: 15000 }
+    );
+    const prData = JSON.parse(prJson || '{}');
+    log('INFO', '[get-pr-info] Got metadata:', prData.title?.substring(0, 50));
+    return {
+      prTitle: prData.title || '',
+      prAuthor: prData.author || '',
+      prAssignees: (prData.assignees || []).filter(a => a !== prData.author),
+      prBody: prData.body || '',
+      state: prData.state || '',
+      filesChanged: prData.changedFiles || 0,
+      headSha: prData.headRefOid || '',
+      baseSha: prData.baseRefOid || ''
+    };
+  } catch (err) {
+    log('ERROR', '[get-pr-info] Failed:', err.message);
+    return { error: err.message };
+  }
+});
+
+// Prefetch PR diff in background — result cached for next load-pr call
+const prefetchCache = {};
+ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) return { error: 'Invalid PR number' };
+  const cacheKey = `${safePr}:${repo || 'default'}`;
+  // Don't re-prefetch if already in progress or cached
+  if (prefetchCache[cacheKey]) {
+    log('INFO', '[prefetch-pr] PR #' + safePr + ' already prefetched/in-progress');
+    return { status: 'cached' };
+  }
+  prefetchCache[cacheKey] = 'in-progress';
+  log('INFO', '[prefetch-pr] Starting background fetch for PR #' + safePr);
+  try {
+    const result = await generateDiff(safePr, repo);
+    const content = fs.readFileSync(result.diffPath, 'utf8');
+    const prData = result.prData || {};
+    prefetchCache[cacheKey] = {
+      content,
+      fileName: `pr-${safePr}-clean.diff`,
+      filePath: result.diffPath,
+      prNumber: safePr,
+      prTitle: prData.title || '',
+      prAuthor: prData.author || '',
+      prAssignees: (prData.assignees || []).filter(a => a !== prData.author),
+      prBody: prData.body || '',
+      reviewInfo: result.reviewInfo,
+      filesChanged: result.filesChanged,
+      repoPath: getLocalRepoPath(repo),
+      baseSha: result.baseSha || null,
+      headSha: result.headSha || null
+    };
+    log('INFO', '[prefetch-pr] Cached PR #' + safePr + ':', content.length, 'chars');
+    return { status: 'done' };
+  } catch (err) {
+    log('ERROR', '[prefetch-pr] Failed for PR #' + safePr + ':', err.message);
+    delete prefetchCache[cacheKey];
+    return { error: err.message };
+  }
+});
+
+// Get prefetched PR result (consumed by load-pr flow)
+ipcMain.handle('get-prefetched-pr', (event, { prNumber, repo } = {}) => {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) return null;
+  const cacheKey = `${safePr}:${repo || 'default'}`;
+  const cached = prefetchCache[cacheKey];
+  if (cached && cached !== 'in-progress') {
+    delete prefetchCache[cacheKey]; // Consume once
+    log('INFO', '[get-prefetched-pr] Returning cached result for PR #' + safePr);
+    return cached;
+  }
+  return null;
+});
+
+// Clear stale prefetch entries (older than 5 minutes)
+setInterval(() => {
+  // Simple cleanup — in-progress entries that never resolved
+  for (const key of Object.keys(prefetchCache)) {
+    if (prefetchCache[key] === 'in-progress') {
+      // Leave in-progress alone — they might still be running
+    }
+  }
+}, 300000);
 
 ipcMain.handle('list-prs', async () => {
   const owner = appConfig.repoOwner;
@@ -1559,27 +1832,118 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
   // Build inline comments array — recompute positions from gh pr diff
   // (renderer positions may be from per-commit diffs which don't match GitHub's unified diff)
   let ghComments = [];
+  let skippedCommentsInfo = [];
+  let fileCommentsPosted = 0;
   if (comments && comments.length > 0) {
-    // Get the PR's unified diff to compute correct positions
-    let prDiff = '';
-    try {
-      prDiff = await execPromise(`gh pr diff ${prNumber} --repo ${owner}/${repo}`, { timeout: 30000 });
-    } catch {}
-    
-    if (prDiff) {
-      const positionMap = computePositionsFromDiff(prDiff);
-      ghComments = comments
-        .filter(c => c.file && c.text)
-        .map(c => {
+    // Separate file-level comments (no line/position needed) from inline comments
+    const fileComments = comments.filter(c => c.file && c.text && c.level === 'file');
+    const inlineComments = comments.filter(c => c.file && c.text && c.level !== 'file' && c.line);
+
+    // File-level comments: submit via gh pr comment (GitHub review API doesn't support them)
+    for (const c of fileComments) {
+      try {
+        const tmpPath = path.join(getGeneratedDir(), `file-comment-${Date.now()}.txt`);
+        fs.writeFileSync(tmpPath, c.text);
+        try {
+          await execPromise(
+            `gh pr comment ${prNumber} --repo ${owner}/${repo} --body-file "${tmpPath}"`,
+            { timeout: 15000 }
+          );
+          fileCommentsPosted++;
+          log('INFO', `[github-review] File-level comment posted on ${c.file}`);
+        } finally {
+          try { fs.unlinkSync(tmpPath); } catch {}
+        }
+      } catch (commentErr) {
+        log('ERROR', `[github-review] Failed to post file-level comment on ${c.file}:`, commentErr.message);
+      }
+    }
+
+    // Get the PR's unified diff to compute correct positions for inline comments
+    if (inlineComments.length > 0) {
+      log('INFO', `[github-review] Mapping ${inlineComments.length} inline comments to positions`);
+      log('INFO', `[github-review] Comment files: ${[...new Set(inlineComments.map(c => c.file))].join(', ')}`);
+
+      let prDiff = '';
+      try {
+        prDiff = await execPromise(`gh pr diff ${prNumber} --repo ${owner}/${repo}`, { timeout: 30000 });
+      } catch (diffErr) {
+        log('ERROR', '[github-review] Failed to fetch PR diff for position mapping:', diffErr.message);
+      }
+
+      if (prDiff) {
+        log('INFO', `[github-review] PR diff: ${prDiff.length} chars, ${((prDiff.match(/diff --git/g) || []).length)} files`);
+        const positionMap = computePositionsFromDiff(prDiff);
+        log('INFO', `[github-review] Position map: ${Object.keys(positionMap).length} entries`);
+
+        // Build set of files in the unified diff
+        const diffFiles = new Set();
+        for (const key of Object.keys(positionMap)) {
+          diffFiles.add(key.split(':').slice(0, -2).join(':'));
+        }
+        log('INFO', `[github-review] Diff files: ${[...diffFiles].join(', ')}`);
+
+        // Filter out comments on files NOT in the unified diff
+        // (e.g. files that were modified then reverted — net change is zero)
+        const skippedFiles = [];
+        const validComments = [];
+        for (const c of inlineComments) {
+          if (!diffFiles.has(c.file)) {
+            skippedFiles.push(c.file);
+            log('WARN', `[github-review] Skipping comment on ${c.file} — file not in unified diff (likely reverted)`);
+          } else {
+            validComments.push(c);
+          }
+        }
+
+        if (skippedFiles.length > 0) {
+          const uniqueSkipped = [...new Set(skippedFiles)];
+          log('WARN', `[github-review] ${uniqueSkipped.length} file(s) not in unified diff: ${uniqueSkipped.join(', ')}`);
+        }
+
+        const mapped = [];
+        const unmapped = [];
+        for (const c of validComments) {
           const key = `${c.file}:${c.line}:${c.side || 'RIGHT'}`;
           const position = positionMap[key];
-          if (!position) {
-            log('WARN', `[github-review] No position found for ${key}`);
-            return null;
+          if (position) {
+            mapped.push({ path: c.file, position, body: c.text });
+          } else {
+            unmapped.push(key);
+            // Try alternate side (LEFT for context lines)
+            const altKey = `${c.file}:${c.line}:${c.side === 'RIGHT' ? 'LEFT' : 'RIGHT'}`;
+            const altPosition = positionMap[altKey];
+            if (altPosition) {
+              log('INFO', `[github-review] Found position via alternate side for ${key} -> ${altKey}`);
+              mapped.push({ path: c.file, position: altPosition, body: c.text });
+            }
           }
-          return { path: c.file, position, body: c.text };
-        })
-        .filter(Boolean);
+        }
+
+        if (unmapped.length > 0) {
+          log('WARN', `[github-review] ${unmapped.length} comments could not be mapped: ${unmapped.join('; ')}`);
+          // Log sample of available keys near the first unmapped comment for debugging
+          const firstUnmapped = unmapped[0];
+          const [unmappedFile] = firstUnmapped.split(':');
+          const nearbyKeys = Object.keys(positionMap)
+            .filter(k => k.startsWith(unmappedFile + ':'))
+            .slice(0, 10);
+          log('WARN', `[github-review] Available positions for ${unmappedFile}: ${nearbyKeys.join(', ')}`);
+        }
+
+        ghComments.push(...mapped);
+
+        // If some comments were skipped (file not in unified diff), store info for the user
+        if (skippedFiles.length > 0) {
+          skippedCommentsInfo = [...new Set(skippedFiles)].map(f => ({
+            file: f,
+            reason: 'File was modified then reverted — no net changes in PR'
+          }));
+        }
+      } else {
+        // Diff fetch failed — can't map positions, can't submit inline comments
+        log('ERROR', '[github-review] PR diff empty — cannot submit inline comments');
+      }
     }
   }
 
@@ -1588,14 +1952,18 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     payload.comments = ghComments;
   }
 
-  // Validate: REQUEST_CHANGES and COMMENT require a non-empty body or comments
-  if ((ghEvent === 'REQUEST_CHANGES' || ghEvent === 'COMMENT') && !payload.body && ghComments.length === 0) {
+  // Validate: REQUEST_CHANGES and COMMENT require something meaningful
+  if ((ghEvent === 'REQUEST_CHANGES' || ghEvent === 'COMMENT') && !payload.body && ghComments.length === 0 && fileCommentsPosted === 0) {
     return { error: 'Cannot submit an empty review. Write a review body or add inline comments.' };
   }
 
-  // If body is empty but there are comments, add a summary body (GitHub requires non-empty body)
-  if (!payload.body && ghComments.length > 0) {
-    payload.body = `Review with ${ghComments.length} comment${ghComments.length > 1 ? 's' : ''}`;
+  // Ensure body is non-empty for REQUEST_CHANGES and COMMENT (GitHub rejects empty body)
+  if (!payload.body && (ghEvent === 'REQUEST_CHANGES' || ghEvent === 'COMMENT')) {
+    if (ghComments.length > 0) {
+      payload.body = `Review with ${ghComments.length} comment${ghComments.length > 1 ? 's' : ''}`;
+    } else if (fileCommentsPosted > 0) {
+      payload.body = `Review with ${fileCommentsPosted} file comment${fileCommentsPosted > 1 ? 's' : ''}`;
+    }
   }
 
   // Delete any existing pending review (GitHub only allows one at a time)
@@ -1633,7 +2001,11 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     );
     const result = JSON.parse(stdout || '{}');
     log('INFO', '[github-review] submitted successfully:', result.id);
-    return { success: true, reviewId: result.id, htmlUrl: result.html_url };
+    const response = { success: true, reviewId: result.id, htmlUrl: result.html_url };
+    if (skippedCommentsInfo.length > 0) {
+      response.skippedComments = skippedCommentsInfo;
+    }
+    return response;
   } catch (err) {
     const is422 = err.message && err.message.includes('422');
     log('ERROR', '[github-review] submission failed:', err.message);
@@ -1737,7 +2109,7 @@ IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the fo
     // Run hermes chat with the prompt using execFile to avoid shell escaping issues
     const { execFile } = require('child_process');
     const stdout = await new Promise((resolve, reject) => {
-      execFile(appConfig.aiCommand, ['chat', '-p', 'wt', '--yolo', '-q', prompt], { timeout: 600000 }, (err, out) => {
+      execFile(appConfig.aiCommand, ['chat', '-p', appConfig.hermesProfile || 'wt', '--yolo', '-q', prompt], { timeout: 600000 }, (err, out) => {
         if (err) reject(err); else resolve(out);
       });
     });
@@ -1883,7 +2255,7 @@ Do not wrap in markdown code fences. Return ONLY the JSON.`;
 
     console.log('[voice] Sending to Hermes for interpretation...');
     const stdout = await execPromise(
-      `hermes chat -p wt ${JSON.stringify(prompt)} --model anthropic/claude-sonnet-4 -Q`,
+      `hermes chat -p ${appConfig.hermesProfile || 'wt'} ${JSON.stringify(prompt)} --model anthropic/claude-sonnet-4 -Q`,
       { maxBuffer: 10 * 1024 * 1024, timeout: 60000 }
     );
 
@@ -2153,6 +2525,7 @@ ipcMain.handle('get-config', async () => ({
   prNumber: cliPrNumber,
   aiTagPrefix: appConfig.aiTagPrefix || '@Hermes',
   aiCommand: appConfig.aiCommand,
+  hermesProfile: appConfig.hermesProfile || 'wt',
   prFilter: appConfig.prFilter || {},
   repoOwner: appConfig.repoOwner || '',
   repoName: appConfig.repoName || '',
@@ -2188,6 +2561,7 @@ ipcMain.handle('save-preferences', async (event, prefs) => {
     if (prefs.repoPath !== undefined) appConfig.repoPath = prefs.repoPath;
     if (prefs.aiCommand !== undefined) appConfig.aiCommand = prefs.aiCommand;
     if (prefs.aiTagPrefix !== undefined) appConfig.aiTagPrefix = prefs.aiTagPrefix;
+    if (prefs.hermesProfile !== undefined) appConfig.hermesProfile = prefs.hermesProfile;
     if (prefs.editorCommand !== undefined) appConfig.editorCommand = prefs.editorCommand;
     if (prefs.contextLines !== undefined) appConfig.contextLines = prefs.contextLines;
     if (prefs.diff !== undefined) appConfig.diff = { ...(appConfig.diff || {}), ...prefs.diff };
@@ -2535,27 +2909,68 @@ ipcMain.handle('open-file-in-editor', async (event, { filePath, line }) => {
 
 // ===================== AGENT RULES PROPOSAL =====================
 
-// Get AGENTS.md from the repo
+// Get AGENTS.md and referenced rules files from the local repo
 ipcMain.handle('get-agent-rules', async () => {
   const owner = appConfig.repoOwner;
   const repo = appConfig.repoName;
   if (!owner || !repo) return { error: 'No repo configured' };
-  
+
+  const repoPath = getLocalRepoPath(`${owner}/${repo}`);
+  if (!repoPath) return { error: 'No local repo path found' };
+
   try {
+    // Read AGENTS.md from local repo
+    const agentsPath = path.join(repoPath, 'AGENTS.md');
     let agentsMd = '';
     try {
-      agentsMd = await execPromise(
-        `gh api repos/${owner}/${repo}/contents/AGENTS.md --jq .content | base64 -d`
-      );
-    } catch (err) { console.warn('[get-agents-md] AGENTS.md not found or unreadable:', err.message); }
-    return { agentsMd };
+      agentsMd = fs.readFileSync(agentsPath, 'utf8');
+    } catch (err) {
+      log('WARN', '[get-agents-md] AGENTS.md not found locally:', agentsPath);
+      // Fallback to gh api
+      try {
+        agentsMd = await execPromise(
+          `gh api repos/${owner}/${repo}/contents/AGENTS.md --jq .content | base64 -d`
+        );
+      } catch { /* not found */ }
+    }
+
+    // Find and read referenced rules files (.github/instructions/*.md, etc.)
+    const referencedFiles = [];
+    const instructionsDir = path.join(repoPath, '.github', 'instructions');
+    try {
+      const files = fs.readdirSync(instructionsDir);
+      for (const file of files) {
+        if (file.endsWith('.md') || file.endsWith('.instructions.md')) {
+          try {
+            const content = fs.readFileSync(path.join(instructionsDir, file), 'utf8');
+            referencedFiles.push({ path: `.github/instructions/${file}`, content });
+          } catch {}
+        }
+      }
+      log('INFO', `[get-agents-md] Found ${referencedFiles.length} instruction files in .github/instructions/`);
+    } catch {
+      log('INFO', '[get-agents-md] No .github/instructions/ directory found');
+    }
+
+    // Also check AGENTS.md for explicit references to other files
+    const fileRefs = agentsMd.match(/(?:\.github\/instructions\/[\w.-]+\.md|\.github\/[\w.-]+\.md)/g) || [];
+    const uniqueRefs = [...new Set(fileRefs)];
+    for (const ref of uniqueRefs) {
+      if (referencedFiles.some(f => f.path === ref)) continue; // Already loaded
+      try {
+        const content = fs.readFileSync(path.join(repoPath, ref), 'utf8');
+        referencedFiles.push({ path: ref, content });
+      } catch {}
+    }
+
+    return { agentsMd, referencedFiles };
   } catch (err) {
     return { error: err.message };
   }
 });
 
 // Analyze review feedback against existing rules and propose new ones
-ipcMain.handle('propose-rules', async (event, { feedback, agentsMd }) => {
+ipcMain.handle('propose-rules', async (event, { feedback, agentsMd, referencedFiles }) => {
   const rulesConfig = appConfig.rules || {};
   if (!rulesConfig.enabled) return { proposals: [], disabled: true };
   
@@ -2565,13 +2980,22 @@ ipcMain.handle('propose-rules', async (event, { feedback, agentsMd }) => {
   
   const feedbackText = feedback.map(f => `- [${f.file}${f.line ? ` line ${f.line}` : ''}] ${f.text}`).join('\n');
   
+  // Build the referenced files section
+  let referencedFilesText = '';
+  const availableFiles = ['AGENTS.md'];
+  if (referencedFiles && referencedFiles.length > 0) {
+    referencedFilesText = '\nReferenced rules files:\n';
+    for (const file of referencedFiles) {
+      referencedFilesText += `\n--- ${file.path} ---\n${file.content}\n`;
+      availableFiles.push(file.path);
+    }
+  }
+
   const prompt = `You are analyzing code review feedback to propose new agent rules for the ${owner}/${repo} repository.
 
 AGENTS.md content:
 ${agentsMd}
-
-AGENTS.md references other rules files (e.g. .github/instructions/*.md). Read those files as needed to understand the full set of existing rules.
-
+${referencedFilesText}
 REVIEW FEEDBACK:
 ${feedbackText}
 
@@ -2587,9 +3011,9 @@ Rules should be generalized, not specific to this one PR.
 Keep rules concise — one sentence each when possible.`;
 
   return new Promise((resolve) => {
-    const args = ['chat', '-p', rulesConfig.aiProfile || 'wt', '-q', prompt];
+    const args = ['chat', '-p', rulesConfig.aiProfile || appConfig.hermesProfile || 'wt', '-q', prompt];
     const proc = require('child_process').execFile(aiCmd, args, { timeout: 60000 }, (err, stdout) => {
-      if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: err.message }); return; }
+      if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles, error: err.message }); return; }
       log('INFO', '[propose-rules] AI response received, length:', stdout.length, 'chars');
       log('INFO', '[propose-rules] Raw response (first 500):', stdout.substring(0, 500));
       try {
@@ -2597,21 +3021,48 @@ Keep rules concise — one sentence each when possible.`;
         // Try multiple strategies to extract JSON
         let parsed = null;
         
-        // Strategy 1: find largest JSON object
-        const jsonMatches = stdout.match(/\{[\s\S]*\}/g);
-        if (jsonMatches) {
-          for (const match of jsonMatches.sort((a, b) => b.length - a.length)) {
-            try {
-              const candidate = JSON.parse(match);
-              if (candidate.proposedRules || candidate.availableFiles) {
-                parsed = candidate;
-                break;
-              }
-            } catch {}
+        // Strategy 1: find JSON block that contains proposedRules
+        // Use non-greedy matching to avoid spanning across hermes banners
+        const proposedRulesMatch = stdout.match(/\{\s*"proposedRules"[\s\S]*?\}\s*\]/g);
+        if (proposedRulesMatch) {
+          for (const match of proposedRulesMatch) {
+            // Find the complete JSON object containing this match
+            const startIdx = stdout.indexOf(match);
+            if (startIdx < 0) continue;
+            // Walk backwards to find the opening brace
+            let braceCount = 0;
+            let jsonStart = startIdx;
+            for (let i = startIdx; i >= 0; i--) {
+              if (stdout[i] === '{') braceCount++;
+              if (stdout[i] === '}') braceCount--;
+              if (braceCount === 0) { jsonStart = i; break; }
+            }
+            const candidate = stdout.substring(jsonStart, startIdx + match.length + 100);
+            // Try to parse progressively smaller chunks
+            for (let end = candidate.length; end > 10; end--) {
+              try {
+                const obj = JSON.parse(candidate.substring(0, end));
+                if (obj.proposedRules) { parsed = obj; break; }
+              } catch {}
+            }
+            if (parsed) break;
           }
         }
         
-        // Strategy 2: find JSON between ```json blocks
+        // Strategy 2: find largest JSON object (fallback)
+        if (!parsed) {
+          const jsonMatches = stdout.match(/\{[^\{]*"proposedRules"[^\}]*\}/g);
+          if (jsonMatches) {
+            for (const match of jsonMatches) {
+              try {
+                const candidate = JSON.parse(match);
+                if (candidate.proposedRules) { parsed = candidate; break; }
+              } catch {}
+            }
+          }
+        }
+        
+        // Strategy 3: find JSON between ```json blocks
         if (!parsed) {
           const codeBlock = stdout.match(/```json\s*([\s\S]*?)```/);
           if (codeBlock) {
@@ -2621,14 +3072,14 @@ Keep rules concise — one sentence each when possible.`;
 
         if (parsed) {
           log('INFO', '[propose-rules] AI returned', (parsed.proposedRules || []).length, 'proposals');
-          resolve({ proposals: parsed.proposedRules || [], availableFiles: parsed.availableFiles || ['AGENTS.md'] });
+          resolve({ proposals: parsed.proposedRules || [], availableFiles: parsed.availableFiles || availableFiles });
         } else {
           log('ERROR', '[propose-rules] Failed to parse AI response. Raw output:', stdout.substring(0, 500));
-          resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: 'Failed to parse AI response' });
+          resolve({ proposals: [], availableFiles, error: 'Failed to parse AI response' });
         }
       } catch (e) {
         log('ERROR', '[propose-rules] Parse error:', e.message, 'Raw output:', stdout.substring(0, 500));
-        resolve({ proposals: [], availableFiles: ['AGENTS.md'], error: 'Failed to parse AI response' });
+        resolve({ proposals: [], availableFiles, error: 'Failed to parse AI response' });
       }
     });
   });

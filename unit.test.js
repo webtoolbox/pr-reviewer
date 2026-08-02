@@ -2442,8 +2442,10 @@ describe('Dark color scheme consistency', () => {
 
   test('loadDiff uses colorScheme: dark', () => {
     // loadDiff should use colorScheme: 'dark' for unconditional dark styling
+    // (via Diff2HtmlUI.draw(), which handles hljs internally and preserves
+    // word-level del/ins tags — no longer uses Diff2Html.html())
     const loadDiffMatch = rendererSource.match(
-      /Diff2Html\.html\([\s\S]*?colorScheme:\s*'([^']+)'/
+      /function loadDiff\([\s\S]*?colorScheme:\s*'([^']+)'/
     );
     expect(loadDiffMatch).not.toBeNull();
     expect(loadDiffMatch[1]).toBe('dark');
@@ -2506,13 +2508,12 @@ describe('Dark color scheme consistency', () => {
     expect(darkOverrides).toBeGreaterThan(0);
   });
 
-  test('handleContextExpand finds target file header by name (not first file)', () => {
+  test('handleContextExpand targets file by name via replaceFileInDiff', () => {
     // Before the fix, the scroll restoration code used:
     //   diffContainer.querySelector(`.d2h-file-wrapper .d2h-file-name`)
     // which always returns the FIRST file's header, not the target file.
-    // This caused incorrect scroll delta when expanding context on non-first files.
-    // The fix uses: Array.from(querySelectorAll('.d2h-file-name'))
-    //   .find(el => el.textContent.trim() === fileName)
+    // The current implementation targets the file by name in the diff content
+    // string via replaceFileInDiff (content-based, not first-DOM-match).
     const contextExpandSection = rendererSource.substring(
       rendererSource.indexOf('async function handleContextExpand'),
       rendererSource.indexOf('function replaceFileInDiff')
@@ -2522,8 +2523,8 @@ describe('Dark color scheme consistency', () => {
     expect(contextExpandSection).not.toContain(
       "querySelector(`.d2h-file-wrapper .d2h-file-name`)"
     );
-    // Should use querySelectorAll + find to match the target file by name
-    expect(contextExpandSection).toContain('querySelectorAll');
+    // Should use replaceFileInDiff + fileName to target the specific file
+    expect(contextExpandSection).toContain('replaceFileInDiff');
     expect(contextExpandSection).toContain('fileName');
   });
 });
@@ -2579,12 +2580,12 @@ describe('Auto-advance after approve', () => {
 
   test('loadPrByNumber calls resetButtons() in catch block', () => {
     const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey)');
-    // Find the function's own catch block (after loadPr IPC call), not nested ones.
-    // The outer catch is after loadPrCommits and before the closing of the function.
-    const loadPrCommitsIdx = rendererSource.indexOf('loadPrCommits(prNumber)', loadPrStart);
-    expect(loadPrCommitsIdx).toBeGreaterThan(-1);
-    // The catch block comes after loadPrCommits
-    const catchIdx = rendererSource.indexOf('} catch (err)', loadPrCommitsIdx);
+    // Find the function's own catch block — it's the outermost one after all the logic.
+    // Look for the prefetchNextPr call (last action before catch) to find the right catch block.
+    const prefetchIdx = rendererSource.indexOf('prefetchNextPr(prNumber, repoKey)', loadPrStart);
+    expect(prefetchIdx).toBeGreaterThan(-1);
+    // The catch block comes after prefetchNextPr
+    const catchIdx = rendererSource.indexOf('} catch (err)', prefetchIdx);
     expect(catchIdx).toBeGreaterThan(-1);
     const catchEnd = rendererSource.indexOf('\n  }', catchIdx + 10);
     const catchBlock = rendererSource.substring(catchIdx, catchEnd + 4);
@@ -3204,5 +3205,127 @@ describe('PR Draft Persistence', () => {
   test('savePrDraft returns null for invalid PR number', () => {
     expect(savePrDraft(null, { comments: [] }, tmpDir)).toBeNull();
     expect(savePrDraft('abc', { comments: [] }, tmpDir)).toBeNull();
+  });
+});
+
+// ── AI Chat + Customizable Hermes Profile ──
+
+describe('AI Chat and Hermes profile', () => {
+  let mainSource, preloadSource, rendererSource, indexHtml, configJson;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    preloadSource = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+    configJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+  });
+
+  test('config.json includes hermesProfile default', () => {
+    expect(configJson.hermesProfile).toBe('wt');
+  });
+
+  test('main.js loadConfig defaults include hermesProfile', () => {
+    const defaultsBlock = mainSource.substring(
+      mainSource.indexOf('const defaults = {'),
+      mainSource.indexOf('let config = { ...defaults }')
+    );
+    expect(defaultsBlock).toContain("hermesProfile: 'wt'");
+  });
+
+  test('get-config returns hermesProfile', () => {
+    const getConfigBlock = mainSource.substring(
+      mainSource.indexOf("ipcMain.handle('get-config'"),
+      mainSource.indexOf("ipcMain.handle('open-external'")
+    );
+    expect(getConfigBlock).toContain("hermesProfile: appConfig.hermesProfile || 'wt'");
+  });
+
+  test('save-preferences persists hermesProfile', () => {
+    expect(mainSource).toContain('if (prefs.hermesProfile !== undefined) appConfig.hermesProfile = prefs.hermesProfile;');
+  });
+
+  test('no hardcoded "-p wt" remains in hermes chat calls', () => {
+    // All hermes invocations must use the configurable profile, not hardcoded 'wt'
+    const hermesChatCalls = mainSource.match(/-p\s*'wt'/g) || [];
+    expect(hermesChatCalls.length).toBe(0);
+    // And should reference the profile from config
+    expect(mainSource.match(/-p'\s*,\s*appConfig\.hermesProfile/g)).not.toBeNull();
+  });
+
+  test('ai-chat IPC handler exists in main.js', () => {
+    expect(mainSource).toContain("ipcMain.handle('ai-chat'");
+  });
+
+  test('cleanHermesResponse strips warnings, box UI, and session footer', () => {
+    const raw = `Warning: Unknown toolsets: messaging\nQuery: prompt echo\nUser: hi\nAssistant:\nInitializing agent...\n\n╭─ Hermes ─╮\nThe answer is here.\n╰──────────╯\n\nResume this session with:\n  hermes --resume 123 -p wt\n\nSession: 123\nDuration: 5s\nMessages: 2`;
+    // Execute the function's logic by extracting it from source is brittle; instead
+    // verify the source includes the key stripping behaviors.
+    const fn = mainSource.substring(
+      mainSource.indexOf('function cleanHermesResponse'),
+      mainSource.indexOf('// AI chat IPC')
+    );
+    expect(fn).toContain("text.replace(/^(?:Warning:[^\\n]*\\n*)+/g, '')");
+    expect(fn).toContain("text.lastIndexOf('╭')");
+    expect(fn).toContain('Resume (?:this session|session) with:');
+    expect(fn).toContain('Session:');
+  });
+
+  test('buildChatPrompt embeds conversation history', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('function buildChatPrompt'),
+      mainSource.indexOf('// AI chat IPC')
+    );
+    expect(fn).toContain('Conversation so far:');
+    expect(fn).toContain("lines.push('User: ' + message)");
+    expect(fn).toContain("lines.push('Assistant:')");
+  });
+
+  test('preload.js exposes aiChat bridge', () => {
+    expect(preloadSource).toContain("aiChat: (data) => ipcRenderer.invoke('ai-chat', data)");
+  });
+
+  test('index.html has chat button and chat panel', () => {
+    expect(indexHtml).toContain('id="btn-ai-chat"');
+    expect(indexHtml).toContain('id="ai-chat-panel"');
+    expect(indexHtml).toContain('id="ai-chat-input"');
+    expect(indexHtml).toContain('id="ai-chat-send"');
+    expect(indexHtml).toContain('id="ai-chat-clear"');
+    expect(indexHtml).toContain('id="ai-chat-messages"');
+  });
+
+  test('index.html has Profile preference field', () => {
+    expect(indexHtml).toContain('id="pref-hermes-profile"');
+  });
+
+  test('index.html has bot icon for AI chat and separate PR comment button', () => {
+    expect(indexHtml).toContain('id="btn-ai-chat"');
+    expect(indexHtml).toContain('id="btn-pr-comment"');
+    expect(indexHtml).toContain('id="pr-comment-panel"');
+    // AI chat button uses a bot/robot icon (rect head + antenna), not a comment bubble
+    expect(indexHtml).toContain('aria-label="Chat with AI"');
+  });
+
+  test('review-body textarea moved into PR comment panel (bottom container removed)', () => {
+    // #review-body must live in #pr-comment-panel (the header dropdown)
+    const panelStart = indexHtml.indexOf('id="pr-comment-panel"');
+    const panelEnd = indexHtml.indexOf('id="comment-nav"', panelStart);
+    const panelBlock = indexHtml.substring(panelStart, panelEnd);
+    expect(panelBlock).toContain('id="review-body"');
+    // The old bottom-of-screen review body container should be gone
+    expect(indexHtml).not.toContain('id="review-body-container"');
+    expect(rendererSource).toContain("const btnPrComment = document.getElementById('btn-pr-comment')");
+    expect(rendererSource).toContain('prCommentPanel.classList.toggle');
+  });
+
+  test('renderer.js prefFields includes hermesProfile', () => {
+    expect(rendererSource).toContain("{ id: 'pref-hermes-profile', key: 'hermesProfile', type: 'text' }");
+  });
+
+  test('renderer.js wires chat send/clear/history', () => {
+    expect(rendererSource).toContain('aiChatHistory');
+    expect(rendererSource).toContain('async function sendAiChat');
+    expect(rendererSource).toContain('window.electronAPI.aiChat');
+    expect(rendererSource).toContain('appendAiChatMsg');
   });
 });

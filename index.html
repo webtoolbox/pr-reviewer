@@ -651,6 +651,70 @@
       padding: 20px; text-align: center; color: #8b949e; font-size: 13px;
     }
 
+    /* AI chat panel */
+    #ai-chat-panel {
+      display: none; position: fixed; z-index: 1001;
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      width: 380px; max-width: 90vw; height: 480px; max-height: 70vh;
+      overflow: hidden; flex-direction: column;
+    }
+    #ai-chat-panel.open { display: flex; }
+    #ai-chat-panel .ai-chat-header {
+      padding: 10px 14px; font-size: 13px; color: #c9d1d9; font-weight: 600;
+      border-bottom: 1px solid #21262d; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+    }
+    #ai-chat-clear {
+      background: none; border: none; color: #8b949e; font-size: 12px; cursor: pointer;
+      padding: 2px 6px; border-radius: 4px;
+    }
+    #ai-chat-clear:hover { background: #1c2128; color: #c9d1d9; }
+    #ai-chat-panel .ai-chat-messages {
+      flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .ai-chat-msg { padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .ai-chat-msg.user { background: #1f6feb; color: #fff; align-self: flex-end; max-width: 85%; }
+    .ai-chat-msg.assistant { background: #21262d; color: #c9d1d9; align-self: flex-start; max-width: 90%; }
+    .ai-chat-msg.error { background: #3d1d1d; color: #f85149; align-self: flex-start; max-width: 90%; }
+    .ai-chat-msg.typing { color: #8b949e; font-style: italic; }
+    #ai-chat-panel .ai-chat-input-row {
+      display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid #21262d; flex-shrink: 0;
+    }
+    #ai-chat-input {
+      flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      color: #c9d1d9; padding: 8px 10px; font-size: 13px; outline: none;
+    }
+    #ai-chat-input:focus { border-color: #58a6ff; }
+    #ai-chat-send {
+      background: #238636; border: none; border-radius: 6px; color: #fff;
+      padding: 0 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    #ai-chat-send:hover { background: #2ea043; }
+    #ai-chat-send:disabled { background: #21262d; color: #8b949e; cursor: default; }
+    #ai-chat-panel::-webkit-scrollbar { width: 6px; }
+    #ai-chat-panel::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+    /* Overall PR comment panel */
+    #pr-comment-panel {
+      display: none; position: fixed; z-index: 1001;
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      width: 440px; max-width: 90vw; flex-direction: column; overflow: hidden;
+    }
+    #pr-comment-panel.open { display: flex; }
+    #pr-comment-panel .pr-comment-header {
+      padding: 10px 14px; font-size: 13px; color: #c9d1d9; font-weight: 600;
+      border-bottom: 1px solid #21262d; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+    }
+    #pr-comment-panel .shortcut-hint { color: #8b949e; font-weight: 400; font-size: 11px; }
+    #pr-comment-panel #review-body {
+      width: 100%; box-sizing: border-box; min-height: 120px; max-height: 300px;
+      resize: vertical; background: #0d1117; border: none; border-radius: 0;
+      color: #c9d1d9; padding: 12px 14px; font-size: 13px; line-height: 1.5; outline: none;
+    }
+    #pr-comment-panel #review-body:focus { background: #0d1117; }
+    #pr-comment-panel #review-body::placeholder { color: #484f58; }
+
     /* Commit tooltip on line numbers */
     .commit-tooltip {
       position: fixed; z-index: 2000;
@@ -1443,6 +1507,21 @@
       #commits-panel .commit-message { color: #24292f; }
       #commits-panel .commit-author { color: #656d76; }
 
+      /* AI chat panel */
+      #ai-chat-panel { background: #f6f8fa; border: 1px solid #d0d7de; }
+      #ai-chat-panel .ai-chat-header { border-bottom-color: #d0d7de; }
+      .ai-chat-msg.user { background: #0969da; }
+      .ai-chat-msg.assistant { background: #eaeef2; color: #24292f; }
+      .ai-chat-msg.error { background: #ffebe9; color: #cf222e; }
+      #ai-chat-input { background: #ffffff; border-color: #d0d7de; color: #24292f; }
+      #ai-chat-panel .ai-chat-input-row { border-top-color: #d0d7de; }
+
+      /* Overall PR comment panel */
+      #pr-comment-panel { background: #f6f8fa; border: 1px solid #d0d7de; }
+      #pr-comment-panel .pr-comment-header { border-bottom-color: #d0d7de; }
+      #pr-comment-panel #review-body { background: #ffffff; color: #24292f; }
+      #pr-comment-panel #review-body::placeholder { color: #8c959f; }
+
       /* Review buttons container */
       #review-body-container { background: #f6f8fa; border-top: 1px solid #d0d7de; }
 
@@ -1508,6 +1587,29 @@
         <line x1="8" y1="23" x2="16" y2="23"/>
       </svg>
     </button>
+    <button id="btn-ai-chat" title="Chat with AI" aria-label="Chat with AI">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="7" width="16" height="12" rx="2"/>
+        <path d="M12 7V4"/>
+        <circle cx="12" cy="3.5" r="1.2"/>
+        <circle cx="8.5" cy="12" r="0.6" fill="currentColor" stroke="none"/>
+        <circle cx="15.5" cy="12" r="0.6" fill="currentColor" stroke="none"/>
+        <path d="M8 16h8"/>
+      </svg>
+    </button>
+    <button id="btn-pr-comment" title="Add overall PR comment" aria-label="Add overall PR comment">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+        <path d="M8 9h8"/><path d="M8 13h5"/>
+      </svg>
+    </button>
+    <div id="pr-comment-panel">
+      <div class="pr-comment-header">
+        <span>Overall PR Comment</span>
+        <span class="shortcut-hint">(Cmd+Shift+Enter to submit)</span>
+      </div>
+      <textarea id="review-body" placeholder="Add an overall review comment (optional)..."></textarea>
+    </div>
     <span id="comment-nav" style="display:none">
       <button id="btn-prev-comment" title="Previous comment (Cmd+[)" aria-label="Previous comment">◀</button>
       <span id="comment-nav-label" style="font-size:12px;color:#8b949e;margin:0 4px"></span>
@@ -1516,6 +1618,18 @@
     <button id="btn-more" title="More actions" aria-label="More actions">⋮</button>
     <div id="more-menu" style="display:none;position:absolute;right:20px;top:var(--review-bar-height, 52px);background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 0;z-index:1001;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
       <button id="menu-close-pr" style="display:block;width:100%;text-align:left;padding:8px 16px;background:none;border:none;color:#c9d1d9;font-size:13px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#1c2128'" onmouseout="this.style.background='none'">Close Pull Request</button>
+    </div>
+
+    <div id="ai-chat-panel">
+      <div class="ai-chat-header">
+        <span class="ai-chat-title">Chat with AI</span>
+        <button id="ai-chat-clear" title="Clear conversation">Clear</button>
+      </div>
+      <div id="ai-chat-messages" class="ai-chat-messages"></div>
+      <div class="ai-chat-input-row">
+        <input type="text" id="ai-chat-input" placeholder="Ask about this branch or PR...">
+        <button id="ai-chat-send">Send</button>
+      </div>
     </div>
   </div>
 
@@ -1595,10 +1709,6 @@
     </div>
     <div id="main-content" style="flex:1;min-width:0;display:flex;flex-direction:column;">
       <div id="diff-container"></div>
-      <div id="review-body-container">
-        <h3>Review Summary <span class="shortcut-hint">(Cmd+Shift+Enter to submit)</span></h3>
-        <textarea id="review-body" placeholder="Add an overall review comment (optional)..." title="Cmd+Shift+Enter to submit review"></textarea>
-      </div>
     </div>
   </div>
 
@@ -1684,6 +1794,10 @@
             <div class="prefs-row">
               <label for="pref-ai-tag">Tag prefix</label>
               <input type="text" id="pref-ai-tag" placeholder="@Hermes">
+            </div>
+            <div class="prefs-row">
+              <label for="pref-hermes-profile">Profile</label>
+              <input type="text" id="pref-hermes-profile" placeholder="wt" title="Hermes profile used for AI chat, @ask, and agent calls">
             </div>
             <div class="prefs-row">
               <label>Auto-fix on request changes</label>

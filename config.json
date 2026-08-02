@@ -3,6 +3,7 @@
   "aiSendArgs": ["send", "--to"],
   "aiChatId": null,
   "aiTagPrefix": "@Hermes",
+  "hermesProfile": "wt",
   "reviewSaveDir": "",
   "prFilter": {
     "reviewRequested": true,
@@ -19,7 +20,6 @@
   "diff": {
     "mode": "since-review",
     "excludeMerges": true,
-    "codeFileExtensions": [],
     "viewMode": "unified"
   },
   "imageUpload": {

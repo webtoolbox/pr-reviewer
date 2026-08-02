@@ -21,6 +21,19 @@ let comments = []; // { _uid, file, line, side, text, isAiTagged, level, codeCon
 let commentTarget = null; // { file, line, side, element, level, codeContext }
 let parsedDiff = null;
 let aiTagPrefix = '@Hermes';
+// Helper to strip AI tag prefix from comment text (handles both @ask and @Hermes)
+function stripAiTag(text) {
+  const lower = text.toLowerCase();
+  if (lower.startsWith('@ask')) return text.slice(4).trim();
+  if (lower.startsWith(aiTagPrefix.toLowerCase())) return text.slice(aiTagPrefix.length).trim();
+  return text;
+}
+function getAiTagLabel(text) {
+  const lower = text.toLowerCase();
+  if (lower.startsWith('@ask')) return '<span class="ai-tag">@ask</span> ';
+  if (lower.startsWith(aiTagPrefix.toLowerCase())) return `<span class="ai-tag">${escapeHtml(aiTagPrefix)}</span> `;
+  return '';
+}
 let fileCommentCounts = {};
 let currentCommentIndex = -1; // For batch navigation
 let commentUidCounter = 0; // Unique ID counter for stable comment references
@@ -568,7 +581,7 @@ function loadDiff(content, filePath) {
 
   emptyState.style.display = 'none';
   diffContainer.style.display = 'block';
-  reviewBodyContainer.style.display = 'block';
+  if (reviewBodyContainer) reviewBodyContainer.style.display = 'block';
   contentDiv.classList.add('diff-loaded');
   console.log('[loadDiff] contentDiv:', contentDiv, 'classes right after add:', contentDiv.className);
 
@@ -1283,10 +1296,36 @@ async function handleContextExpand(fileName) {
       console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');
       console.log('[context-expand] File still present:', currentDiffContent.includes(fileName));
 
-      // Re-render with save/restore scroll
+      // Re-render, preserving the expanded file's position in the viewport.
+      // Restoring the absolute scrollY makes the view jump when expanding at the
+      // bottom of a diff, because inserting context lines above the viewport
+      // shifts the file downward. Anchor the file wrapper instead so it stays put.
+      let anchorTop = null;
+      if (window.scrollY > 0) {
+        const wrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+        for (const w of wrappers) {
+          const nameEl = w.querySelector('.d2h-file-name');
+          if (nameEl && nameEl.textContent.trim() === fileName) {
+            anchorTop = w.getBoundingClientRect().top;
+            break;
+          }
+        }
+      }
       const savedScroll = window.scrollY;
       renderFilteredDiff();
-      window.scrollTo(0, savedScroll);
+      if (anchorTop !== null) {
+        const newWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+        for (const w of newWrappers) {
+          const nameEl = w.querySelector('.d2h-file-name');
+          if (nameEl && nameEl.textContent.trim() === fileName) {
+            const newTop = w.getBoundingClientRect().top;
+            window.scrollBy(0, newTop - anchorTop);
+            break;
+          }
+        }
+      } else {
+        window.scrollTo(0, savedScroll);
+      }
     }
   } catch (err) {
     console.error('[context-expand] Error:', err);
@@ -1379,8 +1418,8 @@ function renderFileCommentMarker(comment) {
   marker.className = 'file-comment-marker' + (comment.isAiTagged ? ' ai-tagged' : '');
   marker.dataset.commentUid = comment._uid || (comment._uid = ++commentUidCounter);
 
-  const displayText = comment.isAiTagged ? comment.text.slice(aiTagPrefix.length).trim() : comment.text;
-  const tagLabel = comment.isAiTagged ? `<span class="ai-tag">${escapeHtml(aiTagPrefix)}</span> ` : '';
+  const displayText = comment.isAiTagged ? stripAiTag(comment.text) : comment.text;
+  const tagLabel = comment.isAiTagged ? getAiTagLabel(comment.text) : '';
   marker.innerHTML = `<strong>You</strong>: ${tagLabel}<span class="comment-text">${escapeHtml(displayText)}</span>
     <div class="comment-actions">
       <button class="btn-edit" title="Edit">Edit</button>
@@ -1513,8 +1552,8 @@ function renderLineCommentMarker(comment) {
   const markerCell = document.createElement('td');
   markerCell.setAttribute('colspan', '2');
 
-  const displayText = comment.isAiTagged ? comment.text.slice(aiTagPrefix.length).trim() : comment.text;
-  const tagLabel = comment.isAiTagged ? `<span class="ai-tag">${escapeHtml(aiTagPrefix)}</span> ` : '';
+  const displayText = comment.isAiTagged ? stripAiTag(comment.text) : comment.text;
+  const tagLabel = comment.isAiTagged ? getAiTagLabel(comment.text) : '';
   markerCell.innerHTML = `<strong>You (line ${comment.line})</strong>: ${tagLabel}<span class="comment-text">${escapeHtml(displayText)}</span>
     <div class="comment-actions">
       <button class="btn-edit" title="Edit">Edit</button>
@@ -1620,8 +1659,8 @@ function editComment(marker) {
       // Rebuild marker
       const isAi = comments[idx].isAiTagged;
       marker.className = 'file-comment-marker' + (isAi ? ' ai-tagged' : '');
-      const displayText = isAi ? newText.slice(aiTagPrefix.length).trim() : newText;
-      const tagLabel = isAi ? `<span class="ai-tag">${escapeHtml(aiTagPrefix)}</span> ` : '';
+      const displayText = isAi ? stripAiTag(newText) : newText;
+      const tagLabel = isAi ? getAiTagLabel(newText) : '';
       marker.innerHTML = `<strong>You</strong>: ${tagLabel}<span class="comment-text">${escapeHtml(displayText)}</span>
         <div class="comment-actions">
           <button class="btn-edit" title="Edit">Edit</button>
@@ -1669,8 +1708,8 @@ function editComment(marker) {
       comments[idx].isAiTagged = newText.toLowerCase().startsWith(aiTagPrefix.toLowerCase()) || newText.toLowerCase().startsWith('@ask');
       const isAi = comments[idx].isAiTagged;
       marker.className = 'line-comment-marker' + (isAi ? ' ai-tagged' : '');
-      const displayText = isAi ? newText.slice(aiTagPrefix.length).trim() : newText;
-      const tagLabel = isAi ? `<span class="ai-tag">${escapeHtml(aiTagPrefix)}</span> ` : '';
+      const displayText = isAi ? stripAiTag(newText) : newText;
+      const tagLabel = isAi ? getAiTagLabel(newText) : '';
       marker.querySelector('td').innerHTML = `<strong>You (line ${comment.line})</strong>: ${tagLabel}<span class="comment-text">${escapeHtml(displayText)}</span>
         <div class="comment-actions">
           <button class="btn-edit" title="Edit">Edit</button>
@@ -1887,10 +1926,19 @@ async function submitReview(eventType) {
       const positionMap = computeDiffPositions();
       console.log('[submit] comments array:', comments.length, 'positionMap keys:', Object.keys(positionMap).length);
       comments.forEach((c, i) => console.log(`[submit] comment ${i}:`, JSON.stringify({ file: c.file, line: c.line, side: c.side, isAiTagged: c.isAiTagged, level: c.level, text: c.text?.substring(0, 50) })));
-      // Send line and side to backend — positions will be recomputed from gh pr diff
+      // Send line, side, and renderer-computed position to backend
+      // Backend recomputes positions from gh pr diff, but falls back to renderer positions if mapping fails
       const githubComments = comments
-        .filter(c => !c.isAiTagged && c.level !== 'file' && c.line && c.side)
-        .map(c => ({ file: c.file, line: c.line, side: c.side, text: c.text }));
+        .filter(c => !c.isAiTagged && c.text)
+        .map(c => {
+          // File-level comments: send without line/side (backend handles them separately)
+          if (c.level === 'file' || !c.line) {
+            return { file: c.file, line: null, side: null, text: c.text, level: 'file', rendererPosition: 0 };
+          }
+          const posKey = `${c.file}:${c.line}:${c.side}`;
+          const rendererPosition = positionMap[posKey] || 0;
+          return { file: c.file, line: c.line, side: c.side, text: c.text, level: c.level, rendererPosition };
+        });
 
       const result = await window.electronAPI.submitGitHubReview({
         prNumber: review.prNumber,
@@ -1908,6 +1956,12 @@ async function submitReview(eventType) {
                       eventType === 'request_changes' ? '✓ Changes requested on GitHub' :
                       '✓ Comment submitted to GitHub';
         showToast(ghMsg, 'success', 8000);
+
+        // Warn about skipped comments (files not in unified diff — e.g. reverted changes)
+        if (result.skippedComments && result.skippedComments.length > 0) {
+          const skippedFiles = result.skippedComments.map(c => c.file).join(', ');
+          showToast(`⚠ ${result.skippedComments.length} comment(s) skipped — file(s) not in PR diff: ${skippedFiles}`, 'warning', 15000);
+        }
 
         // Clear persisted comments after successful submission
 
@@ -2675,7 +2729,43 @@ async function loadPrByNumber(prNumber, repoKey) {
   console.log('[loadPr] Loading PR #' + prNumber, 'repo:', repoKey || 'default');
   prInfo.innerHTML = `<strong>Loading PR #${prNumber}...</strong>`;
   const loadingToast = showToast('Loading PR…', 'progress', 30000);
+
   try {
+    // Phase 1: Fetch metadata first (~1-2s) — title, author, assignees
+    // This shows the user key info immediately while the diff loads
+    let prMeta = null;
+    if (window.electronAPI.getPrInfo) {
+      try {
+        prMeta = await window.electronAPI.getPrInfo({ prNumber, repo: repoKey });
+        if (prMeta && !prMeta.error) {
+          // Update UI immediately with metadata
+          currentPrTitle = prMeta.prTitle || '';
+          currentPrNumber = prNumber;
+          currentRepoKey = repoKey || null;
+          currentPrBody = prMeta.prBody || '';
+          document.title = currentPrTitle ? `${currentPrTitle} — PR Reviewer` : `PR Reviewer — PR #${prNumber}`;
+          prNumberInput.value = prNumber;
+          // Show title/author immediately — diff count will update when diff arrives
+          updatePrInfoBar(prNumber, currentPrTitle, {
+            prAuthor: prMeta.prAuthor,
+            prAssignees: prMeta.prAssignees,
+            filesChanged: prMeta.filesChanged,
+            reviewInfo: null // Will be set when diff loads
+          });
+          // Start review comments fetch early (doesn't depend on diff)
+          fetchAndDisplayReviewComments(prNumber, repoKey).catch((err) => { console.warn('[loadPr] Failed to fetch review comments:', err.message); });
+          // Load commits early
+          loadPrCommits(prNumber);
+          // Fetch collaborators early
+          if (repoKey) fetchCollaborators(repoKey);
+          console.log('[loadPr] Metadata loaded for PR #' + prNumber + ':', currentPrTitle);
+        }
+      } catch (metaErr) {
+        console.warn('[loadPr] Fast metadata fetch failed, will get from diff:', metaErr.message);
+      }
+    }
+
+    // Phase 2: Load the diff (may be instant from prefetch cache, or 10-30s)
     const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey });
     if (result.error) {
       prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
@@ -2692,14 +2782,11 @@ async function loadPrByNumber(prNumber, repoKey) {
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
-    // Fetch and display inline review comments (guard against race if user loads another PR)
-    const prForComments = prNumber;
-    fetchAndDisplayReviewComments(prNumber, repoKey).catch((err) => { console.warn('[loadPr] Failed to fetch review comments:', err.message); });
-    // Store PR title for later use
-    currentPrTitle = result.prTitle || '';
-    currentPrNumber = prNumber;
-    currentRepoKey = repoKey || null;
-    currentPrBody = result.prBody || '';
+    // Store PR metadata (from diff result, in case fast metadata wasn't available)
+    if (!currentPrTitle) currentPrTitle = result.prTitle || '';
+    if (!currentPrNumber) currentPrNumber = prNumber;
+    if (!currentRepoKey) currentRepoKey = repoKey || null;
+    if (!currentPrBody) currentPrBody = result.prBody || '';
 
     // Check for saved PR draft (persists across app restarts)
     try {
@@ -2728,25 +2815,47 @@ async function loadPrByNumber(prNumber, repoKey) {
     // Detect before/after image pairs in PR body
     beforeAfterPairs = detectBeforeAfterPairs(currentPrBody);
 
-    // Update title bar
+    // Update title bar (may already be set from fast metadata, now we have full info)
     document.title = currentPrTitle ? `${currentPrTitle} — PR Reviewer` : `PR Reviewer — PR #${prNumber}`;
-    // Store PR number
     prNumberInput.value = prNumber;
 
-    // Build info bar
+    // Build info bar with full data (including review info from diff)
     updatePrInfoBar(prNumber, currentPrTitle, result);
 
-    // Fetch collaborators from this PR's repo
-    if (repoKey) fetchCollaborators(repoKey);
+    // Fetch collaborators and review comments if not already started
+    if (!prMeta || prMeta.error) {
+      if (repoKey) fetchCollaborators(repoKey);
+      fetchAndDisplayReviewComments(prNumber, repoKey).catch((err) => { console.warn('[loadPr] Failed to fetch review comments:', err.message); });
+      loadPrCommits(prNumber);
+    }
 
-    // Load commits for this PR
-    loadPrCommits(prNumber);
     if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
+
+    // Phase 3: Prefetch the next PR in the list
+    prefetchNextPr(prNumber, repoKey);
   } catch (err) {
     prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(err.message)}`;
     if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
     resetButtons();
   }
+}
+
+// Prefetch the next PR in the cached list so it loads instantly when auto-advancing
+function prefetchNextPr(currentPrNumber, currentRepoKey) {
+  if (!cachedPrList || cachedPrList.length === 0) return;
+  const nextPr = cachedPrList.find(pr => pr.number !== currentPrNumber);
+  if (!nextPr) return;
+  if (!window.electronAPI.prefetchPr) return;
+  console.log('[prefetch] Starting background fetch for next PR #' + nextPr.number);
+  window.electronAPI.prefetchPr({ prNumber: nextPr.number, repo: nextPr.repo || currentRepoKey })
+    .then(result => {
+      if (result.error) {
+        console.warn('[prefetch] Failed for PR #' + nextPr.number + ':', result.error);
+      } else {
+        console.log('[prefetch] PR #' + nextPr.number + ' ready:', result.status);
+      }
+    })
+    .catch(err => console.warn('[prefetch] Error:', err.message));
 }
 
 // PR dropdown toggle
@@ -3936,29 +4045,44 @@ function openCompareSlideshow(index) {
   overlay.className = 'compare-overlay';
   overlay.id = 'compare-overlay';
 
-  // Flatten all pairs into a single list: Before1, After1, After2, Before2, After3...
-  window._compareFlatImages = [];
+  // Build a linear list of side-by-side views. For each pair, enumerate every
+  // (before, after) combination so that if one side has multiple images, the
+  // main ◀/▶ arrows cycle through that side while the other side stays fixed.
+  //   pair with 1 before + 2 afters -> (b0,a0), (b0,a1)
+  //   pair with 2 before + 1 after -> (b0,a0), (b1,a0)
+  //   pair with 2 before + 2 afters -> (b0,a0), (b0,a1), (b1,a0), (b1,a1)
+  window._compareViews = [];
   for (const p of beforeAfterPairs) {
     const bArr = Array.isArray(p.before) ? p.before : [p.before];
     const aArr = Array.isArray(p.after) ? p.after : [p.after];
-    bArr.forEach(src => window._compareFlatImages.push({ src, label: 'Before' }));
-    aArr.forEach(src => window._compareFlatImages.push({ src, label: 'After' }));
+    for (const bSrc of bArr) {
+      for (const aSrc of aArr) {
+        window._compareViews.push({
+          beforeSrc: bSrc,
+          afterSrc: aSrc
+        });
+      }
+    }
   }
-  const flat = window._compareFlatImages;
-  const current = flat[compareOverlayIndex] || flat[0];
+  const viewCount = window._compareViews.length;
 
   overlay.innerHTML = `
     <div class="compare-header">
-      <span class="compare-counter">${compareOverlayIndex + 1} of ${flat.length}</span>
+      <span class="compare-counter">${compareOverlayIndex + 1} of ${viewCount}</span>
       <button class="compare-close" title="Close (Esc)">✕</button>
     </div>
-    <div class="compare-body compare-single-view">
-      <button class="compare-nav-btn prev" title="Previous (←)" ${compareOverlayIndex <= 0 ? 'disabled' : ''}>◀</button>
-      <div class="compare-side compare-single-side" id="compare-single-side" title="Click to zoom">
-        <div class="compare-label">${current.label}</div>
-        <img src="${escapeHtml(current.src)}" alt="${current.label}">
+    <div class="compare-body compare-split-view">
+      <button class="compare-nav-btn prev" title="Previous (←)">◀</button>
+      <div class="compare-side" id="compare-before-side" title="Click to zoom">
+        <div class="compare-label">Before</div>
+        <img id="compare-before-img" src="" alt="Before">
       </div>
-      <button class="compare-nav-btn next" title="Next (→)" ${compareOverlayIndex >= flat.length - 1 ? 'disabled' : ''}>▶</button>
+      <div class="compare-divider"></div>
+      <div class="compare-side" id="compare-after-side" title="Click to zoom">
+        <div class="compare-label">After</div>
+        <img id="compare-after-img" src="" alt="After">
+      </div>
+      <button class="compare-nav-btn next" title="Next (→)">▶</button>
     </div>
     <div class="compare-hint">← → Navigate images &nbsp;|&nbsp; Click image to zoom &nbsp;|&nbsp; Esc Close</div>
   `;
@@ -3970,31 +4094,43 @@ function openCompareSlideshow(index) {
   overlay.querySelector('.compare-nav-btn.prev').addEventListener('click', () => navigateCompare('prev'));
   overlay.querySelector('.compare-nav-btn.next').addEventListener('click', () => navigateCompare('next'));
   overlay.querySelector('#compare-before-side').addEventListener('click', (e) => {
-    if (e.target.tagName !== 'IMG' && !e.target.closest('.compare-sub-nav')) toggleCompareZoom('before');
+    if (e.target.tagName !== 'IMG') toggleCompareZoom('before');
   });
   overlay.querySelector('#compare-after-side').addEventListener('click', (e) => {
-    if (e.target.tagName !== 'IMG' && !e.target.closest('.compare-sub-nav')) toggleCompareZoom('after');
+    if (e.target.tagName !== 'IMG') toggleCompareZoom('after');
   });
-  overlay.querySelector('#compare-before-side img').addEventListener('click', (e) => {
+  overlay.querySelector('#compare-before-img').addEventListener('click', (e) => {
     e.stopPropagation();
     toggleCompareZoom('before');
   });
-  overlay.querySelector('#compare-after-side img').addEventListener('click', (e) => {
+  overlay.querySelector('#compare-after-img').addEventListener('click', (e) => {
     e.stopPropagation();
     toggleCompareZoom('after');
   });
 
-  // Single image zoom handler
-  const singleSide = overlay.querySelector('#compare-single-side');
-  if (singleSide) {
-    singleSide.addEventListener('click', (e) => {
-      if (e.target.tagName !== 'IMG') toggleCompareZoom('single');
-    });
-    singleSide.querySelector('img')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleCompareZoom('single');
-    });
-  }
+  renderCompareView();
+}
+
+// Render the current compareOverlayIndex view (side-by-side Before | After)
+function renderCompareView() {
+  const overlay = document.getElementById('compare-overlay');
+  const views = window._compareViews || [];
+  if (!overlay || views.length === 0) return;
+  const view = views[compareOverlayIndex] || views[0];
+  if (!view) return;
+
+  overlay.querySelector('.compare-counter').textContent = `${compareOverlayIndex + 1} of ${views.length}`;
+  const beforeImg = overlay.querySelector('#compare-before-img');
+  const afterImg = overlay.querySelector('#compare-after-img');
+  if (beforeImg) beforeImg.src = view.beforeSrc;
+  if (afterImg) afterImg.src = view.afterSrc;
+
+  // Reset zoom state
+  compareZoomedSide = null;
+  const beforeSide = overlay.querySelector('#compare-before-side');
+  const afterSide = overlay.querySelector('#compare-after-side');
+  if (beforeSide) beforeSide.classList.remove('zoomed', 'zoomed-active');
+  if (afterSide) afterSide.classList.remove('zoomed', 'zoomed-active');
 
   updateCompareNavButtons();
 }
@@ -4006,45 +4142,26 @@ function closeCompareSlideshow() {
 }
 
 function navigateCompare(direction) {
-  const flat = window._compareFlatImages || [];
+  const views = window._compareViews || [];
+  if (views.length === 0) return;
   if (direction === 'prev' && compareOverlayIndex > 0) {
     compareOverlayIndex--;
-  } else if (direction === 'next' && compareOverlayIndex < flat.length - 1) {
+  } else if (direction === 'next' && compareOverlayIndex < views.length - 1) {
     compareOverlayIndex++;
   } else {
     return;
   }
-  compareZoomedSide = null;
-
-  const overlay = document.getElementById('compare-overlay');
-  if (!overlay) return;
-
-  const current = flat[compareOverlayIndex];
-  overlay.querySelector('.compare-counter').textContent = `${compareOverlayIndex + 1} of ${flat.length}`;
-  const side = overlay.querySelector('#compare-single-side');
-  if (side) {
-    side.querySelector('.compare-label').textContent = current.label;
-    side.querySelector('img').src = current.src;
-    side.querySelector('img').alt = current.label;
-    side.classList.remove('zoomed', 'zoomed-active');
-  }
-
-  // Update nav buttons
-  const prevBtn = overlay.querySelector('.compare-nav-btn.prev');
-  const nextBtn = overlay.querySelector('.compare-nav-btn.next');
-  if (prevBtn) prevBtn.disabled = compareOverlayIndex <= 0;
-  if (nextBtn) nextBtn.disabled = compareOverlayIndex >= flat.length - 1;
+  renderCompareView();
 }
-
-
 
 function updateCompareNavButtons() {
   const overlay = document.getElementById('compare-overlay');
+  const views = window._compareViews || [];
   if (!overlay) return;
   const prevBtn = overlay.querySelector('.compare-nav-btn.prev');
   const nextBtn = overlay.querySelector('.compare-nav-btn.next');
   if (prevBtn) prevBtn.disabled = compareOverlayIndex <= 0;
-  if (nextBtn) nextBtn.disabled = compareOverlayIndex >= beforeAfterPairs.length - 1;
+  if (nextBtn) nextBtn.disabled = compareOverlayIndex >= views.length - 1;
 }
 
 function toggleCompareZoom(side) {
@@ -4235,7 +4352,8 @@ async function showRulesDialog(reviewFeedback) {
     
     const result = await window.electronAPI.proposeRules({
       feedback: reviewFeedback,
-      agentsMd: rulesData.agentsMd || ''
+      agentsMd: rulesData.agentsMd || '',
+      referencedFiles: rulesData.referencedFiles || []
     });
     
     if (result.error) {
@@ -4352,6 +4470,7 @@ if (prefsSidebar) {
 const prefFields = [
   { id: 'pref-ai-command', key: 'aiCommand', type: 'text' },
   { id: 'pref-ai-tag', key: 'aiTagPrefix', type: 'text' },
+  { id: 'pref-hermes-profile', key: 'hermesProfile', type: 'text' },
   { id: 'pref-editor-cmd', key: 'editorCommand', type: 'text' },
   { id: 'pref-context-lines', key: 'contextLines', type: 'number' },
   { id: 'pref-diff-mode', key: 'diff.mode', type: 'select' },
@@ -5026,6 +5145,132 @@ document.addEventListener('keydown', (e) => {
     toggleVoice();
   }
 });
+
+// ===================== AI CHAT PANEL =====================
+
+const btnAiChat = document.getElementById('btn-ai-chat');
+const aiChatPanel = document.getElementById('ai-chat-panel');
+const aiChatMessages = document.getElementById('ai-chat-messages');
+const aiChatInput = document.getElementById('ai-chat-input');
+const aiChatSend = document.getElementById('ai-chat-send');
+const aiChatClear = document.getElementById('ai-chat-clear');
+
+let aiChatHistory = [];
+let aiChatBusy = false;
+
+function positionAiChatPanel() {
+  if (!btnAiChat || !aiChatPanel) return;
+  const rect = btnAiChat.getBoundingClientRect();
+  aiChatPanel.style.right = (window.innerWidth - rect.right) + 'px';
+  aiChatPanel.style.top = (rect.bottom + 4) + 'px';
+}
+
+function appendAiChatMsg(role, text) {
+  if (!aiChatMessages) return null;
+  const el = document.createElement('div');
+  el.className = 'ai-chat-msg ' + role;
+  el.textContent = text;
+  aiChatMessages.appendChild(el);
+  aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+  return el;
+}
+
+async function sendAiChat() {
+  if (!aiChatInput || aiChatBusy) return;
+  const text = aiChatInput.value.trim();
+  if (!text) return;
+  aiChatInput.value = '';
+  appendAiChatMsg('user', text);
+  const typing = appendAiChatMsg('typing', 'Thinking...');
+  aiChatBusy = true;
+  aiChatSend.disabled = true;
+  try {
+    const result = await window.electronAPI.aiChat({
+      message: text,
+      prNumber: prNumberInput.value.trim(),
+      repoKey: currentRepoKey,
+      history: aiChatHistory
+    });
+    if (typing) typing.remove();
+    aiChatHistory.push({ role: 'user', content: text });
+    if (result && result.response) {
+      aiChatHistory.push({ role: 'assistant', content: result.response });
+      appendAiChatMsg('assistant', result.response);
+    } else if (result && result.error) {
+      appendAiChatMsg('error', 'Error: ' + result.error);
+    } else {
+      appendAiChatMsg('error', 'No response received.');
+    }
+  } catch (err) {
+    if (typing) typing.remove();
+    aiChatHistory.push({ role: 'user', content: text });
+    appendAiChatMsg('error', 'Error: ' + (err.message || err));
+  } finally {
+    aiChatBusy = false;
+    aiChatSend.disabled = false;
+    aiChatInput.focus();
+  }
+}
+
+if (btnAiChat && aiChatPanel) {
+  btnAiChat.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = aiChatPanel.classList.contains('open');
+    if (!isOpen) positionAiChatPanel();
+    aiChatPanel.classList.toggle('open');
+    if (!isOpen && aiChatInput) aiChatInput.focus();
+  });
+  document.addEventListener('click', (e) => {
+    if (aiChatPanel.classList.contains('open') &&
+        !aiChatPanel.contains(e.target) && e.target !== btnAiChat) {
+      aiChatPanel.classList.remove('open');
+    }
+  });
+}
+
+if (aiChatSend) aiChatSend.addEventListener('click', sendAiChat);
+if (aiChatInput) {
+  aiChatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendAiChat(); }
+  });
+}
+if (aiChatClear) {
+  aiChatClear.addEventListener('click', () => {
+    aiChatHistory = [];
+    if (aiChatMessages) aiChatMessages.innerHTML = '';
+    aiChatInput.focus();
+  });
+}
+
+// ===================== OVERALL PR COMMENT PANEL =====================
+
+const btnPrComment = document.getElementById('btn-pr-comment');
+const prCommentPanel = document.getElementById('pr-comment-panel');
+
+function positionPrCommentPanel() {
+  if (!btnPrComment || !prCommentPanel) return;
+  const rect = btnPrComment.getBoundingClientRect();
+  prCommentPanel.style.right = (window.innerWidth - rect.right) + 'px';
+  prCommentPanel.style.top = (rect.bottom + 4) + 'px';
+}
+
+if (btnPrComment && prCommentPanel) {
+  btnPrComment.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = prCommentPanel.classList.contains('open');
+    if (!isOpen) {
+      positionPrCommentPanel();
+      setTimeout(() => { if (reviewBody) reviewBody.focus(); }, 0);
+    }
+    prCommentPanel.classList.toggle('open');
+  });
+  document.addEventListener('click', (e) => {
+    if (prCommentPanel.classList.contains('open') &&
+        !prCommentPanel.contains(e.target) && e.target !== btnPrComment) {
+      prCommentPanel.classList.remove('open');
+    }
+  });
+}
 
 // ===================== MORE MENU (⋮) =====================
 

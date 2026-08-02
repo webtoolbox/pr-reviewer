@@ -232,8 +232,7 @@ Private config overrides public config. Your private config should NOT be commit
   "repoName": "",
   "diff": {
     "mode": "since-review",
-    "excludeMerges": true,
-    "codeFileExtensions": []
+    "excludeMerges": true
   },
   "imageUpload": {
     "enabled": false,
@@ -275,7 +274,7 @@ When `since-review` mode is active:
 - If mutated, finds the actual reviewed commit by paginating through commits
 - Uses three-dot diff against master to exclude merge noise
 - Only includes files changed by authored (non-merge) commits
-- Filters to code files only (configurable via `codeFileExtensions`)
+- Shows all changed files; use the sidebar extension filter to toggle visibility per file type (persisted across PR loads)
 
 ## Usage
 

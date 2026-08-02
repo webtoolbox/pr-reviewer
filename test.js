@@ -46,11 +46,18 @@ async function runTests() {
   `);
   assert('Diff container visible', diffContainerDisplay === 'block', `display="${diffContainerDisplay}"`);
 
-  // TEST 3: Review body container should be visible
-  const reviewBodyDisplay = await mainWindow.webContents.executeJavaScript(`
-    document.getElementById('review-body-container').style.display
+  // TEST 3: Review body lives in the header PR comment panel (not bottom container)
+  const reviewBodyInPanel = await mainWindow.webContents.executeJavaScript(`
+    !!document.getElementById('review-body') &&
+    !!document.getElementById('btn-pr-comment') &&
+    !!document.getElementById('pr-comment-panel') &&
+    !document.getElementById('review-body-container')
   `);
-  assert('Review body visible', reviewBodyDisplay === 'block', `display="${reviewBodyDisplay}"`);
+  assert('Review body in header comment panel', reviewBodyInPanel === true);
+  const prCommentPanelHidden = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('pr-comment-panel').classList.contains('open') === false
+  `);
+  assert('PR comment panel hidden by default', prCommentPanelHidden === true);
 
   // TEST 4: PR info should show file count
   const prInfoText = await mainWindow.webContents.executeJavaScript(`
@@ -689,7 +696,7 @@ async function runTests() {
   const autoFixConfig = await mainWindow.webContents.executeJavaScript(
     `window.electronAPI.getConfig().then(c => c.autoFix)`
   );
-  assert('Config has autoFix settings', autoFixConfig && autoFixConfig.enabled === false,
+  assert('Config has autoFix settings', autoFixConfig && autoFixConfig.enabled === true,
     `enabled=${autoFixConfig ? autoFixConfig.enabled : 'undefined'}`);
 
   // TEST: autoFixWithAi returns success for valid PR
@@ -1092,7 +1099,7 @@ async function runTests() {
     ))
   `);
   const h2Result = JSON.parse(detectH2);
-  assert('detectBeforeAfterPairs detects ## Before/After', h2Result.length === 1 && h2Result[0].before.includes('b1.png') && h2Result[0].after.includes('a1.png'),
+  assert('detectBeforeAfterPairs detects ## Before/After', h2Result.length === 1 && h2Result[0].before.some(u => u.includes('b1.png')) && h2Result[0].after.some(u => u.includes('a1.png')),
     `pairs: ${detectH2}`);
 
   // TEST: detectBeforeAfterPairs detects ### Before / ### After pattern
@@ -1102,7 +1109,7 @@ async function runTests() {
     ))
   `);
   const h3Result = JSON.parse(detectH3);
-  assert('detectBeforeAfterPairs detects ### Before/After', h3Result.length === 1 && h3Result[0].before.includes('b2.png') && h3Result[0].after.includes('a2.png'),
+  assert('detectBeforeAfterPairs detects ### Before/After', h3Result.length === 1 && h3Result[0].before.some(u => u.includes('b2.png')) && h3Result[0].after.some(u => u.includes('a2.png')),
     `pairs: ${detectH3}`);
 
   // TEST: detectBeforeAfterPairs detects **Before:** pattern
@@ -1112,7 +1119,7 @@ async function runTests() {
     ))
   `);
   const boldResult = JSON.parse(detectBold);
-  assert('detectBeforeAfterPairs detects **Before:** pattern', boldResult.length === 1 && boldResult[0].before.includes('bb.png') && boldResult[0].after.includes('aa.png'),
+  assert('detectBeforeAfterPairs detects **Before:** pattern', boldResult.length === 1 && boldResult[0].before.some(u => u.includes('bb.png')) && boldResult[0].after.some(u => u.includes('aa.png')),
     `pairs: ${detectBold}`);
 
   // TEST: detectBeforeAfterPairs detects multiple pairs
@@ -1176,7 +1183,7 @@ async function runTests() {
   );
   assert('Clicking compare icon opens slideshow', overlayExists);
 
-  // TEST: Slideshow has Before and After labels
+  // TEST: Slideshow has Before and After labels (side-by-side design)
   const slideshowLabels = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const labels = document.querySelectorAll('#compare-overlay .compare-label');
@@ -1187,7 +1194,7 @@ async function runTests() {
     slideshowLabels.includes('Before') && slideshowLabels.includes('After'),
     `labels: ${JSON.stringify(slideshowLabels)}`);
 
-  // TEST: Slideshow shows correct counter
+  // TEST: Slideshow shows correct counter (one view per before/after combination)
   const slideshowCounter = await mainWindow.webContents.executeJavaScript(
     `document.querySelector('#compare-overlay .compare-counter').textContent`
   );
@@ -1205,13 +1212,13 @@ async function runTests() {
   );
   assert('Slideshow has navigation buttons', navBtns === 2, `count: ${navBtns}`);
 
-  // TEST: Slideshow has before/after images
+  // TEST: Slideshow shows before and after images side-by-side
   const slideshowImages = await mainWindow.webContents.executeJavaScript(
     `document.querySelectorAll('#compare-overlay .compare-side img').length`
   );
   assert('Slideshow has 2 images', slideshowImages === 2, `count: ${slideshowImages}`);
 
-  // TEST: Next button navigates to second pair
+  // TEST: Next button navigates to second view
   await mainWindow.webContents.executeJavaScript(`
     document.querySelector('#compare-overlay .compare-nav-btn.next').click()
   `);
@@ -1219,7 +1226,7 @@ async function runTests() {
   const counterAfterNext = await mainWindow.webContents.executeJavaScript(
     `document.querySelector('#compare-overlay .compare-counter').textContent`
   );
-  assert('Next button navigates to 2nd pair', counterAfterNext === '2 of 2', `counter: "${counterAfterNext}"`);
+  assert('Next button navigates to 2nd view', counterAfterNext === '2 of 2', `counter: "${counterAfterNext}"`);
 
   // TEST: Prev button navigates back
   await mainWindow.webContents.executeJavaScript(`
@@ -1229,7 +1236,7 @@ async function runTests() {
   const counterAfterPrev = await mainWindow.webContents.executeJavaScript(
     `document.querySelector('#compare-overlay .compare-counter').textContent`
   );
-  assert('Prev button navigates back to 1st pair', counterAfterPrev === '1 of 2', `counter: "${counterAfterPrev}"`);
+  assert('Prev button navigates back to 1st view', counterAfterPrev === '1 of 2', `counter: "${counterAfterPrev}"`);
 
   // TEST: Close button closes slideshow
   await mainWindow.webContents.executeJavaScript(`
@@ -1839,7 +1846,7 @@ async function runTests() {
 }
 
 ipcMain.handle('open-file', async () => null);
-ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
+ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', hermesProfile: 'wt', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
 ipcMain.handle('save-review', async (event, review) => {
   const outputPath = path.join(app.getPath('temp'), 'diff-review-pending.json');
   fs.writeFileSync(outputPath, JSON.stringify(review, null, 2));

@@ -28,7 +28,8 @@
   },
   "dependencies": {
     "diff2html": "^3.4.52",
-    "marked": "^18.0.7"
+    "marked": "^18.0.7",
+    "ws": "^8.21.1"
   },
   "repository": {
     "type": "git",
@@ -39,8 +40,14 @@
   },
   "homepage": "https://github.com/webtoolbox/pr-reviewer#readme",
   "jest": {
-    "testMatch": ["**/unit.test.js"],
-    "testPathIgnorePatterns": ["/node_modules/", "/test\\.js$", "/test-.+\\.js$"]
+    "testMatch": [
+      "**/unit.test.js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/test\\.js$",
+      "/test-.+\\.js$"
+    ]
   },
   "build": {
     "appId": "com.webtoolbox.pr-reviewer",
