@@ -13,7 +13,9 @@ jobs:
             test_cmd: xvfb-run npx jest --no-coverage && xvfb-run npx electron test.js
             build_cmd: npx electron-builder --linux --publish never
             artifact: linux-build
-            path: dist/*.deb
+            path: |
+              dist/*.deb
+              dist/*.AppImage
           - os: windows-latest
             test_cmd: echo "Skipping tests on Windows"
             build_cmd: npx electron-builder --win --publish never
