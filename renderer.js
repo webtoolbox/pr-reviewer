@@ -104,12 +104,10 @@ function populateFileSidebar() {
     const nameEl = wrapper.querySelector('.d2h-file-name');
     if (!nameEl) return;
     const fileName = nameEl.textContent.trim();
-
-    // Skip files whose extension is filtered out
-    if (activeExtensions !== null && activeExtensions.length > 0) {
-      const fileExt = fileName.includes('.') ? '.' + fileName.split('.').pop() : '(no ext)';
-      if (!activeExtensions.includes(fileExt)) return;
-    }
+    // NOTE: Do NOT skip filtered-out extensions here. The sidebar lists every
+    // file in the diff (regardless of the extension filter) so the user can see
+    // all files changed and toggle them. The extension filter only collapses the
+    // corresponding wrappers in the main diff area.
 
     // Extract +/- counts
     const header = wrapper.querySelector('.d2h-file-header');
@@ -556,6 +554,8 @@ function getLineNumber(lineElement, isRight) {
 
 function loadDiff(content, filePath) {
   console.log('[loadDiff] Called with', content ? content.length : 0, 'chars, filePath:', filePath);
+  hideDiffLoading(); // The new diff has arrived — remove the loading indicator
+  updatePrArrowStates(); // Recompute prev/next availability now that a PR is loaded
   if (!content || !content.trim()) {
     prInfo.textContent = 'Error: Empty diff file';
     resetButtons();
@@ -637,6 +637,9 @@ function loadDiff(content, filePath) {
     if (excludedExts.length > 0) {
       collapseFilteredFiles(excludedExts);
     }
+    updateFilteredFilesNotice(excludedExts);
+  } else {
+    updateFilteredFilesNotice([]);
   }
 
   // Try to load saved draft
@@ -1146,19 +1149,22 @@ function addContextButtons() {
 
 function addInterHunkExpandButtons(fileName, wrapper) {
   // Hunk boundaries are d2h-info rows containing @@ headers.
-  // Replace the @@ header text with an expand button (skip the first hunk header
-  // since the file already has top/bottom expand buttons).
-  const infoRows = wrapper.querySelectorAll('tr .d2h-info');
+  // Select ONLY the @@ code cell (td.d2h-info:not(.d2h-code-linenumber)) — one
+  // per hunk. Using 'tr .d2h-info' matches TWO cells per hunk (the line-number
+  // cell ALSO carries d2h-info), which made hunkIndex double-count and placed
+  // an expand button on the FIRST hunk too — duplicating the "Show more lines
+  // above" button. Replace the @@ header text with an expand button (skip the
+  // first hunk header since the file already has top/bottom expand buttons).
+  const infoRows = wrapper.querySelectorAll('td.d2h-info:not(.d2h-code-linenumber)');
   let hunkIndex = 0;
-  for (const cell of infoRows) {
-    const row = cell.closest('tr');
+  for (const codeCell of infoRows) {
+    const row = codeCell.closest('tr');
     if (!row) continue;
     hunkIndex++;
     // Skip the first @@ header — expand buttons at file top/bottom cover that
     if (hunkIndex <= 1) continue;
 
     // Replace the @@ text with a compact expand button
-    const codeCell = row.querySelector('td.d2h-info:not(.d2h-code-linenumber)') || row.querySelectorAll('td')[1];
     if (!codeCell) continue;
     const origText = codeCell.textContent.trim();
     codeCell.innerHTML = '';
@@ -1961,6 +1967,9 @@ async function submitReview(eventType) {
                       '✓ Comment submitted to GitHub';
         showToast(ghMsg, 'success', 8000);
 
+        // Record this action in the review history (only actions, not mere loads)
+        recordReviewAction(review.prNumber, eventType, prTitleForHistory(), githubComments.length);
+
         // Warn about skipped comments (files not in unified diff — e.g. reverted changes)
         if (result.skippedComments && result.skippedComments.length > 0) {
           const skippedFiles = result.skippedComments.map(c => c.file).join(', ');
@@ -2049,9 +2058,9 @@ async function submitReview(eventType) {
               resetButtons();
             }
           } else {
-            currentPrNumber = null;
-            prInfo.innerHTML = '<strong style="color:#8b949e">No more PRs to review</strong>';
-            resetButtons();
+            // All PRs reviewed — show the celebratory "all done" screen instead of
+            // leaving the last PR's diff on screen.
+            showAllDoneState();
             // Switch repo back to master/main when no more PRs
             if (window.electronAPI.checkoutMaster) {
               window.electronAPI.checkoutMaster(currentRepoKey || '').then(r => {
@@ -2168,6 +2177,13 @@ document.addEventListener('keydown', (e) => {
   if (key === '[' && isMeta && !e.shiftKey) {
     e.preventDefault();
     navigateToComment('prev');
+    return;
+  }
+
+  // Shift+? — show keyboard shortcuts dialog (with the meta modifier absent)
+  if (key === '?' && !isMeta) {
+    e.preventDefault();
+    toggleShortcutsDialog();
     return;
   }
 });
@@ -2713,9 +2729,142 @@ function showReviewButtons() {
   btnApprove.style.display = 'inline-block';
   btnRequestChanges.style.display = 'inline-block';
   btnComment.style.display = 'inline-block';
+  // The PR-wide comment icon only makes sense when a PR is loaded
+  if (btnPrComment) btnPrComment.style.display = 'inline-flex';
 }
 
 // ===================== PR LOADING =====================
+
+const NEXT_PR_EDGE_PX = 60; // distance from screen edge (px) that reveals an arrow
+
+// Current position within cachedPrList, used to resolve prev/next.
+let currentPrIndex = -1;
+// Declared here (before the arrow functions reference them) to avoid a
+// temporal-dead-zone error when loadDiff/updatePrArrowStates run early.
+let cachedPrList = null;
+let currentPrNumber = null;
+
+// ===== Diff loading indicator =====
+function showDiffLoading(text) {
+  const el = document.getElementById('diff-loading');
+  if (!el) return;
+  const t = document.getElementById('diff-loading-text');
+  if (t) t.textContent = text || 'Loading diff…';
+  el.classList.add('show');
+  const dc = document.getElementById('diff-container');
+  if (dc) dc.style.display = 'none';
+  const ff = document.getElementById('filtered-files-notice');
+  if (ff) ff.style.display = 'none';
+}
+function hideDiffLoading() {
+  const el = document.getElementById('diff-loading');
+  if (el) el.classList.remove('show');
+  const dc = document.getElementById('diff-container');
+  if (dc) dc.style.display = '';
+}
+
+// Celebratory screen shown when every PR has been reviewed. Clears the diff and
+// hides all the stale UI, then shows a green checkmark + "All caught up!".
+function showAllDoneState() {
+  currentPrNumber = null;
+  currentPrTitle = '';
+  const ad = document.getElementById('all-done-state');
+  const es = document.getElementById('empty-state');
+  const dc = document.getElementById('diff-container');
+  const loading = document.getElementById('diff-loading');
+  const ff = document.getElementById('filtered-files-notice');
+  // Clear the previous PR's content
+  if (dc) { dc.innerHTML = ''; dc.style.display = 'none'; }
+  if (loading) loading.classList.remove('show');
+  if (ff) ff.style.display = 'none';
+  if (es) es.style.display = 'none';
+  if (ad) ad.style.display = 'flex';
+  if (fileSidebarList) fileSidebarList.innerHTML = '';
+  // Hide the review buttons + PR comment icon — there's no PR to act on
+  if (btnPrComment) btnPrComment.style.display = 'none';
+  if (btnApprove) btnApprove.style.display = 'none';
+  if (btnRequestChanges) btnRequestChanges.style.display = 'none';
+  if (btnComment) btnComment.style.display = 'none';
+  prInfo.innerHTML = '<strong style="color:#3fb950">All caught up!</strong>';
+  resetButtons();
+  closeReviewHistoryDropdown();
+  updatePrArrowStates();
+}
+
+// ===== Edge arrows: next (right) / prev (left) =====
+const prevPrArrow = document.getElementById('prev-pr-arrow');
+const nextPrArrow = document.getElementById('next-pr-arrow');
+
+function currentIndexInList() {
+  if (!cachedPrList || currentPrNumber == null) return -1;
+  return cachedPrList.findIndex(pr => String(pr.number) === String(currentPrNumber));
+}
+
+// Enable/disable arrows based on whether a prev/next PR actually exists.
+// Arrows still reveal on edge hover, but appear disabled when at the ends.
+function updatePrArrowStates() {
+  const idx = currentIndexInList();
+  const listLen = cachedPrList ? cachedPrList.length : 0;
+  const hasPrev = idx > 0;
+  const hasNext = idx >= 0 && idx < listLen - 1;
+  // Fallback: if the current PR isn't in the list but there are PRs, allow next.
+  const anyNext = listLen > 0 && idx < 0;
+  if (prevPrArrow) prevPrArrow.classList.toggle('disabled', !hasPrev);
+  if (nextPrArrow) nextPrArrow.classList.toggle('disabled', !(hasNext || anyNext));
+}
+
+function gotoNextPr() {
+  if (!cachedPrList || cachedPrList.length === 0) return;
+  const idx = currentIndexInList();
+  let nextPr = null;
+  if (idx >= 0 && idx < cachedPrList.length - 1) nextPr = cachedPrList[idx + 1];
+  else if (idx < 0) nextPr = cachedPrList[0]; // current PR not in list → first pending
+  if (!nextPr) { showToast('No next PR', 'info'); return; }
+  showDiffLoading('Loading next PR #' + nextPr.number + '…');
+  loadPrByNumber(nextPr.number, nextPr.repo)
+    .catch(advanceErr => {
+      console.error('[next-pr] Failed to load next PR:', advanceErr);
+      hideDiffLoading();
+      prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
+      resetButtons();
+    });
+}
+
+function gotoPrevPr() {
+  if (!cachedPrList || cachedPrList.length === 0) return;
+  const idx = currentIndexInList();
+  if (idx <= 0) { showToast('No previous PR', 'info'); return; }
+  const prevPr = cachedPrList[idx - 1];
+  showDiffLoading('Loading previous PR #' + prevPr.number + '…');
+  loadPrByNumber(prevPr.number, prevPr.repo)
+    .catch(advanceErr => {
+      console.error('[prev-pr] Failed to load previous PR:', advanceErr);
+      hideDiffLoading();
+      prInfo.innerHTML = `<strong style="color:#f85149">Error loading previous PR:</strong> ${escapeHtml(advanceErr.message)}`;
+      resetButtons();
+    });
+}
+
+if (prevPrArrow) prevPrArrow.addEventListener('click', gotoPrevPr);
+if (nextPrArrow) nextPrArrow.addEventListener('click', gotoNextPr);
+
+document.addEventListener('mousemove', (e) => {
+  // Only reveal arrows when the cursor is in the main content area, i.e. BELOW
+  // the top review bar. Moving the mouse to an edge inside the header shouldn't
+  // show the prev/next arrows.
+  const barH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--review-bar-height')) || 52;
+  const inContent = e.clientY > barH;
+  const nearRight = e.clientX >= (window.innerWidth - NEXT_PR_EDGE_PX);
+  const nearLeft = e.clientX <= NEXT_PR_EDGE_PX;
+  if (nextPrArrow) nextPrArrow.classList.toggle('visible', inContent && nearRight);
+  if (prevPrArrow) prevPrArrow.classList.toggle('visible', inContent && nearLeft);
+});
+// Hide both again once the cursor leaves the window
+document.addEventListener('mouseleave', () => {
+  if (nextPrArrow) nextPrArrow.classList.remove('visible');
+  if (prevPrArrow) prevPrArrow.classList.remove('visible');
+});
+updatePrArrowStates();
 
 const btnPrList = document.getElementById('btn-pr-list');
 const prDropdown = document.getElementById('pr-dropdown');
@@ -2734,6 +2883,10 @@ prNumberInput.addEventListener('keydown', async (e) => {
 
 async function loadPrByNumber(prNumber, repoKey) {
   console.log('[loadPr] Loading PR #' + prNumber, 'repo:', repoKey || 'default');
+  clearAiChat(); // Reset AI chat for the new PR — stale branch/PR context shouldn't linger
+  // Show the loading indicator immediately so the previous PR's diff doesn't
+  // linger while the next one loads (the title bar changes before the diff).
+  showDiffLoading('Loading PR #' + prNumber + '…');
   prInfo.innerHTML = `<strong>Loading PR #${prNumber}...</strong>`;
   const loadingToast = showToast('Loading PR…', 'progress', 30000);
 
@@ -3044,12 +3197,12 @@ function renderPrList(prs, filterText) {
       e.stopPropagation();
       const num = parseInt(btn.dataset.pr, 10);
       closePrDropdown();
-      prInfo.innerHTML = `<strong>Opening PR #${num} in browser...</strong>`;
+      // Opening in a browser switches to the new page immediately, so no toast
+      // is needed — the user sees the PR open. Don't touch prInfo (the top-left
+      // title/author bar) either; the browser opening is self-evident.
       const result = await window.electronAPI.openPrNewWindow(num);
       if (result.error) {
-        prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
-      } else {
-        prInfo.textContent = '';
+        showToast(`Error opening PR #${num}: ${result.error}`, 'error', 8000);
       }
     });
   });
@@ -3286,10 +3439,8 @@ let currentDiffContent = null;
 let currentDiffFilePath = null;
 let currentDiffViewMode = 'unified';
 let currentPrTitle = '';
-let cachedPrList = null;
 let cachedPrListTime = 0;
 // PR cache never expires — only invalidated by repo changes or manual refresh
-let currentPrNumber = null;
 let currentRepoKey = null;
 let currentPrBody = '';
 let currentRepoPath = null;
@@ -3476,6 +3627,66 @@ function renderFilteredDiff() {
   // Collapse filtered-out file wrappers
   if (excludedExts.length > 0) {
     collapseFilteredFiles(excludedExts);
+  }
+  updateFilteredFilesNotice(excludedExts);
+}
+
+// Show (or hide) a notice in the main content area when the extension filter
+// hides some or all of the files in the diff. This prevents the confusing case
+// where a diff appears empty simply because its file types were filtered out.
+function updateFilteredFilesNotice(excludedExts) {
+  const notice = document.getElementById('filtered-files-notice');
+  if (!notice) return;
+  if (!currentDiffContent) { notice.style.display = 'none'; notice.innerHTML = ''; return; }
+
+  const exts = Array.isArray(excludedExts) ? excludedExts : [];
+  if (exts.length === 0) {
+    notice.style.display = 'none';
+    notice.innerHTML = '';
+    return;
+  }
+
+  // Count wrappers hidden by the filter
+  const wrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+  let total = 0, hidden = 0;
+  wrappers.forEach(w => {
+    total++;
+    if (w.style.display === 'none') hidden++;
+  });
+
+  // If nothing is actually hidden (e.g. filter no longer matches), hide the notice.
+  if (hidden === 0) {
+    notice.style.display = 'none';
+    notice.innerHTML = '';
+    return;
+  }
+
+  const extLabels = exts.map(e => `<code>${escapeHtml(e)}</code>`).join(', ');
+  const allHidden = hidden >= total && total > 0;
+  const title = allHidden
+    ? 'All files in this diff are filtered out'
+    : `${hidden} of ${total} files are hidden by the file filter`;
+  const plural = exts.length !== 1;
+  const msg = `Files with extension${plural ? 's' : ''} ${extLabels} are not shown because they're filtered out in the Files Changed panel.`;
+
+  notice.innerHTML = `
+    <div class="ffn-title">${title}</div>
+    <div class="ffn-muted">${msg}</div>
+    <button id="ffn-show-all">Show all files</button>
+  `;
+  notice.style.display = 'block';
+
+  const btn = notice.querySelector('#ffn-show-all');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      // Reset the extension filter to show everything
+      const checkboxes = document.querySelectorAll('#filter-list input[type="checkbox"]');
+      checkboxes.forEach(cb => { cb.checked = true; });
+      activeExtensions = null;
+      saveActiveExtensions();
+      updateFilterButtonState();
+      renderFilteredDiff();
+    });
   }
 }
 
@@ -3786,7 +3997,7 @@ function updatePrInfoBar(prNumber, prTitle, result) {
     if (beforeAfterPairs && beforeAfterPairs.length > 0) {
       compareIcon = '<span class="pr-compare-toggle" title="View before/after screenshots"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M2 17l5-5 3 3 4-5 8 7"/><circle cx="8" cy="9" r="1.5" fill="currentColor"/></svg></span>';
     }
-    html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
+    html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
   }
   // Second line: author + assignees
   if (result) {
@@ -4585,10 +4796,158 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && prefsOverlay.style.display === 'flex') {
     closePreferences();
   }
+  if (e.key === 'Escape' && shortcutsOverlay.style.display === 'flex') {
+    closeShortcutsDialog();
+  }
+});
+
+// ===================== REVIEW HISTORY =====================
+// Persistent list of PRs the user took action on (approved / requested changes /
+// commented) this session AND across restarts. Stored in localStorage (max 50).
+// Only actions are recorded — merely loading a PR is not.
+
+const REVIEW_HISTORY_KEY = 'pr-reviewer-review-history';
+const REVIEW_HISTORY_MAX = 50;
+
+function loadReviewHistory() {
+  try {
+    const raw = localStorage.getItem(REVIEW_HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveReviewHistory(arr) {
+  try {
+    localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(arr.slice(0, REVIEW_HISTORY_MAX)));
+  } catch (e) { /* ignore quota errors */ }
+}
+
+let reviewHistory = loadReviewHistory();
+
+function prTitleForHistory() {
+  return currentPrTitle || '';
+}
+
+// Record a review action. Dedupes: if the same PR number+repo already has an
+// entry, move it to the top and update its action/label/count. Keeps newest first.
+function recordReviewAction(prNumber, eventType, title, commentCount) {
+  if (!prNumber) return;
+  const action = eventType === 'approve' ? 'approved' :
+                 eventType === 'request_changes' ? 'requested changes' : 'commented';
+  const entry = {
+    prNumber: parseInt(prNumber, 10),
+    repo: currentRepoKey || 'default',
+    title: title || `PR #${prNumber}`,
+    action,
+    commentCount: commentCount || 0,
+    timestamp: Date.now()
+  };
+  reviewHistory = reviewHistory.filter(h => !(h.prNumber === entry.prNumber && h.repo === entry.repo));
+  reviewHistory.unshift(entry);
+  reviewHistory = reviewHistory.slice(0, REVIEW_HISTORY_MAX);
+  saveReviewHistory(reviewHistory);
+  renderReviewHistoryDropdown();
+  console.log('[history] recorded action', JSON.stringify(entry));
+}
+
+function renderReviewHistoryDropdown() {
+  const listEl = document.getElementById('review-history-list');
+  if (!listEl) return;
+  const empty = reviewHistory.length === 0;
+  listEl.innerHTML = empty
+    ? '<div class="rh-empty">No review actions yet this session</div>'
+    : reviewHistory.map(h => {
+        const d = new Date(h.timestamp);
+        const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const badge = h.commentCount > 0
+          ? `<span class="rh-comment-badge" title="${h.commentCount} comment${h.commentCount !== 1 ? 's' : ''}">${h.commentCount} ${h.commentCount !== 1 ? 'comments' : 'comment'}</span>`
+          : '';
+        return `<div class="rh-item" data-pr="${h.prNumber}" data-repo="${h.repo}" title="Click to load PR #${h.prNumber}">
+          <div class="rh-main"><span class="rh-number">#${h.prNumber}</span> <span class="rh-action rh-action-${h.action.replace(/\s+/g,'-')}">${h.action}</span> <span class="rh-title">${escapeHtml(h.title)}</span></div>
+          <div class="rh-sub">${time} ${badge}</div>
+        </div>`;
+      }).join('');
+  // Wire clicks
+  listEl.querySelectorAll('.rh-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const prNum = item.dataset.pr;
+      const repo = item.dataset.repo;
+      closeReviewHistoryDropdown();
+      loadPrByNumber(prNum, repo);
+    });
+  });
+}
+
+function toggleReviewHistoryDropdown() {
+  const ov = document.getElementById('review-history-overlay');
+  if (!ov) return;
+  if (ov.style.display === 'flex') {
+    closeReviewHistoryDropdown();
+  } else {
+    openReviewHistoryDropdown();
+  }
+}
+
+function closeReviewHistoryDropdown() {
+  const ov = document.getElementById('review-history-overlay');
+  if (ov) ov.style.display = 'none';
+}
+
+// Open the history dialog (used by the View menu / Cmd+Shift+H). It's a centered
+// modal overlay like the preferences dialog, not a positioned dropdown.
+const reviewHistoryOverlay = document.getElementById('review-history-overlay');
+const btnReviewHistoryClose = document.getElementById('btn-review-history-close');
+
+function openReviewHistoryDropdown() {
+  if (!reviewHistoryOverlay) return;
+  closePrDropdown();
+  closeRepoDropdown();
+  renderReviewHistoryDropdown();
+  reviewHistoryOverlay.style.display = 'flex';
+}
+
+// Close button + Escape + click outside the dialog
+if (btnReviewHistoryClose) btnReviewHistoryClose.addEventListener('click', closeReviewHistoryDropdown);
+if (reviewHistoryOverlay) reviewHistoryOverlay.addEventListener('click', (e) => {
+  if (e.target === reviewHistoryOverlay) closeReviewHistoryDropdown();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeReviewHistoryDropdown();
+});
+
+// ===================== KEYBOARD SHORTCUTS DIALOG =====================
+
+const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+const btnShortcutsClose = document.getElementById('btn-shortcuts-close');
+
+function openShortcutsDialog() {
+  if (!shortcutsOverlay) return;
+  // Close prefs if open so the shortcut dialog sits on top cleanly
+  if (prefsOverlay && prefsOverlay.style.display === 'flex') closePreferences();
+  shortcutsOverlay.style.display = 'flex';
+}
+function closeShortcutsDialog() {
+  if (shortcutsOverlay) shortcutsOverlay.style.display = 'none';
+}
+function toggleShortcutsDialog() {
+  if (shortcutsOverlay.style.display === 'flex') closeShortcutsDialog();
+  else openShortcutsDialog();
+}
+
+if (btnShortcutsClose) btnShortcutsClose.addEventListener('click', closeShortcutsDialog);
+// Click outside the dialog closes it
+if (shortcutsOverlay) shortcutsOverlay.addEventListener('click', (e) => {
+  if (e.target === shortcutsOverlay) closeShortcutsDialog();
 });
 
 // Listen for menu triggers
 window.electronAPI.onOpenPreferences(() => openPreferences());
+window.electronAPI.onOpenShortcuts(() => openShortcutsDialog());
+window.electronAPI.onOpenReviewHistory(() => toggleReviewHistoryDropdown());
 
 // Menu: File > Check for Updates (immediate, no idle wait)
 window.electronAPI.onCheckUpdateMenu(async () => {
@@ -4899,6 +5258,18 @@ function executeSingleVoiceAction(action) {
       break;
     }
 
+    case 'open_compare':
+    case 'compare':
+    case 'show_compare': {
+      if (typeof openCompareSlideshow === 'function' && beforeAfterPairs && beforeAfterPairs.length > 0) {
+        openCompareSlideshow(0);
+        showToast('Opening before/after comparison', 'info', 3000);
+      } else {
+        showSafeToast('No before/after image comparison available for this PR', 'error', 5000);
+      }
+      break;
+    }
+
     case 'message':
     default: {
       if (action.text) {
@@ -5164,6 +5535,20 @@ const aiChatClear = document.getElementById('ai-chat-clear');
 
 let aiChatHistory = [];
 let aiChatBusy = false;
+let aiChatEpoch = 0; // bumped on clear; lets stale in-flight stream events be ignored
+
+// Clear the AI chat conversation (history + messages panel). Called when a new
+// PR loads or auto-advance moves to the next PR, so stale PR context doesn't linger.
+function clearAiChat() {
+  aiChatEpoch++;
+  aiChatHistory = [];
+  if (aiChatMessages) aiChatMessages.innerHTML = '';
+  if (aiChatBusy) {
+    // An in-flight request belongs to the old PR — mark busy so its late response
+    // is ignored instead of polluting the cleared chat. (See sendAiChat guard.)
+    aiChatBusy = false;
+  }
+}
 
 function positionAiChatPanel() {
   if (!btnAiChat || !aiChatPanel) return;
@@ -5188,9 +5573,44 @@ async function sendAiChat() {
   if (!text) return;
   aiChatInput.value = '';
   appendAiChatMsg('user', text);
-  const typing = appendAiChatMsg('typing', 'Thinking...');
   aiChatBusy = true;
   aiChatSend.disabled = true;
+  const myEpoch = aiChatEpoch;
+
+  // Live streaming message: created now, updated as chunks arrive via IPC.
+  const live = document.createElement('div');
+  live.className = 'ai-chat-msg assistant';
+  live.textContent = 'Thinking…';
+  if (aiChatMessages) aiChatMessages.appendChild(live);
+  aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+
+  const handleStream = (data) => {
+    if (!data) return;
+    // If the chat was cleared mid-flight (e.g. auto-advanced to a new PR), drop
+    // this stale stream — the message element is gone and history was reset.
+    if (myEpoch !== aiChatEpoch) return;
+    if (data.error) {
+      live.classList.remove('assistant');
+      live.classList.add('error');
+      live.textContent = 'Error: ' + data.error;
+      aiChatHistory.push({ role: 'user', content: text });
+      return;
+    }
+    if (data.done) {
+      // Final reply — stop streaming, keep the full cleaned text. Because the
+      // text streams in live, the user reads it as it appears; no need to jump
+      // to the top. Just push it into history so follow-ups have context.
+      live.textContent = data.text || '(no response)';
+      aiChatHistory.push({ role: 'user', content: text });
+      if (data.text) aiChatHistory.push({ role: 'assistant', content: data.text });
+    } else if (data.text) {
+      live.textContent = data.text;
+      // Keep the panel scrolled so the growing reply stays in view.
+      if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+    }
+  };
+  window.electronAPI.onAiChatStream(handleStream);
+
   try {
     const result = await window.electronAPI.aiChat({
       message: text,
@@ -5198,21 +5618,24 @@ async function sendAiChat() {
       repoKey: currentRepoKey,
       history: aiChatHistory
     });
-    if (typing) typing.remove();
-    aiChatHistory.push({ role: 'user', content: text });
-    if (result && result.response) {
+    // The 'ai-chat-stream' done event already finalized the message; this is a
+    // safety net in case the stream event listener missed the final chunk.
+    if (result && result.response && live.textContent === 'Thinking…') {
+      live.textContent = result.response;
+      aiChatHistory.push({ role: 'user', content: text });
       aiChatHistory.push({ role: 'assistant', content: result.response });
-      appendAiChatMsg('assistant', result.response);
-    } else if (result && result.error) {
-      appendAiChatMsg('error', 'Error: ' + result.error);
-    } else {
-      appendAiChatMsg('error', 'No response received.');
+    } else if (result && result.error && !live.textContent.startsWith('Error')) {
+      live.classList.remove('assistant');
+      live.classList.add('error');
+      live.textContent = 'Error: ' + result.error;
     }
   } catch (err) {
-    if (typing) typing.remove();
+    live.classList.remove('assistant');
+    live.classList.add('error');
+    live.textContent = 'Error: ' + (err.message || err);
     aiChatHistory.push({ role: 'user', content: text });
-    appendAiChatMsg('error', 'Error: ' + (err.message || err));
   } finally {
+    window.electronAPI.removeAiChatStreamListener(handleStream);
     aiChatBusy = false;
     aiChatSend.disabled = false;
     aiChatInput.focus();

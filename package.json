@@ -1,6 +1,6 @@
 {
   "name": "pr-reviewer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, file-level comments, and AI agent integration.",
   "main": "main.js",
   "scripts": {
@@ -55,6 +55,9 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "icon.png",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "PR Reviewer uses your microphone for voice mode, so you can approve, comment, and navigate pull requests by voice."
+      },
       "fileAssociations": [
         {
           "ext": "diff",

@@ -2612,18 +2612,21 @@ describe('Auto-advance after approve', () => {
     expect(submitSrc).toContain('catch (advanceErr)');
   });
 
-  test('submitReview "no more PRs" path calls resetButtons()', () => {
+  test('submitReview "no more PRs" path shows all-done state (resets buttons)', () => {
     const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
     const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
-    // The else branch (no more PRs) should reset buttons so the UI
-    // isn't left in a disabled state
-    // Find the "No more PRs" section
-    const noMoreIdx = submitSrc.indexOf('No more PRs to review');
+    // The else branch (no more PRs) should show the celebratory all-done screen,
+    // which resets buttons so the UI isn't left in a disabled state.
+    const noMoreIdx = submitSrc.indexOf('showAllDoneState()');
     expect(noMoreIdx).toBeGreaterThan(-1);
-    // The resetButtons() call should appear shortly after
-    const afterNoMore = submitSrc.substring(noMoreIdx, noMoreIdx + 200);
-    expect(afterNoMore).toContain('resetButtons()');
+    // showAllDoneState must reset buttons and clear the current PR
+    const allDoneSrc = rendererSource.substring(
+      rendererSource.indexOf('function showAllDoneState()'),
+      rendererSource.indexOf('// ===== Edge arrows', rendererSource.indexOf('function showAllDoneState()'))
+    );
+    expect(allDoneSrc).toContain('resetButtons()');
+    expect(allDoneSrc).toContain('currentPrNumber = null');
   });
 
   test('closePullRequest auto-advance clears reviewBody and has error handling', () => {

@@ -266,6 +266,35 @@
       max-height: 400px; min-width: 360px; overflow-y: auto;
     }
     #pr-dropdown.open { display: block; }
+    /* Review history dialog */
+    .review-history-dialog {
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5); overflow: hidden;
+      width: 560px; max-width: 90vw; max-height: 70vh;
+      display: flex; flex-direction: column;
+    }
+    .review-history-body { overflow-y: auto; flex: 1; }
+    #review-history-list .rh-item {
+      padding: 12px 18px; border-bottom: 1px solid #21262d;
+      cursor: pointer; transition: background 0.1s;
+    }
+    #review-history-list .rh-item:hover { background: #1c2128; }
+    #review-history-list .rh-item:last-child { border-bottom: none; }
+    #review-history-list .rh-main { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    #review-history-list .rh-number { color: #58a6ff; font-weight: 600; font-size: 13px; }
+    #review-history-list .rh-action {
+      font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 8px; text-transform: capitalize;
+    }
+    .rh-action-approved { background: #1f6feb33; color: #58a6ff; }
+    .rh-action-requested-changes { background: #d2992233; color: #d29922; }
+    .rh-action-commented { background: #3fb95033; color: #3fb950; }
+    #review-history-list .rh-title { font-size: 12px; color: #c9d1d9; }
+    #review-history-list .rh-sub { margin-top: 3px; font-size: 11px; color: #8b949e; display: flex; align-items: center; gap: 8px; }
+    #review-history-list .rh-comment-badge {
+      background: #21262d; border: 1px solid #30363d; color: #8b949e;
+      padding: 1px 7px; border-radius: 8px; font-size: 10px;
+    }
+    #review-history-list .rh-empty { padding: 20px 14px; color: #8b949e; font-size: 13px; text-align: center; }
     .pr-search-wrapper {
       padding: 8px 12px; border-bottom: 1px solid #21262d;
       position: sticky; top: 0; background: #161b22; z-index: 1;
@@ -428,6 +457,24 @@
       height: calc(100vh - var(--review-bar-height, 52px)); color: #8b949e; font-size: 16px; gap: 12px;
     }
 
+    /* All-done state — celebratory screen when every PR has been reviewed */
+    #all-done-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: calc(100vh - var(--review-bar-height, 52px)); color: #8b949e; font-size: 16px; gap: 12px;
+    }
+    .all-done-title { font-size: 22px; font-weight: 600; color: #c9d1d9; }
+    #all-done-state .hint { font-size: 13px; color: #484f58; }
+    .all-done-check { color: #3fb950; }
+    .all-done-circle {
+      stroke-dasharray: 63; stroke-dashoffset: 63;
+      animation: allDoneDraw 0.6s ease forwards;
+    }
+    .all-done-checkmark {
+      stroke-dasharray: 40; stroke-dashoffset: 40;
+      animation: allDoneDraw 0.4s ease 0.55s forwards;
+    }
+    @keyframes allDoneDraw { to { stroke-dashoffset: 0; } }
+
     /* Error screen for missing binaries */
     #error-screen {
       display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -461,6 +508,22 @@
     /* Diff container */
     #diff-container { display: none; }
     #review-body-container { display: none; padding: 20px 0; }
+
+    /* Filtered-files notice shown in the main content area when the extension
+       filter hides some (or all) of the files in the diff. */
+    #filtered-files-notice {
+      margin: 16px 24px 0; padding: 14px 18px; border-radius: 8px;
+      background: #1c2128; border: 1px solid #30363d; color: #d29922;
+      font-size: 13px; line-height: 1.5;
+    }
+    #filtered-files-notice .ffn-title { font-weight: 600; color: #e3b341; }
+    #filtered-files-notice .ffn-muted { color: #8b949e; }
+    #filtered-files-notice button {
+      margin-top: 10px; background: #21262d; border: 1px solid #30363d;
+      color: #c9d1d9; border-radius: 6px; padding: 6px 14px; font-size: 13px;
+      cursor: pointer;
+    }
+    #filtered-files-notice button:hover { background: #30363d; }
 
     /* Comment dialog */
     .comment-dialog textarea {
@@ -669,8 +732,10 @@
       display: none; position: fixed; z-index: 1001;
       background: #161b22; border: 1px solid #30363d; border-radius: 8px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-      width: 380px; max-width: 90vw; height: 480px; max-height: 70vh;
+      width: 480px; max-width: 95vw; height: 560px; max-height: 80vh;
       overflow: hidden; flex-direction: column;
+      resize: both; /* drag any corner to resize */
+      min-width: 320px; min-height: 280px;
     }
     #ai-chat-panel.open { display: flex; }
     #ai-chat-panel .ai-chat-header {
@@ -1167,6 +1232,27 @@
       width: 720px; max-width: 90vw; max-height: 85vh;
       display: flex; flex-direction: column; overflow: hidden;
     }
+    /* Keyboard shortcuts dialog */
+    .shortcuts-dialog {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      width: 460px; max-width: 90vw; max-height: 85vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .shortcuts-body { padding: 8px 20px 20px; overflow-y: auto; }
+    .shortcuts-group { margin-top: 16px; }
+    .shortcuts-group:first-child { margin-top: 12px; }
+    .shortcuts-group-title { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #8b949e; margin-bottom: 8px; }
+    .shortcut-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 6px 0; border-bottom: 1px solid #21262d; color: #c9d1d9; font-size: 13px;
+    }
+    .shortcut-row:last-child { border-bottom: none; }
+    .shortcut-row kbd {
+      background: #0d1117; border: 1px solid #30363d; border-bottom-width: 2px;
+      border-radius: 4px; padding: 2px 6px; font-family: inherit; font-size: 12px; color: #e6edf3;
+      min-width: 20px; text-align: center;
+    }
+    .shortcut-row .shortcut-desc { margin-left: auto; color: #8b949e; font-size: 12px; }
     .prefs-header {
       padding: 16px 20px; border-bottom: 1px solid #30363d;
       display: flex; justify-content: space-between; align-items: center;
@@ -1285,6 +1371,52 @@
     .mention-username {
       font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px;
     }
+    /* Next-PR edge arrow — vertically centered on the far right, revealed when
+       the mouse approaches the right edge of the window. */
+    #next-pr-arrow {
+      position: fixed; top: 50%; transform: translateY(-50%);
+      right: 0; width: 44px; height: 96px;
+      display: flex; align-items: center; justify-content: center;
+      background: #21262d; border: 1px solid #30363d; border-right: none;
+      border-radius: 10px 0 0 10px; color: #8b949e;
+      cursor: pointer; opacity: 0; pointer-events: none;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      z-index: 999;
+    }
+    #next-pr-arrow:hover { background: #30363d; color: #c9d1d9; }
+    #next-pr-arrow.visible { opacity: 1; pointer-events: auto; }
+    /* Disabled only applies while the arrow is shown (hovered at the edge).
+       Without the .visible guard, the higher-specificity .disabled rule made
+       the arrow stay visible at opacity 0.35 at all times. */
+    #next-pr-arrow.visible.disabled { opacity: 0.35; cursor: not-allowed; color: #6e7681; pointer-events: auto; }
+    #next-pr-arrow.visible.disabled:hover { background: #21262d; color: #6e7681; }
+
+    /* Previous-PR edge arrow — mirror of the next arrow on the left edge. */
+    #prev-pr-arrow {
+      position: fixed; top: 50%; transform: translateY(-50%);
+      left: 0; width: 44px; height: 96px;
+      display: flex; align-items: center; justify-content: center;
+      background: #21262d; border: 1px solid #30363d; border-left: none;
+      border-radius: 0 10px 10px 0; color: #8b949e;
+      cursor: pointer; opacity: 0; pointer-events: none;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      z-index: 999;
+    }
+    #prev-pr-arrow:hover { background: #30363d; color: #c9d1d9; }
+    #prev-pr-arrow.visible { opacity: 1; pointer-events: auto; }
+    #prev-pr-arrow.visible.disabled { opacity: 0.35; cursor: not-allowed; color: #6e7681; pointer-events: auto; }
+    #prev-pr-arrow.visible.disabled:hover { background: #21262d; color: #6e7681; }
+
+    /* Diff loading indicator — replaces the stale diff while the next/prev PR loads */
+    #diff-loading {
+      flex: 1; display: none; align-items: center; justify-content: center;
+    }
+    #diff-loading.show { display: flex; }
+    .diff-loading-inner { text-align: center; color: #8b949e; }
+    .diff-loading-spinner { animation: spin 1s linear infinite; color: #58a6ff; margin-bottom: 12px; }
+    .diff-loading-text { font-size: 13px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     /* Toast notifications */
     #toast-container {
       position: fixed; bottom: 20px; left: 20px; z-index: 9999;
@@ -1418,6 +1550,10 @@
 
       /* Diff container */
       #diff-container { background: #ffffff; }
+      #filtered-files-notice { background: #fff8e5; border-color: #eed888; }
+      #filtered-files-notice .ffn-title { color: #9a6700; }
+      #filtered-files-notice button { background: #f6f8fa; border-color: #d0d7de; color: #24292f; }
+      #filtered-files-notice button:hover { background: #eaeef2; }
       .d2h-dark-color-scheme { background-color: #ffffff; }
 
       /* File sidebar */
@@ -1543,6 +1679,8 @@
 
       /* Empty state */
       #empty-state { color: #656d76; }
+      #all-done-state { color: #656d76; }
+      .all-done-title { color: #24292f; }
 
       /* Error screen */
       #error-screen { background: #ffffff; }
@@ -1592,6 +1730,12 @@
     <button id="btn-comment" style="display:none" title="Cmd+Shift+C">Comment</button>
     <button id="btn-request-changes" style="display:none" title="Cmd+Shift+R">Request Changes</button>
     <button id="btn-approve" style="display:none" title="Cmd+Shift+A">Approve</button>
+    <button id="btn-pr-comment" style="display:none" title="Add PR comment" aria-label="Add PR comment">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+        <path d="M8 9h8"/><path d="M8 13h5"/>
+      </svg>
+    </button>
     <button id="btn-voice" title="Voice mode (Ctrl+B)" aria-label="Voice mode">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
@@ -1608,12 +1752,6 @@
         <circle cx="8.5" cy="12" r="0.6" fill="currentColor" stroke="none"/>
         <circle cx="15.5" cy="12" r="0.6" fill="currentColor" stroke="none"/>
         <path d="M8 16h8"/>
-      </svg>
-    </button>
-    <button id="btn-pr-comment" title="Add PR comment" aria-label="Add PR comment">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-        <path d="M8 9h8"/><path d="M8 13h5"/>
       </svg>
     </button>
     <div id="pr-comment-panel">
@@ -1664,6 +1802,17 @@
     <div id="repo-list"></div>
   </div>
 
+  <!-- Review history dialog (centered modal, opened from the View menu) -->
+  <div id="review-history-overlay" class="prefs-overlay" style="display:none">
+    <div class="review-history-dialog">
+      <div class="prefs-header">
+        <h3>Review History</h3>
+        <button class="prefs-close" id="btn-review-history-close" title="Close (Esc)">✕</button>
+      </div>
+      <div id="review-history-list" class="review-history-body"></div>
+    </div>
+  </div>
+
   <div id="file-filter-dropdown">
     <div class="file-name-filter-wrapper">
       <span class="search-icon"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
@@ -1707,6 +1856,14 @@
       <div style="color:#484f58;font-size:16px;font-weight:500">Select a pull request to review</div>
       <div class="hint">Click the ▾ button or enter a PR number above</div>
     </div>
+    <div id="all-done-state" style="display:none">
+      <svg class="all-done-check" width="96" height="96" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10" class="all-done-circle"/>
+        <path d="M7 12.5l3.2 3.2L17.5 8.5" class="all-done-checkmark"/>
+      </svg>
+      <div class="all-done-title">All caught up!</div>
+      <div class="hint">No more pull requests to review. Great work.</div>
+    </div>
     <div id="file-sidebar">
       <div id="file-sidebar-header">
         <span>Files Changed</span>
@@ -1721,6 +1878,15 @@
       <div id="file-sidebar-list"></div>
     </div>
     <div id="main-content" style="flex:1;min-width:0;display:flex;flex-direction:column;">
+      <div id="filtered-files-notice" style="display:none"></div>
+      <div id="diff-loading">
+        <div class="diff-loading-inner">
+          <svg class="diff-loading-spinner" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M12 3a9 9 0 1 0 9 9"/>
+          </svg>
+          <div class="diff-loading-text" id="diff-loading-text">Loading diff…</div>
+        </div>
+      </div>
       <div id="diff-container"></div>
     </div>
   </div>
@@ -1887,10 +2053,61 @@
     </div>
   </div>
 
+  <!-- Keyboard shortcuts dialog (hidden by default) -->
+  <div id="shortcuts-overlay" class="prefs-overlay" style="display:none">
+    <div class="shortcuts-dialog">
+      <div class="prefs-header">
+        <h3>Keyboard Shortcuts</h3>
+        <button class="prefs-close" id="btn-shortcuts-close">✕</button>
+      </div>
+      <div class="shortcuts-body">
+        <div class="shortcuts-group">
+          <div class="shortcuts-group-title">Review</div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>Shift</kbd><kbd>A</kbd><span class="shortcut-desc">Approve PR</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>Shift</kbd><kbd>R</kbd><span class="shortcut-desc">Request changes</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>Shift</kbd><kbd>C</kbd><span class="shortcut-desc">Submit review as comment</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>Shift</kbd><kbd>Enter</kbd><span class="shortcut-desc">Submit review</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>Enter</kbd><span class="shortcut-desc">Submit open comment form</span></div>
+        </div>
+        <div class="shortcuts-group">
+          <div class="shortcuts-group-title">Navigation</div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>R</kbd><span class="shortcut-desc">Reload current PR diff</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>]</kbd><span class="shortcut-desc">Next comment</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>[</kbd><span class="shortcut-desc">Previous comment</span></div>
+        </div>
+        <div class="shortcuts-group">
+          <div class="shortcuts-group-title">Tools</div>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>B</kbd><span class="shortcut-desc">Toggle voice mode (hold to speak)</span></div>
+        </div>
+        <div class="shortcuts-group">
+          <div class="shortcuts-group-title">Help</div>
+          <div class="shortcut-row"><kbd>Shift</kbd><kbd>?</kbd><span class="shortcut-desc">Show this shortcut list</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd><span class="shortcut-desc">Close dialog / comment form</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Voice transcript bar -->
   <div id="voice-transcript">
     <div class="transcript-label">Listening...</div>
     <div class="transcript-text"></div>
+  </div>
+
+  <!-- Prev-PR edge arrow: appears when the mouse is near the left edge. Clicking
+       it loads the previous PR in the review list. -->
+  <div id="prev-pr-arrow" title="Previous PR">
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 6l-6 6 6 6"/>
+    </svg>
+  </div>
+
+  <!-- Next-PR edge arrow: appears when the mouse is near the right edge of the
+       window. Clicking it loads the next PR in the review list. -->
+  <div id="next-pr-arrow" title="Next PR">
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 6l6 6-6 6"/>
+    </svg>
   </div>
 
   <!-- Toast notification container -->

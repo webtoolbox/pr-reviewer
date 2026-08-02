@@ -240,6 +240,8 @@ function cleanHermesResponse(stdout) {
     const nl = text.indexOf('\n', lastBoxStart);
     if (boxEnd !== -1 && nl !== -1 && nl < boxEnd) {
       text = text.substring(nl + 1, boxEnd);
+      // Strip the "│ " border pipes hermes puts on each box content line.
+      text = text.replace(/^│\s*/gm, '').replace(/\s*│$/gm, '');
     }
   } else {
     // No box UI — drop the echoed prompt block and keep whatever follows it.
@@ -257,23 +259,77 @@ function cleanHermesResponse(stdout) {
   return text.trim();
 }
 
-// AI chat IPC: send a message with conversation history, get a response
+// AI chat IPC: send a message with conversation history, stream the reply back
+// incrementally so the user sees the agent "thinking" live instead of a static
+// "Thinking..." bubble. Uses spawn() (not execFile) so stdout chunks arrive as
+// they're produced; each chunk is throttled and pushed to the renderer over the
+// 'ai-chat-stream' channel, and a final 'done' event carries the cleaned reply.
 ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history }) => {
   const prompt = buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '');
   const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-q', prompt];
   log('INFO', `[ai-chat] Sending (first 100): ${prompt.substring(0, 100)}`);
   return new Promise((resolve) => {
-    execFile(appConfig.aiCommand, args, { timeout: 120000 }, (err, stdout) => {
-      if (err) {
-        log('ERROR', '[ai-chat] failed:', err.message);
-        resolve({ error: err.message });
-      } else {
-        log('INFO', `[ai-chat] Response received: ${stdout.length} chars`);
-        resolve({ response: cleanHermesResponse(stdout) });
+    const { spawn } = require('child_process');
+    const child = spawn(appConfig.aiCommand, args, { timeout: 120000 });
+    const sender = event.sender;
+    let stdout = '';
+    let lastEmit = 0;
+
+    const emitStream = (force) => {
+      // Throttle emits to ~80ms so we don't spam IPC on fast token streams.
+      const now = Date.now();
+      if (!force && now - lastEmit < 80) return;
+      lastEmit = now;
+      const partial = cleanHermesStreaming(stdout);
+      if (partial) {
+        try { sender.send('ai-chat-stream', { text: partial, done: false }); } catch {}
       }
+    };
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      emitStream(false);
+    });
+
+    child.on('error', (err) => {
+      log('ERROR', '[ai-chat] spawn error:', err.message);
+      try { sender.send('ai-chat-stream', { text: '', error: err.message, done: true }); } catch {}
+      resolve({ error: err.message });
+    });
+
+    child.on('close', () => {
+      const clean = cleanHermesResponse(stdout);
+      log('INFO', `[ai-chat] Response received: ${clean.length} chars`);
+      try { sender.send('ai-chat-stream', { text: clean, done: true }); } catch {}
+      resolve({ response: clean });
     });
   });
 });
+
+// Lightweight chrome-stripper for PARTIAL (in-flight) hermes output. It only
+// returns lines INSIDE the final answer box (between the ╭…╮ top border and the
+// ╰…╯ bottom border), stripping the │ border pipes. Thinking text, tool-call
+// progress, warnings, and the session footer are all outside the box, so they
+// never reach the reply bubble. Before the box opens (or after it closes) it
+// returns empty — the renderer keeps showing the loading indicator until the
+// real answer begins streaming.
+function cleanHermesStreaming(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  const out = [];
+  let inBox = false;
+  for (const raw of lines) {
+    const t = raw;
+    if (/^╭/.test(t)) { inBox = true; continue; }
+    if (/^╰/.test(t)) { inBox = false; continue; }
+    if (inBox) {
+      // Strip the left border pipe and trailing whitespace from box content lines.
+      const content = t.replace(/^│\s*/, '').replace(/\s*│$/, '').trim();
+      if (content) out.push(content);
+    }
+  }
+  return out.join('\n').trim();
+}
 
 function expandPath(p) {
   if (p && p.startsWith('~')) {
@@ -715,7 +771,13 @@ async function generateDiff(prNumber, repoKey) {
   const prDiffPromise = execPromise(
     `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
     { timeout: 60000 }
-  );
+  ).catch((err) => {
+    // gh pr diff uses the GitHub API which caps unified diffs at 20000 lines
+    // (HTTP 406 "diff too large"). That's a fallback source only — the primary
+    // diff comes from git locally, so log and continue rather than fail the PR.
+    log('ERROR', `[generateDiff] gh pr diff failed (may be too large), will use git diff: ${err.message}`);
+    return '';
+  });
   const basePromise = resolveBaseSha(owner, repo, prNumber, diffMode);
 
   const results = await Promise.all([prViewPromise, prDiffPromise, basePromise]);
@@ -806,10 +868,14 @@ async function generateDiff(prNumber, repoKey) {
   // If reviewing since last review, use git diff for only the files changed after review
   if (reviewInfo && baseSha && headSha) {
     try {
-      // Get files changed by PR commits after the review (non-merge commits only)
+      // Get files changed by PR commits after the review (non-merge commits only).
+      // Use --paginate so we fetch ALL commits (the endpoint defaults to the first
+      // 100, oldest-first — for long PRs the newest commits after the review would
+      // otherwise be missed, making afterReview empty and falling back to the full
+      // PR diff, e.g. PR #6460 showed 141 files instead of the 1 since-review file).
       const reviewCommits = await execPromise(
-        `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`,
-        { timeout: 15000 }
+        `gh api --paginate "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`,
+        { timeout: 60000 }
       );
       const allCommits = JSON.parse(reviewCommits || '[]');
       const reviewDate = reviewInfo.date;
@@ -1056,6 +1122,15 @@ function createMenu() {
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
+        {
+          label: 'Review History',
+          accelerator: 'CmdOrCtrl+Shift+H',
+          click: () => {
+            const focused = BrowserWindow.getFocusedWindow();
+            if (focused) focused.webContents.send('open-review-history');
+          }
+        },
+        { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
@@ -1072,6 +1147,19 @@ function createMenu() {
         { role: 'front' },
         { type: 'separator' },
         { role: 'window' }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+Shift+/',
+          click: () => {
+            const focused = BrowserWindow.getFocusedWindow();
+            if (focused) focused.webContents.send('open-shortcuts');
+          }
+        }
       ]
     }
   ];
@@ -1097,6 +1185,16 @@ function createWindow(options = {}) {
   });
 
   windows.set(windowId, win);
+
+  // Allow microphone (and camera) access so voice mode's getUserMedia works.
+  // Without this, Electron denies media permission requests by default and
+  // getUserMedia fails (e.g. "No microphone found").
+  win.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(permission === 'media' || permission === 'mediaKeySystem');
+  });
+  win.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    return permission === 'media' || permission === 'mediaKeySystem';
+  });
 
   // Set proper headers for GitHub image requests
   win.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
@@ -2237,6 +2335,9 @@ ${commentList || '  (no comments yet)'}
 8. Just a message to show the user (no UI action):
    {"action":"message","text":"your response message"}
 
+9. Open the before/after image comparison slideshow for the current PR:
+   {"action":"open_compare"}
+
 **Rules:**
 - The user may give MULTIPLE commands in one sentence. Return ALL actions as a JSON array.
 - Example: "approve this PR and add a comment on line 10 of main.js saying looks good" should return TWO actions.
@@ -2248,6 +2349,7 @@ ${commentList || '  (no comments yet)'}
 - If the user dictates a comment, use "line_comment" or "file_comment".
 - If the user says "set review body to..." or "my review is...", use "review_body".
 - If the user says "submit" or "submit as comment", use "submit_comment".
+- If the user says "show before and after" or "compare images" or "open the comparison", use "open_compare".
 - For anything else, use "message" to respond.
 
 Return a JSON array of actions. If only one action, still return it as an array: [{"action":"approve"}].
@@ -3011,19 +3113,27 @@ Rules should be generalized, not specific to this one PR.
 Keep rules concise — one sentence each when possible.`;
 
   return new Promise((resolve) => {
-    const args = ['chat', '-p', rulesConfig.aiProfile || appConfig.hermesProfile || 'wt', '-q', prompt];
+    // -Q (quiet) suppresses hermes' banner and box-drawing UI so the response is
+    // the raw JSON the prompt asks for — no border pipes or chrome to strip.
+    const args = ['chat', '-p', rulesConfig.aiProfile || appConfig.hermesProfile || 'wt', '-q', prompt, '-Q'];
     const proc = require('child_process').execFile(aiCmd, args, { timeout: 60000 }, (err, stdout) => {
       if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles, error: err.message }); return; }
       log('INFO', '[propose-rules] AI response received, length:', stdout.length, 'chars');
       log('INFO', '[propose-rules] Raw response (first 500):', stdout.substring(0, 500));
       try {
+        // hermes output may include banners and box-drawing UI (each answer line
+        // prefixed with "│"). Strip that chrome first so the JSON strategies below
+        // can actually match. This was the cause of every "Failed to parse AI
+        // response" — the proposed-rules JSON was buried inside the box.
+        const cleaned = cleanHermesResponse(stdout);
+        const source = cleaned || stdout;
         // hermes output may include banners — find the JSON object more aggressively
         // Try multiple strategies to extract JSON
         let parsed = null;
         
         // Strategy 1: find JSON block that contains proposedRules
         // Use non-greedy matching to avoid spanning across hermes banners
-        const proposedRulesMatch = stdout.match(/\{\s*"proposedRules"[\s\S]*?\}\s*\]/g);
+        const proposedRulesMatch = source.match(/\{\s*"proposedRules"[\s\S]*?\}\s*\]/g);
         if (proposedRulesMatch) {
           for (const match of proposedRulesMatch) {
             // Find the complete JSON object containing this match
@@ -3051,7 +3161,7 @@ Keep rules concise — one sentence each when possible.`;
         
         // Strategy 2: find largest JSON object (fallback)
         if (!parsed) {
-          const jsonMatches = stdout.match(/\{[^\{]*"proposedRules"[^\}]*\}/g);
+          const jsonMatches = source.match(/\{[^\{]*"proposedRules"[^\}]*\}/g);
           if (jsonMatches) {
             for (const match of jsonMatches) {
               try {
@@ -3064,7 +3174,7 @@ Keep rules concise — one sentence each when possible.`;
         
         // Strategy 3: find JSON between ```json blocks
         if (!parsed) {
-          const codeBlock = stdout.match(/```json\s*([\s\S]*?)```/);
+          const codeBlock = source.match(/```json\s*([\s\S]*?)```/);
           if (codeBlock) {
             parsed = JSON.parse(codeBlock[1].trim());
           }

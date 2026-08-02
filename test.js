@@ -1634,6 +1634,259 @@ async function runTests() {
   `);
   assert('Show more above button is under file header', contextBtnPosition === 'correct', `position: ${contextBtnPosition}`);
 
+  // TEST: Inter-hunk expand buttons do NOT appear on the first hunk (duplicate of "Show more above")
+  const interHunkNoFirstDup = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+      if (!wrappers.length) return 'no-wrappers';
+      let anyDup = false;
+      for (const wrapper of wrappers) {
+        const header = wrapper.querySelector('.d2h-file-header');
+        if (!header) continue;
+        // "Show more above" sits right after the header; an inter-hunk button must NOT be the
+        // first element after the header (that would duplicate the top expand).
+        const next = header.nextElementSibling;
+        if (next && next.classList.contains('context-expand-btn') && next.dataset.direction === '') {
+          anyDup = true;
+        }
+      }
+      return anyDup ? 'dup-found' : 'ok';
+    })()
+  `);
+  assert('Inter-hunk expand does not duplicate first-hunk top button', interHunkNoFirstDup === 'ok', `result: ${interHunkNoFirstDup}`);
+
+  // TEST: Filtered-files notice appears when files are hidden by the extension filter
+  const filteredNotice = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof updateFilteredFilesNotice !== 'function') return 'no-fn';
+      const notice = document.getElementById('filtered-files-notice');
+      if (!notice) return 'no-element';
+      // Hide a real wrapper to simulate the extension filter hiding .pm files
+      const wrapper = document.querySelector('.d2h-file-wrapper');
+      if (wrapper) wrapper.style.display = 'none';
+      updateFilteredFilesNotice(['.pm']);
+      const shown = notice.style.display === 'block';
+      const hasTitle = notice.innerHTML.includes('filtered out');
+      const hasButton = notice.querySelector('#ffn-show-all') !== null;
+      // Now clear it
+      updateFilteredFilesNotice([]);
+      const hidden = notice.style.display === 'none';
+      if (wrapper) wrapper.style.display = '';
+      return (shown && hasTitle && hasButton && hidden) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Filtered-files notice shows/hides with extension filter', filteredNotice === 'ok', `result: ${filteredNotice}`);
+
+  // TEST: Sidebar lists all files regardless of extension filter (PR 6460 fix)
+  const sidebarListsAll = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof populateFileSidebar !== 'function') return 'no-fn';
+      // Simulate an active extension filter that would exclude some files
+      activeExtensions = ['.pl'];
+      populateFileSidebar();
+      const sidebarItems = document.querySelectorAll('#file-sidebar-list .sidebar-file-row').length;
+      const wrapperCount = document.querySelectorAll('.d2h-file-wrapper').length;
+      // Restore
+      activeExtensions = null;
+      return (wrapperCount > 0 && sidebarItems === wrapperCount) ? 'ok' : 'mismatch';
+    })()
+  `);
+  assert('Sidebar lists all files even with extension filter', sidebarListsAll === 'ok', `result: ${sidebarListsAll}`);
+
+  // TEST: AI chat clears on PR load (loadPrByNumber calls clearAiChat)
+  const aiChatClearsOnLoad = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = loadPrByNumber.toString();
+      return src.includes('clearAiChat()') ? 'ok' : 'missing';
+    })()
+  `);
+  assert('loadPrByNumber clears AI chat', aiChatClearsOnLoad === 'ok', `result: ${aiChatClearsOnLoad}`);
+
+  // TEST: clearAiChat resets history and messages panel
+  const clearAiChatWorks = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (typeof clearAiChat !== 'function') return 'no-fn';
+      aiChatHistory.push({ role: 'user', content: 'x' });
+      const msgs = document.getElementById('ai-chat-messages');
+      if (msgs) msgs.innerHTML = '<div class="ai-chat-msg">stale</div>';
+      clearAiChat();
+      const historyCleared = aiChatHistory.length === 0;
+      const panelCleared = !msgs || msgs.children.length === 0;
+      return (historyCleared && panelCleared) ? 'ok' : 'not-cleared';
+    })()
+  `);
+  assert('clearAiChat resets history + messages', clearAiChatWorks === 'ok', `result: ${clearAiChatWorks}`);
+
+  // TEST: AI chat streaming — sendAiChat creates a live assistant message and registers a stream listener
+  const aiChatStreaming = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = sendAiChat.toString();
+      const hasLive = src.indexOf('ai-chat-msg assistant') !== -1;
+      const hasStreamListener = src.indexOf('onAiChatStream') !== -1;
+      const hasRemoveListener = src.indexOf('removeAiChatStreamListener') !== -1;
+      return (hasLive && hasStreamListener && hasRemoveListener) ? 'ok' : 'missing';
+    })()
+  `);
+  assert('sendAiChat streams live reply + cleans up listener', aiChatStreaming === 'ok', `result: ${aiChatStreaming}`);
+
+  // TEST: Keyboard shortcuts dialog toggles on Shift+?
+  const shortcutsDialog = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof toggleShortcutsDialog !== 'function') return 'no-fn';
+      const overlay = document.getElementById('shortcuts-overlay');
+      if (!overlay) return 'no-overlay';
+      toggleShortcutsDialog();
+      const opened = overlay.style.display === 'flex';
+      toggleShortcutsDialog();
+      const closed = overlay.style.display === 'none';
+      return (opened && closed) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Shift+? shortcuts dialog opens and closes', shortcutsDialog === 'ok', `result: ${shortcutsDialog}`);
+
+  // TEST: Voice action can open compare slideshow
+  const voiceOpenCompare = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = executeSingleVoiceAction.toString();
+      return src.includes("case 'open_compare'") ? 'ok' : 'missing';
+    })()
+  `);
+  assert('Voice mode supports open_compare action', voiceOpenCompare === 'ok', `result: ${voiceOpenCompare}`);
+
+  // TEST: Review history records an action and renders it
+  const reviewHistory = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof recordReviewAction !== 'function') return 'no-fn';
+      if (typeof renderReviewHistoryDropdown !== 'function') return 'no-render';
+      const before = reviewHistory.length;
+      recordReviewAction(99999, 'approve', 'Test PR Title', 2);
+      const recorded = reviewHistory.length === before + 1;
+      const entry = reviewHistory[0];
+      const correctEntry = entry && entry.prNumber === 99999 && entry.action === 'approved' && entry.commentCount === 2;
+      // Clean up so we don't pollute the persisted list
+      reviewHistory = reviewHistory.filter(h => h.prNumber !== 99999);
+      saveReviewHistory(reviewHistory);
+      return (recorded && correctEntry) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Review history records approve action', reviewHistory === 'ok', `result: ${reviewHistory}`);
+
+  // TEST: History dialog exists with a list container (accessed via View menu)
+  const historyDropdown = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const ov = document.getElementById('review-history-overlay');
+      const list = document.getElementById('review-history-list');
+      return (ov && list) ? 'ok' : 'missing';
+    })()
+  `);
+  assert('Review history dialog + list present', historyDropdown === 'ok', `result: ${historyDropdown}`);
+
+  // TEST: Next-PR edge arrow exists and reveals on right-edge hover (in content area)
+  const nextPrArrowTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const arrow = document.getElementById('next-pr-arrow');
+      if (!arrow) return 'no-element';
+      if (typeof gotoNextPr !== 'function') return 'no-fn';
+      const evt = new MouseEvent('mousemove', { clientX: window.innerWidth - 20, clientY: 200 });
+      document.dispatchEvent(evt);
+      const revealed = arrow.classList.contains('visible');
+      return revealed ? 'ok' : 'not-revealed';
+    })()
+  `);
+  assert('Next-PR edge arrow reveals on right-edge hover (content area)', nextPrArrowTest === 'ok', `result: ${nextPrArrowTest}`);
+
+  // TEST: Prev-PR edge arrow exists and reveals on left-edge hover (in content area)
+  const prevPrArrowTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const arrow = document.getElementById('prev-pr-arrow');
+      if (!arrow) return 'no-element';
+      if (typeof gotoPrevPr !== 'function') return 'no-fn';
+      const evt = new MouseEvent('mousemove', { clientX: 20, clientY: 200 });
+      document.dispatchEvent(evt);
+      const revealed = arrow.classList.contains('visible');
+      return revealed ? 'ok' : 'not-revealed';
+    })()
+  `);
+  assert('Prev-PR edge arrow reveals on left-edge hover (content area)', prevPrArrowTest === 'ok', `result: ${prevPrArrowTest}`);
+
+  // TEST: Arrows do NOT reveal while cursor is in the top bar (header area)
+  const arrowsHiddenInHeader = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const next = document.getElementById('next-pr-arrow');
+      const prev = document.getElementById('prev-pr-arrow');
+      const evt = new MouseEvent('mousemove', { clientX: window.innerWidth - 20, clientY: 20 });
+      document.dispatchEvent(evt);
+      const nextHidden = !next.classList.contains('visible');
+      const prevHidden = !prev.classList.contains('visible');
+      return (nextHidden && prevHidden) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Arrows hidden in header area', arrowsHiddenInHeader === 'ok', `result: ${arrowsHiddenInHeader}`);
+
+  // TEST: Diff loading indicator shows while a PR is loading, hides after diff loads
+  const diffLoadingTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof showDiffLoading !== 'function' || typeof hideDiffLoading !== 'function') return 'no-fn';
+      const el = document.getElementById('diff-loading');
+      if (!el) return 'no-element';
+      showDiffLoading('Loading test…');
+      const shown = el.classList.contains('show');
+      hideDiffLoading();
+      const hidden = !el.classList.contains('show');
+      return (shown && hidden) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Diff loading indicator toggles', diffLoadingTest === 'ok', `result: ${diffLoadingTest}`);
+
+  // TEST: Arrows disable when at the ends of the list (no prev/next)
+  const arrowDisabledTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof updatePrArrowStates !== 'function') return 'no-fn';
+      // Simulate a list of 2 PRs with the first one current → prev disabled, next enabled
+      cachedPrList = [{number: 1, repo:'default'}, {number: 2, repo:'default'}];
+      currentPrNumber = 1;
+      updatePrArrowStates();
+      const prevDisabled = document.getElementById('prev-pr-arrow').classList.contains('disabled');
+      const nextEnabled = !document.getElementById('next-pr-arrow').classList.contains('disabled');
+      return (prevDisabled && nextEnabled) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Arrows disable at ends of list', arrowDisabledTest === 'ok', `result: ${arrowDisabledTest}`);
+
+  // TEST: All-done state shows celebratory screen and clears the diff
+  const allDoneTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof showAllDoneState !== 'function') return 'no-fn';
+      const ad = document.getElementById('all-done-state');
+      const dc = document.getElementById('diff-container');
+      // Load a diff first, then trigger all-done
+      dc.innerHTML = '<div class="d2h-file-wrapper">stale diff</div>';
+      showAllDoneState();
+      const shown = ad.style.display === 'flex';
+      const diffCleared = dc.innerHTML === '' && dc.style.display === 'none';
+      const prInfoShown = document.getElementById('pr-info').textContent.includes('All caught up');
+      const noCurrentPr = currentPrNumber === null;
+      return (shown && diffCleared && prInfoShown && noCurrentPr) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('All-done state clears diff and shows celebration', allDoneTest === 'ok', `result: ${allDoneTest}`);
+
+  // TEST: On reload with pending PRs, startup auto-loads the first pending PR.
+  // The startup handler (config .then) calls loadPrByNumber(prs[0]) when no PR is
+  // loaded and PRs exist. After showAllDoneState, currentPrNumber is null, so a
+  // reload will auto-load the first pending PR.
+  const reloadAutoLoadTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = ${JSON.stringify(fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8'))};
+      // The startup handler must auto-load the first PR when none is loaded
+      const hasAutoLoad = src.includes('if (!currentPrNumber && prs.length > 0)') &&
+                          src.includes('await loadPrByNumber(prs[0].number, prs[0].repo)');
+      // After all-done, currentPrNumber is null so reload picks up a pending PR
+      return hasAutoLoad ? 'ok' : 'missing';
+    })()
+  `);
+  assert('Startup auto-loads first pending PR on reload', reloadAutoLoadTest === 'ok', `result: ${reloadAutoLoadTest}`);
+
   // TEST: submitReview auto-advances to next PR
   const autoAdvanceExists = await mainWindow.webContents.executeJavaScript(`
     (() => {
