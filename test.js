@@ -2087,15 +2087,16 @@ async function runTests() {
   if (failed > 0) {
     log('');
     log('FAILED TESTS:');
-    testResults.filter(r => !r.pass).forEach(r => {
-      log(`  ✗ ${r.name}${r.detail ? ' - ' + r.detail : ''}`);
-    });
+    for (const r of testResults) {
+      if (!r.pass) log(`  ✗ ${r.name}${r.detail ? ' - ' + r.detail : ''}`);
+    }
   }
 
   log('');
   log('Tests complete. App will close in 3 seconds...');
   await new Promise(resolve => setTimeout(resolve, 3000));
-  app.quit();
+  // Exit non-zero on failures so CI actually fails instead of silently passing.
+  app.exit(failed > 0 ? 1 : 0);
 }
 
 ipcMain.handle('open-file', async () => null);

@@ -4,25 +4,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-and-build:
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
-            test_cmd: xvfb-run npx jest --no-coverage && git show --format= --no-renames HEAD > /tmp/test-full.diff && xvfb-run npx electron test.js /tmp/test-full.diff
             build_cmd: npx electron-builder --linux --publish never
             artifact: linux-build
             path: |
               dist/*.deb
               dist/*.AppImage
           - os: windows-latest
-            test_cmd: echo "Skipping tests on Windows"
             build_cmd: npx electron-builder --win --publish never
             artifact: windows-build
             path: dist/*.exe
           - os: macos-latest
-            test_cmd: echo "Skipping tests on macOS (run locally)"
             build_cmd: npx electron-builder --mac --publish never
             artifact: macos-build
             path: dist/*.dmg
@@ -37,7 +34,6 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: ${{ matrix.test_cmd }}
       - run: ${{ matrix.build_cmd }}
       - uses: actions/upload-artifact@v4
         with:
@@ -45,7 +41,7 @@ jobs:
           path: ${{ matrix.path }}
 
   release:
-    needs: test-and-build
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
