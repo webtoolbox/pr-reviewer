@@ -156,6 +156,12 @@ function populateFileSidebar() {
 
   // Build tree recursively and render
   function renderTree(node, container, depth) {
+    // Render root-level files first (files with no folder path live in node._files).
+    if (node._files && node._files.length > 0) {
+      for (const file of node._files) {
+        container.appendChild(createFileRow(file, depth));
+      }
+    }
     const entries = Object.keys(node).sort();
     for (const key of entries) {
       const group = node[key];
