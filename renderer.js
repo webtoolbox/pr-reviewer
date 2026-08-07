@@ -962,38 +962,45 @@ function addFileCommentButtons() {
     if (!header) return;
     const fileNameEl = header.querySelector('.d2h-file-name');
     const fileName = fileNameEl ? fileNameEl.textContent.trim() : 'unknown';
-
-    // Make file name clickable to open in editor
-    if (fileNameEl) {
-      fileNameEl.style.cursor = 'pointer';
-      fileNameEl.title = 'Click to open in editor';
-      fileNameEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // Get the first line number shown in this file's diff
-        const firstLine = wrapper.querySelector('.d2h-code-linenumber, .d2h-code-side-linenumber');
-        let line = 1;
-        if (firstLine) {
-          // Get the actual line number from parsedDiff if available
-          const num = parseInt(firstLine.textContent.trim());
-          if (!isNaN(num) && num > 0) line = num;
-        }
-        console.log(`[editor] Opening ${fileName} at line ${line}`);
-        window.electronAPI.openFileInEditor({ filePath: fileName, line });
-      });
-    }
-
-    const btn = document.createElement('button');
-    btn.className = 'file-comment-btn';
-    btn.dataset.fileName = fileName;
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> <span class="comment-count" style="display:none">0</span>';
-    btn.title = 'Add file-level comment (Cmd+Enter to submit)';
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      openFileCommentDialog(wrapper, fileName);
-    });
-    header.appendChild(btn);
+    addFileCommentButtonsForWrapper(wrapper, fileName);
   });
+}
+
+function addFileCommentButtonsForWrapper(wrapper, fileName) {
+  const header = wrapper.querySelector('.d2h-file-header');
+  if (!header) return;
+
+  // Make file name clickable to open in editor
+  const fileNameEl = header.querySelector('.d2h-file-name');
+  if (fileNameEl) {
+    fileNameEl.style.cursor = 'pointer';
+    fileNameEl.title = 'Click to open in editor';
+    fileNameEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Get the first line number shown in this file's diff
+      const firstLine = wrapper.querySelector('.d2h-code-linenumber, .d2h-code-side-linenumber');
+      let line = 1;
+      if (firstLine) {
+        // Get the actual line number from parsedDiff if available
+        const num = parseInt(firstLine.textContent.trim());
+        if (!isNaN(num) && num > 0) line = num;
+      }
+      console.log(`[editor] Opening ${fileName} at line ${line}`);
+      window.electronAPI.openFileInEditor({ filePath: fileName, line });
+    });
+  }
+
+  const btn = document.createElement('button');
+  btn.className = 'file-comment-btn';
+  btn.dataset.fileName = fileName;
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> <span class="comment-count" style="display:none">0</span>';
+  btn.title = 'Add file-level comment (Cmd+Enter to submit)';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    openFileCommentDialog(wrapper, fileName);
+  });
+  header.appendChild(btn);
 }
 
 // ===================== COPY FILE NAME BUTTONS =====================
@@ -1001,32 +1008,36 @@ function addFileCommentButtons() {
 function addCopyFileNameButtons() {
   const fileHeaders = document.querySelectorAll('.d2h-file-header');
   fileHeaders.forEach(header => {
-    // Skip if already has a copy button
-    if (header.querySelector('.copy-file-name-btn')) return;
-
-    const fileNameEl = header.querySelector('.d2h-file-name');
-    if (!fileNameEl) return;
-
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-file-name-btn';
-    copyBtn.title = 'Copy file path';
-    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg><span class="copy-feedback">Copied!</span>';
-
-    copyBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      const filePath = fileNameEl.textContent.trim();
-      navigator.clipboard.writeText(filePath).then(() => {
-        showToast('Copied: ' + filePath, 'info', 2000);
-      }).catch(err => {
-        console.error('Failed to copy file path:', err);
-        showToast('Failed to copy file path', 'error', 3000);
-      });
-    });
-
-    // Insert right after the file name (before stats)
-    fileNameEl.after(copyBtn);
+    addCopyFileNameButtonForHeader(header);
   });
+}
+
+function addCopyFileNameButtonForHeader(header) {
+  // Skip if already has a copy button
+  if (header.querySelector('.copy-file-name-btn')) return;
+
+  const fileNameEl = header.querySelector('.d2h-file-name');
+  if (!fileNameEl) return;
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-file-name-btn';
+  copyBtn.title = 'Copy file path';
+  copyBtn.innerHTML = '<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg><span class="copy-feedback">Copied!</span>';
+
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const filePath = fileNameEl.textContent.trim();
+    navigator.clipboard.writeText(filePath).then(() => {
+      showToast('Copied: ' + filePath, 'info', 2000);
+    }).catch(err => {
+      console.error('Failed to copy file path:', err);
+      showToast('Failed to copy file path', 'error', 3000);
+    });
+  });
+
+  // Insert right after the file name (before stats)
+  fileNameEl.after(copyBtn);
 }
 
 // Wrapper-specific versions for targeted DOM updates (context expand)
@@ -1300,48 +1311,85 @@ async function handleContextExpand(fileName) {
 
     // Replace this file's section in currentDiffContent
     if (result.content && currentDiffContent) {
-      console.log('[context-expand] Got', result.content.length, 'chars for', fileName);
-      console.log('[context-expand] First 200 chars:', result.content.substring(0, 200));
-      console.log('[context-expand] currentDiffContent before:', currentDiffContent.length, 'chars');
-
       currentDiffContent = replaceFileInDiff(currentDiffContent, fileName, result.content);
-      console.log('[context-expand] currentDiffContent after:', currentDiffContent.length, 'chars');
-      console.log('[context-expand] File still present:', currentDiffContent.includes(fileName));
 
-      // Re-render, preserving the expanded file's position in the viewport.
-      // Restoring the absolute scrollY makes the view jump when expanding at the
-      // bottom of a diff, because inserting context lines above the viewport
-      // shifts the file downward. Anchor the file wrapper instead so it stays put.
-      let anchorTop = null;
-      if (window.scrollY > 0) {
-        const wrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
-        for (const w of wrappers) {
-          const nameEl = w.querySelector('.d2h-file-name');
-          if (nameEl && nameEl.textContent.trim() === fileName) {
-            anchorTop = w.getBoundingClientRect().top;
-            break;
-          }
-        }
-      }
-      const savedScroll = window.scrollY;
-      renderFilteredDiff();
-      if (anchorTop !== null) {
-        const newWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
-        for (const w of newWrappers) {
-          const nameEl = w.querySelector('.d2h-file-name');
-          if (nameEl && nameEl.textContent.trim() === fileName) {
-            const newTop = w.getBoundingClientRect().top;
-            window.scrollBy(0, newTop - anchorTop);
-            break;
-          }
-        }
-      } else {
-        window.scrollTo(0, savedScroll);
-      }
+      // Re-render ONLY this file's wrapper in place. Rendering the whole diff
+      // (renderFilteredDiff) destroys all DOM and causes the view to jump, even
+      // with scroll-anchor compensation. Swapping a single file's wrapper keeps
+      // every other file and the scroll position untouched.
+      renderSingleFileInPlace(fileName, result.content);
     }
   } catch (err) {
     console.error('[context-expand] Error:', err);
   }
+}
+
+// Re-render a single file's diff section in place, replacing only that file's
+// .d2h-file-wrapper node in the DOM. Everything else — including scroll position
+// and all other file wrappers — is left alone, so expanding context no longer
+// makes the view jump.
+function renderSingleFileInPlace(fileName, fileDiff) {
+  const container = document.getElementById('diff-container');
+  if (!container) return;
+
+  // Find the existing wrapper for this file
+  const oldWrapper = Array.from(container.querySelectorAll('.d2h-file-wrapper')).find(w => {
+    const nameEl = w.querySelector('.d2h-file-name');
+    return nameEl && nameEl.textContent.trim() === fileName;
+  });
+  if (!oldWrapper) {
+    // File not currently rendered (e.g. filtered out) — fall back to full re-render
+    renderFilteredDiff();
+    return;
+  }
+
+  // Render just this file to an HTML string with the same config used elsewhere
+  const html = Diff2Html.html(fileDiff, {
+    drawFileList: true,
+    matching: 'words',
+    outputFormat: currentDiffViewMode === 'split' ? 'side-by-side' : 'line-by-line',
+    colorScheme: 'dark'
+  });
+
+  // Parse the generated HTML into a fresh wrapper node
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const newWrapper = tmp.querySelector('.d2h-file-wrapper');
+  if (!newWrapper) {
+    renderFilteredDiff();
+    return;
+  }
+
+  // Swap in the new wrapper (keeps the same position in the container)
+  oldWrapper.replaceWith(newWrapper);
+
+  // Re-apply post-processing to the new wrapper only
+  newWrapper.querySelectorAll('.context-expand-btn').forEach(b => b.remove());
+  addCommentButtonsForWrapper(newWrapper, fileName);
+  addFileCommentButtonsForWrapper(newWrapper, fileName);
+  const header = newWrapper.querySelector('.d2h-file-header');
+  if (header) addCopyFileNameButtonForHeader(header);
+  addContextButtonsForWrapper(newWrapper, fileName);
+  updateContextButtonStates(fileName, newWrapper);
+
+  // Apply syntax highlighting (Diff2Html.html() outputs raw HTML, no hljs)
+  applySyntaxHighlightingForWrapper(newWrapper);
+
+  // Re-highlight unrecognized languages for this wrapper
+  highlightUnrecognizedFilesForWrapper(newWrapper);
+
+  // Preserve collapsed state for filtered-out files
+  const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
+  const excludedExts = activeExtensions
+    ? extractExtensionsFromDiff(currentDiffContent).filter(e => !activeExtensions.includes(e))
+    : [];
+  if (excludedExts.includes(ext)) {
+    collapseFileWrapper(newWrapper, fileName);
+  }
+
+  // Sidebar indices stay valid (same wrapper order), so no need to repopulate.
+  // But if file order can change, keep the sidebar in sync defensively:
+  populateFileSidebar();
 }
 
 function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
@@ -3726,27 +3774,31 @@ function applySyntaxHighlighting() {
   const wrappers = document.querySelectorAll('.d2h-file-wrapper');
   console.log('[hljs] Applying syntax highlighting to', wrappers.length, 'file wrappers');
   wrappers.forEach(wrapper => {
-    const lang = wrapper.getAttribute('data-lang') || '';
-    const hljsLanguage = lang && lang !== 'plaintext' && window.hljs.getLanguage(lang) ? lang : 'plaintext';
-    const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
-    console.log('[hljs] File:', wrapper.querySelector('.d2h-file-name')?.textContent, 'lang:', lang, '→', hljsLanguage, 'lines:', codeLines.length);
-    codeLines.forEach(line => {
-      try {
-        const text = line.textContent;
-        if (text === null) return;
-        const result = window.hljs.highlight(text, {
-          language: hljsLanguage,
-          ignoreIllegals: true,
-        });
-        line.classList.add('hljs');
-        if (result.language) {
-          line.classList.add(result.language);
-        }
-        line.innerHTML = result.value;
-      } catch (e) {
-        // Ignore highlight errors for individual lines
+    applySyntaxHighlightingForWrapper(wrapper);
+  });
+}
+
+function applySyntaxHighlightingForWrapper(wrapper) {
+  if (typeof window.hljs === 'undefined') { return; }
+  const lang = wrapper.getAttribute('data-lang') || '';
+  const hljsLanguage = lang && lang !== 'plaintext' && window.hljs.getLanguage(lang) ? lang : 'plaintext';
+  const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
+  codeLines.forEach(line => {
+    try {
+      const text = line.textContent;
+      if (text === null) return;
+      const result = window.hljs.highlight(text, {
+        language: hljsLanguage,
+        ignoreIllegals: true,
+      });
+      line.classList.add('hljs');
+      if (result.language) {
+        line.classList.add(result.language);
       }
-    });
+      line.innerHTML = result.value;
+    } catch (e) {
+      // Ignore highlight errors for individual lines
+    }
   });
 }
 
@@ -3761,53 +3813,58 @@ function highlightUnrecognizedFiles() {
 
   const wrappers = document.querySelectorAll('.d2h-file-wrapper');
   wrappers.forEach(wrapper => {
-    const lang = wrapper.getAttribute('data-lang');
-    // Only process files with no recognized extension
-    if (lang && lang !== '' && lang !== 'plaintext') return;
+    highlightUnrecognizedFilesForWrapper(wrapper);
+  });
+}
 
-    // Gather all code content for auto-detection
-    const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
-    if (codeLines.length === 0) return;
+function highlightUnrecognizedFilesForWrapper(wrapper) {
+  if (typeof window.hljs === 'undefined' || !window.hljs.highlightAuto) return;
+  const lang = wrapper.getAttribute('data-lang');
+  // Only process files with no recognized extension
+  if (lang && lang !== '' && lang !== 'plaintext') return;
 
-    // Sample up to 20 lines for language detection (enough for reliable detection)
-    const sampleLines = Array.from(codeLines).slice(0, 20).map(l => l.textContent).join('\n');
-    if (!sampleLines.trim()) return;
+  // Gather all code content for auto-detection
+  const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn');
+  if (codeLines.length === 0) return;
 
-    // Use highlightAuto to detect language from code content
-    let detectedLang = null;
+  // Sample up to 20 lines for language detection (enough for reliable detection)
+  const sampleLines = Array.from(codeLines).slice(0, 20).map(l => l.textContent).join('\n');
+  if (!sampleLines.trim()) return;
+
+  // Use highlightAuto to detect language from code content
+  let detectedLang = null;
+  try {
+    const autoResult = window.hljs.highlightAuto(sampleLines);
+    if (autoResult.language && autoResult.relevance > 5) {
+      detectedLang = autoResult.language;
+    }
+  } catch (e) {
+    // Auto-detection failed, fall through to Perl-specific check
+  }
+
+  // Fallback: check filename for Perl extensions
+  if (!detectedLang) {
+    const fileName = wrapper.querySelector('.d2h-file-name');
+    const name = fileName ? fileName.textContent.trim() : '';
+    if (/\.(cgi|pl|pm|t|psgi|plx|fcgi)$/i.test(name)) {
+      detectedLang = 'perl';
+    }
+  }
+
+  if (!detectedLang) return;
+
+  // Re-highlight all code lines in this file with the detected language
+  codeLines.forEach(line => {
+    const text = line.textContent;
+    if (!text) return;
+
     try {
-      const autoResult = window.hljs.highlightAuto(sampleLines);
-      if (autoResult.language && autoResult.relevance > 5) {
-        detectedLang = autoResult.language;
-      }
+      const result = window.hljs.highlight(text, { language: detectedLang, ignoreIllegals: true });
+      line.classList.add('hljs', detectedLang);
+      line.innerHTML = result.value;
     } catch (e) {
-      // Auto-detection failed, fall through to Perl-specific check
+      // Ignore highlight errors for individual lines
     }
-
-    // Fallback: check filename for Perl extensions
-    if (!detectedLang) {
-      const fileName = wrapper.querySelector('.d2h-file-name');
-      const name = fileName ? fileName.textContent.trim() : '';
-      if (/\.(cgi|pl|pm|t|psgi|plx|fcgi)$/i.test(name)) {
-        detectedLang = 'perl';
-      }
-    }
-
-    if (!detectedLang) return;
-
-    // Re-highlight all code lines in this file with the detected language
-    codeLines.forEach(line => {
-      const text = line.textContent;
-      if (!text) return;
-
-      try {
-        const result = window.hljs.highlight(text, { language: detectedLang, ignoreIllegals: true });
-        line.classList.add('hljs', detectedLang);
-        line.innerHTML = result.value;
-      } catch (e) {
-        // Ignore highlight errors for individual lines
-      }
-    });
   });
 }
 
@@ -3843,23 +3900,27 @@ function collapseFilteredFiles(excludedExts) {
       continue;
     }
 
-    // Collapse the diff body but keep the file header visible. Add a toggle
-    // button to the header so the user can expand this file individually.
-    wrapper.classList.add('filtered-collapsed');
-    const header = wrapper.querySelector('.d2h-file-header');
-    if (header && !header.querySelector('.filtered-collapse-toggle')) {
-      const toggle = document.createElement('button');
-      toggle.className = 'filtered-collapse-toggle';
-      toggle.title = 'Expand file';
-      toggle.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4.5 6.25a.75.75 0 011.06 0L8 8.69l2.44-2.44a.75.75 0 111.06 1.06L8 10.81 4.5 7.31a.75.75 0 010-1.06z"/></svg>';
-      toggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const collapsed = wrapper.classList.toggle('filtered-collapsed');
-        toggle.classList.toggle('expanded', !collapsed);
-        toggle.title = collapsed ? 'Expand file' : 'Collapse file';
-      });
-      header.insertBefore(toggle, header.firstChild);
-    }
+    collapseFileWrapper(wrapper, fileName);
+  }
+}
+
+// Collapse a single file wrapper: hide the diff body, keep the header, and add
+// an expand/collapse toggle to the header so the user can expand this file.
+function collapseFileWrapper(wrapper, fileName) {
+  wrapper.classList.add('filtered-collapsed');
+  const header = wrapper.querySelector('.d2h-file-header');
+  if (header && !header.querySelector('.filtered-collapse-toggle')) {
+    const toggle = document.createElement('button');
+    toggle.className = 'filtered-collapse-toggle';
+    toggle.title = 'Expand file';
+    toggle.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4.5 6.25a.75.75 0 011.06 0L8 8.69l2.44-2.44a.75.75 0 111.06 1.06L8 10.81 4.5 7.31a.75.75 0 010-1.06z"/></svg>';
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const collapsed = wrapper.classList.toggle('filtered-collapsed');
+      toggle.classList.toggle('expanded', !collapsed);
+      toggle.title = collapsed ? 'Expand file' : 'Collapse file';
+    });
+    header.insertBefore(toggle, header.firstChild);
   }
 }
 

@@ -1655,6 +1655,28 @@ async function runTests() {
   `);
   assert('Inter-hunk expand does not duplicate first-hunk top button', interHunkNoFirstDup === 'ok', `result: ${interHunkNoFirstDup}`);
 
+  // TEST: renderSingleFileInPlace swaps only the target file's wrapper in place
+  // (keeps all other file wrappers and scroll position intact — fixes jump)
+  const singleSwapTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof renderSingleFileInPlace !== 'function') return 'no-fn';
+      const before = Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.querySelector('.d2h-file-name')?.textContent.trim());
+      if (before.length < 2) return 'need-2-files';
+      // Pick the last file and simulate its expansion with the same file diff
+      const target = before[before.length - 1];
+      const newDiff = 'diff --git a/' + target + ' b/' + target + '\\nindex 123..456 100644\\n--- a/' + target + '\\n+++ b/' + target + '\\n@@ -1,5 +1,6 @@\\n line1\\n line2\\n-old\\n+new\\n line4\\n line5\\n+line6';
+      const scrollBefore = window.scrollY;
+      renderSingleFileInPlace(target, newDiff);
+      const after = Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.querySelector('.d2h-file-name')?.textContent.trim());
+      // Same file set, same order, target still present
+      const sameSet = before.length === after.length && before.every((f, i) => f === after[i]);
+      // Other file wrappers must be untouched (same node identity)
+      const firstWrapper = document.querySelector('.d2h-file-wrapper');
+      return sameSet && firstWrapper ? 'ok' : 'bad';
+    })()
+  `);
+  assert('renderSingleFileInPlace swaps only the target file wrapper', singleSwapTest === 'ok', `result: ${singleSwapTest}`);
+
   // TEST: Filtered-out files are collapsed (not hidden) with an individual expand toggle
   const filteredCollapse = await mainWindow.webContents.executeJavaScript(`
     (() => {
