@@ -509,21 +509,29 @@
     #diff-container { display: none; }
     #review-body-container { display: none; padding: 20px 0; }
 
-    /* Filtered-files notice shown in the main content area when the extension
-       filter hides some (or all) of the files in the diff. */
-    #filtered-files-notice {
-      margin: 16px 24px 0; padding: 14px 18px; border-radius: 8px;
-      background: #1c2128; border: 1px solid #30363d; color: #d29922;
+    /* Filtered-out files: shown collapsed by default at the bottom of the diff,
+       each with a toggle on its header to expand/collapse individually. */
+    .d2h-file-wrapper.filtered-collapsed .d2h-files-diff,
+    .d2h-file-wrapper.filtered-collapsed .d2h-file-diff,
+    .d2h-file-wrapper.filtered-collapsed .context-expand-btn {
+      display: none !important;
+    }
+    .filtered-collapse-toggle {
+      background: none; border: none; cursor: pointer; color: #8b949e;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 2px 6px; margin-right: 4px; flex-shrink: 0;
+      transition: color 0.15s, transform 0.15s;
+    }
+    .filtered-collapse-toggle:hover { color: #c9d1d9; }
+    .filtered-collapse-toggle.expanded svg { transform: rotate(180deg); }
+
+    /* Load error shown in the body (never in the PR title bar). */
+    #body-error {
+      margin: 24px 32px; padding: 16px 20px; border-radius: 8px;
+      background: #1c2128; border: 1px solid #f85149; color: #c9d1d9;
       font-size: 13px; line-height: 1.5;
     }
-    #filtered-files-notice .ffn-title { font-weight: 600; color: #e3b341; }
-    #filtered-files-notice .ffn-muted { color: #8b949e; }
-    #filtered-files-notice button {
-      margin-top: 10px; background: #21262d; border: 1px solid #30363d;
-      color: #c9d1d9; border-radius: 6px; padding: 6px 14px; font-size: 13px;
-      cursor: pointer;
-    }
-    #filtered-files-notice button:hover { background: #30363d; }
+    #body-error .be-title { font-weight: 600; color: #f85149; margin-bottom: 4px; }
 
     /* Comment dialog */
     .comment-dialog textarea {
@@ -1550,10 +1558,6 @@
 
       /* Diff container */
       #diff-container { background: #ffffff; }
-      #filtered-files-notice { background: #fff8e5; border-color: #eed888; }
-      #filtered-files-notice .ffn-title { color: #9a6700; }
-      #filtered-files-notice button { background: #f6f8fa; border-color: #d0d7de; color: #24292f; }
-      #filtered-files-notice button:hover { background: #eaeef2; }
       .d2h-dark-color-scheme { background-color: #ffffff; }
 
       /* File sidebar */
@@ -1878,7 +1882,6 @@
       <div id="file-sidebar-list"></div>
     </div>
     <div id="main-content" style="flex:1;min-width:0;display:flex;flex-direction:column;">
-      <div id="filtered-files-notice" style="display:none"></div>
       <div id="diff-loading">
         <div class="diff-loading-inner">
           <svg class="diff-loading-spinner" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -1888,6 +1891,7 @@
         </div>
       </div>
       <div id="diff-container"></div>
+      <div id="body-error" style="display:none"></div>
     </div>
   </div>
 

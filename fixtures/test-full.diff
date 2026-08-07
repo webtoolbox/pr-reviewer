@@ -1,0 +1,36 @@
+diff --git a/src/utils.js b/src/utils.js
+index 6bb2e5194c..5abdf0d879 100644
+--- a/src/utils.js
++++ b/src/utils.js
+@@ -10,6 +10,7 @@ export function formatDate(date) {
+     return '';
+   }
+   const d = new Date(date);
++  const paddedMonth = String(d.getMonth() + 1).padStart(2, '0');
+   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+ }
+ 
+diff --git a/lib/helpers.pm b/lib/helpers.pm
+index 494f7eff628..45dedd85c86 100644
+--- a/lib/helpers.pm
++++ b/lib/helpers.pm
+@@ -40,7 +40,7 @@ sub trim {
+ sub slugify {
+ 	my ($str) = @_;
+ 	$str = lc($str);
+-	$str =~ s/[^a-z0-9]+/-/g;
++	$str =~ s/[^a-z0-9]+//g;
+ 	return $str;
+ }
+ 
+diff --git a/templates/menu.tpl b/templates/menu.tpl
+index 8a3b1c9..e7f2a44 100644
+--- a/templates/menu.tpl
++++ b/templates/menu.tpl
+@@ -5,6 +5,7 @@
+-	<div class="menu-item">Home</div>
++	<div class="menu-item active">Home</div>
+ 	<div class="menu-item">About</div>
++	<div class="menu-item">Contact</div>
+ 	<div class="menu-item">Help</div>
+ </nav>

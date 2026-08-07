@@ -573,8 +573,10 @@ function loadDiff(content, filePath) {
     return;
   }
 
-  // Sort files by extension, then by name
-  content = sortDiffByExtension(content);
+  // Sort files by extension, then by name — filtered-out extensions go last
+  const allExtsForSort = extractExtensionsFromDiff(content);
+  const excludedForSort = activeExtensions ? allExtsForSort.filter(e => !activeExtensions.includes(e)) : [];
+  content = sortDiffByExtension(content, excludedForSort);
 
   currentDiff = content;
   currentDiffContent = content;
@@ -640,12 +642,9 @@ function loadDiff(content, filePath) {
   if (activeExtensions !== null && activeExtensions.length > 0) {
     const allExts = extractExtensionsFromDiff(currentDiffContent);
     const excludedExts = allExts.filter(e => !activeExtensions.includes(e));
-    if (excludedExts.length > 0) {
-      collapseFilteredFiles(excludedExts);
-    }
-    updateFilteredFilesNotice(excludedExts);
+    collapseFilteredFiles(excludedExts);
   } else {
-    updateFilteredFilesNotice([]);
+    collapseFilteredFiles([]);
   }
 
   // Try to load saved draft
@@ -2745,10 +2744,39 @@ const NEXT_PR_EDGE_PX = 60; // distance from screen edge (px) that reveals an ar
 
 // Current position within cachedPrList, used to resolve prev/next.
 let currentPrIndex = -1;
+// Navigation history — records recently viewed/reviewed PRs so the back arrow
+// can return to a PR even after it was removed from the pending list (e.g. the
+// one just reviewed). Most recent is at the end. prNavIndex points at current.
+let prNavHistory = [];
+let prNavIndex = -1;
 // Declared here (before the arrow functions reference them) to avoid a
 // temporal-dead-zone error when loadDiff/updatePrArrowStates run early.
 let cachedPrList = null;
 let currentPrNumber = null;
+
+// Record a PR visit in navigation history. Slices off any forward entries if we
+// had navigated back, then appends (or moves) this PR to the end.
+function recordNavVisit(number, repo) {
+  const key = String(number) + ':' + (repo || '');
+  if (prNavHistory.length === 0) {
+    prNavHistory.push({ number, repo });
+    prNavIndex = 0;
+    return;
+  }
+  // If we navigated back, drop forward history.
+  prNavHistory = prNavHistory.slice(0, prNavIndex + 1);
+  const last = prNavHistory[prNavHistory.length - 1];
+  if (last && String(last.number) === String(number) && (last.repo || '') === (repo || '')) {
+    prNavIndex = prNavHistory.length - 1;
+    return;
+  }
+  prNavHistory.push({ number, repo });
+  prNavIndex = prNavHistory.length - 1;
+  if (prNavHistory.length > 100) {
+    prNavHistory = prNavHistory.slice(prNavHistory.length - 100);
+    prNavIndex = prNavHistory.length - 1;
+  }
+}
 
 // ===== Diff loading indicator =====
 function showDiffLoading(text) {
@@ -2759,14 +2787,35 @@ function showDiffLoading(text) {
   el.classList.add('show');
   const dc = document.getElementById('diff-container');
   if (dc) dc.style.display = 'none';
-  const ff = document.getElementById('filtered-files-notice');
-  if (ff) ff.style.display = 'none';
 }
 function hideDiffLoading() {
   const el = document.getElementById('diff-loading');
   if (el) el.classList.remove('show');
   const dc = document.getElementById('diff-container');
   if (dc) dc.style.display = '';
+}
+
+// Show an error in the BODY (main content area) without touching the PR title
+// bar, so the user always knows which PR they were trying to view.
+function showBodyError(message) {
+  const bodyError = document.getElementById('body-error');
+  if (bodyError) {
+    bodyError.innerHTML = `<div class="be-title">Error loading this PR</div><div>${escapeHtml(message)}</div>`;
+    bodyError.style.display = 'block';
+  }
+  hideDiffLoading();
+  const dc = document.getElementById('diff-container');
+  if (dc) dc.style.display = 'none';
+  const emptyState = document.getElementById('empty-state');
+  if (emptyState) emptyState.style.display = 'none';
+  const allDone = document.getElementById('all-done-state');
+  if (allDone) allDone.style.display = 'none';
+  resetButtons();
+}
+
+function clearBodyError() {
+  const bodyError = document.getElementById('body-error');
+  if (bodyError) { bodyError.style.display = 'none'; bodyError.innerHTML = ''; }
 }
 
 // Celebratory screen shown when every PR has been reviewed. Clears the diff and
@@ -2778,11 +2827,9 @@ function showAllDoneState() {
   const es = document.getElementById('empty-state');
   const dc = document.getElementById('diff-container');
   const loading = document.getElementById('diff-loading');
-  const ff = document.getElementById('filtered-files-notice');
   // Clear the previous PR's content
   if (dc) { dc.innerHTML = ''; dc.style.display = 'none'; }
   if (loading) loading.classList.remove('show');
-  if (ff) ff.style.display = 'none';
   if (es) es.style.display = 'none';
   if (ad) ad.style.display = 'flex';
   if (fileSidebarList) fileSidebarList.innerHTML = '';
@@ -2808,19 +2855,39 @@ function currentIndexInList() {
 
 // Enable/disable arrows based on whether a prev/next PR actually exists.
 // Arrows still reveal on edge hover, but appear disabled when at the ends.
+// Consults BOTH navigation history (so back/forward work even after a PR was
+// removed from the pending list, e.g. the one just reviewed) AND the cached
+// pending list (so arrows work before any history exists).
 function updatePrArrowStates() {
   const idx = currentIndexInList();
   const listLen = cachedPrList ? cachedPrList.length : 0;
-  const hasPrev = idx > 0;
-  const hasNext = idx >= 0 && idx < listLen - 1;
-  // Fallback: if the current PR isn't in the list but there are PRs, allow next.
-  const anyNext = listLen > 0 && idx < 0;
+  const hasListPrev = idx > 0;
+  const hasListNext = idx >= 0 && idx < listLen - 1;
+  const anyListNext = listLen > 0 && idx < 0;
+  const hasHistPrev = prNavIndex > 0;
+  const hasHistNext = prNavIndex >= 0 && prNavIndex < prNavHistory.length - 1;
+  const hasPrev = hasHistPrev || hasListPrev;
+  const hasNext = hasHistNext || hasListNext || anyListNext;
   if (prevPrArrow) prevPrArrow.classList.toggle('disabled', !hasPrev);
-  if (nextPrArrow) nextPrArrow.classList.toggle('disabled', !(hasNext || anyNext));
+  if (nextPrArrow) nextPrArrow.classList.toggle('disabled', !hasNext);
 }
 
 function gotoNextPr() {
-  if (!cachedPrList || cachedPrList.length === 0) return;
+  if (prNavIndex >= 0 && prNavIndex < prNavHistory.length - 1) {
+    prNavIndex++;
+    const nextPr = prNavHistory[prNavIndex];
+    showDiffLoading('Loading next PR #' + nextPr.number + '…');
+    loadPrByNumber(nextPr.number, nextPr.repo)
+      .catch(advanceErr => {
+        console.error('[next-pr] Failed to load next PR:', advanceErr);
+        hideDiffLoading();
+        prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
+        resetButtons();
+      });
+    return;
+  }
+  // Fallback: no forward history entry — try the cached pending list
+  if (!cachedPrList || cachedPrList.length === 0) { showToast('No next PR', 'info'); return; }
   const idx = currentIndexInList();
   let nextPr = null;
   if (idx >= 0 && idx < cachedPrList.length - 1) nextPr = cachedPrList[idx + 1];
@@ -2837,7 +2904,21 @@ function gotoNextPr() {
 }
 
 function gotoPrevPr() {
-  if (!cachedPrList || cachedPrList.length === 0) return;
+  if (prNavIndex > 0) {
+    prNavIndex--;
+    const prevPr = prNavHistory[prNavIndex];
+    showDiffLoading('Loading previous PR #' + prevPr.number + '…');
+    loadPrByNumber(prevPr.number, prevPr.repo)
+      .catch(advanceErr => {
+        console.error('[prev-pr] Failed to load previous PR:', advanceErr);
+        hideDiffLoading();
+        prInfo.innerHTML = `<strong style="color:#f85149">Error loading previous PR:</strong> ${escapeHtml(advanceErr.message)}`;
+        resetButtons();
+      });
+    return;
+  }
+  // Fallback: no history — try the cached pending list
+  if (!cachedPrList || cachedPrList.length === 0) { showToast('No previous PR', 'info'); return; }
   const idx = currentIndexInList();
   if (idx <= 0) { showToast('No previous PR', 'info'); return; }
   const prevPr = cachedPrList[idx - 1];
@@ -2908,6 +2989,7 @@ async function loadPrByNumber(prNumber, repoKey) {
           currentPrTitle = prMeta.prTitle || '';
           currentPrNumber = prNumber;
           currentRepoKey = repoKey || null;
+          recordNavVisit(prNumber, repoKey);
           currentPrBody = prMeta.prBody || '';
           document.title = currentPrTitle ? `${currentPrTitle} — PR Reviewer` : `PR Reviewer — PR #${prNumber}`;
           prNumberInput.value = prNumber;
@@ -2934,9 +3016,8 @@ async function loadPrByNumber(prNumber, repoKey) {
     // Phase 2: Load the diff (may be instant from prefetch cache, or 10-30s)
     const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey });
     if (result.error) {
-      prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(result.error)}`;
+      showBodyError(result.error);
       if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
-      resetButtons();
       return;
     }
     currentFileName = result.fileName || `pr-${prNumber}.diff`;
@@ -2952,6 +3033,7 @@ async function loadPrByNumber(prNumber, repoKey) {
     if (!currentPrTitle) currentPrTitle = result.prTitle || '';
     if (!currentPrNumber) currentPrNumber = prNumber;
     if (!currentRepoKey) currentRepoKey = repoKey || null;
+    recordNavVisit(prNumber, repoKey);
     if (!currentPrBody) currentPrBody = result.prBody || '';
 
     // Check for saved PR draft (persists across app restarts)
@@ -3000,9 +3082,8 @@ async function loadPrByNumber(prNumber, repoKey) {
     // Phase 3: Prefetch the next PR in the list
     prefetchNextPr(prNumber, repoKey);
   } catch (err) {
-    prInfo.innerHTML = `<strong style="color:#f85149">Error:</strong> ${escapeHtml(err.message)}`;
+    showBodyError(err.message);
     if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();
-    resetButtons();
   }
 }
 
@@ -3599,8 +3680,13 @@ const originalLoadDiff = typeof loadDiff !== 'undefined' ? loadDiff : null;
 function renderFilteredDiff() {
   if (!currentDiffContent) return;
 
-  // Always render ALL files — sorted by extension
-  const sortedDiff = sortDiffByExtension(currentDiffContent);
+  // Determine which extensions are excluded (before sorting so filtered files
+  // are pushed to the bottom)
+  const allExts = extractExtensionsFromDiff(currentDiffContent);
+  const excludedExts = activeExtensions ? allExts.filter(e => !activeExtensions.includes(e)) : [];
+
+  // Always render ALL files — sorted by extension, filtered-out extensions last
+  const sortedDiff = sortDiffByExtension(currentDiffContent, excludedExts);
 
   // Use diff2html to render everything — pass window.hljs for syntax highlighting
   const diff2htmlUi = new Diff2HtmlUI(document.getElementById('diff-container'), sortedDiff, {
@@ -3626,74 +3712,8 @@ function renderFilteredDiff() {
   populateFileSidebar();
   addContextButtons();
 
-  // Determine which extensions are excluded
-  const allExts = extractExtensionsFromDiff(currentDiffContent);
-  const excludedExts = activeExtensions ? allExts.filter(e => !activeExtensions.includes(e)) : [];
-
-  // Collapse filtered-out file wrappers
-  if (excludedExts.length > 0) {
-    collapseFilteredFiles(excludedExts);
-  }
-  updateFilteredFilesNotice(excludedExts);
-}
-
-// Show (or hide) a notice in the main content area when the extension filter
-// hides some or all of the files in the diff. This prevents the confusing case
-// where a diff appears empty simply because its file types were filtered out.
-function updateFilteredFilesNotice(excludedExts) {
-  const notice = document.getElementById('filtered-files-notice');
-  if (!notice) return;
-  if (!currentDiffContent) { notice.style.display = 'none'; notice.innerHTML = ''; return; }
-
-  const exts = Array.isArray(excludedExts) ? excludedExts : [];
-  if (exts.length === 0) {
-    notice.style.display = 'none';
-    notice.innerHTML = '';
-    return;
-  }
-
-  // Count wrappers hidden by the filter
-  const wrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
-  let total = 0, hidden = 0;
-  wrappers.forEach(w => {
-    total++;
-    if (w.style.display === 'none') hidden++;
-  });
-
-  // If nothing is actually hidden (e.g. filter no longer matches), hide the notice.
-  if (hidden === 0) {
-    notice.style.display = 'none';
-    notice.innerHTML = '';
-    return;
-  }
-
-  const extLabels = exts.map(e => `<code>${escapeHtml(e)}</code>`).join(', ');
-  const allHidden = hidden >= total && total > 0;
-  const title = allHidden
-    ? 'All files in this diff are filtered out'
-    : `${hidden} of ${total} files are hidden by the file filter`;
-  const plural = exts.length !== 1;
-  const msg = `Files with extension${plural ? 's' : ''} ${extLabels} are not shown because they're filtered out in the Files Changed panel.`;
-
-  notice.innerHTML = `
-    <div class="ffn-title">${title}</div>
-    <div class="ffn-muted">${msg}</div>
-    <button id="ffn-show-all">Show all files</button>
-  `;
-  notice.style.display = 'block';
-
-  const btn = notice.querySelector('#ffn-show-all');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      // Reset the extension filter to show everything
-      const checkboxes = document.querySelectorAll('#filter-list input[type="checkbox"]');
-      checkboxes.forEach(cb => { cb.checked = true; });
-      activeExtensions = null;
-      saveActiveExtensions();
-      updateFilterButtonState();
-      renderFilteredDiff();
-    });
-  }
+  // Collapse filtered-out file wrappers (collapsed by default, expandable each)
+  collapseFilteredFiles(excludedExts);
 }
 
 /**
@@ -3813,10 +3833,33 @@ function collapseFilteredFiles(excludedExts) {
     if (!fileNameEl) continue;
     const fileName = fileNameEl.textContent.trim();
     const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
-    if (!excludedExts.includes(ext)) continue;
+    const isExcluded = excludedExts.includes(ext);
 
-    // Hide the entire file wrapper
-    wrapper.style.display = 'none';
+    // Non-excluded files: ensure they're expanded and don't have a stale toggle.
+    if (!isExcluded) {
+      wrapper.classList.remove('filtered-collapsed');
+      const existingToggle = wrapper.querySelector('.filtered-collapse-toggle');
+      if (existingToggle) existingToggle.remove();
+      continue;
+    }
+
+    // Collapse the diff body but keep the file header visible. Add a toggle
+    // button to the header so the user can expand this file individually.
+    wrapper.classList.add('filtered-collapsed');
+    const header = wrapper.querySelector('.d2h-file-header');
+    if (header && !header.querySelector('.filtered-collapse-toggle')) {
+      const toggle = document.createElement('button');
+      toggle.className = 'filtered-collapse-toggle';
+      toggle.title = 'Expand file';
+      toggle.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4.5 6.25a.75.75 0 011.06 0L8 8.69l2.44-2.44a.75.75 0 111.06 1.06L8 10.81 4.5 7.31a.75.75 0 010-1.06z"/></svg>';
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const collapsed = wrapper.classList.toggle('filtered-collapsed');
+        toggle.classList.toggle('expanded', !collapsed);
+        toggle.title = collapsed ? 'Expand file' : 'Collapse file';
+      });
+      header.insertBefore(toggle, header.firstChild);
+    }
   }
 }
 
@@ -3834,13 +3877,19 @@ function getName(fileBlock) {
   return match ? match[1] : '';
 }
 
-// Sort diff content by file extension, then by name
-function sortDiffByExtension(diffContent) {
+// Sort diff content by file extension, then by name. If excludedExts is
+// provided, files with those extensions are pushed to the END (still sorted by
+// extension then name within each group) so filtered-out files appear last.
+function sortDiffByExtension(diffContent, excludedExts) {
   if (!diffContent || !diffContent.includes('diff --git')) return diffContent;
   const files = diffContent.split(/^diff --git /m);
   const validFiles = files.filter(f => f.trim());
+  const excluded = Array.isArray(excludedExts) ? excludedExts : [];
 
+  const groupOf = (f) => excluded.includes(getExt(f)) ? 1 : 0;
   validFiles.sort((a, b) => {
+    const ga = groupOf(a), gb = groupOf(b);
+    if (ga !== gb) return ga - gb; // excluded last
     const extA = getExt(a);
     const extB = getExt(b);
     if (extA !== extB) return extA.localeCompare(extB);

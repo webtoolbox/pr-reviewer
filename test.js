@@ -4,7 +4,7 @@ const fs = require('fs');
 
 let mainWindow;
 let testResults = [];
-let testDiffPath = process.argv[2] || '/tmp/test-full.diff';
+let testDiffPath = process.argv[2] || path.join(__dirname, 'fixtures', 'test-full.diff');
 
 function log(msg) {
   console.log(`[TEST] ${msg}`);
@@ -1655,27 +1655,52 @@ async function runTests() {
   `);
   assert('Inter-hunk expand does not duplicate first-hunk top button', interHunkNoFirstDup === 'ok', `result: ${interHunkNoFirstDup}`);
 
-  // TEST: Filtered-files notice appears when files are hidden by the extension filter
-  const filteredNotice = await mainWindow.webContents.executeJavaScript(`
+  // TEST: Filtered-out files are collapsed (not hidden) with an individual expand toggle
+  const filteredCollapse = await mainWindow.webContents.executeJavaScript(`
     (() => {
-      if (typeof updateFilteredFilesNotice !== 'function') return 'no-fn';
-      const notice = document.getElementById('filtered-files-notice');
-      if (!notice) return 'no-element';
-      // Hide a real wrapper to simulate the extension filter hiding .pm files
-      const wrapper = document.querySelector('.d2h-file-wrapper');
-      if (wrapper) wrapper.style.display = 'none';
-      updateFilteredFilesNotice(['.pm']);
-      const shown = notice.style.display === 'block';
-      const hasTitle = notice.innerHTML.includes('filtered out');
-      const hasButton = notice.querySelector('#ffn-show-all') !== null;
-      // Now clear it
-      updateFilteredFilesNotice([]);
-      const hidden = notice.style.display === 'none';
-      if (wrapper) wrapper.style.display = '';
-      return (shown && hasTitle && hasButton && hidden) ? 'ok' : 'bad';
+      if (typeof collapseFilteredFiles !== 'function') return 'no-fn';
+      if (typeof sortDiffByExtension !== 'function') return 'no-sort-fn';
+      // collapseFilteredFiles([]) should not collapse any wrapper
+      collapseFilteredFiles([]);
+      const allExpanded = document.querySelectorAll('.d2h-file-wrapper.filtered-collapsed').length === 0;
+      // Simulate filtering out .pm files — those wrappers should get the collapse
+      // class and a toggle, while the whole wrapper is NOT display:none.
+      collapseFilteredFiles(['.pm']);
+      const pmWrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper')).filter(w => {
+        const n = w.querySelector('.d2h-file-name');
+        return n && n.textContent.trim().endsWith('.pm');
+      });
+      const nonPmWrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper')).filter(w => {
+        const n = w.querySelector('.d2h-file-name');
+        return n && !n.textContent.trim().endsWith('.pm');
+      });
+      const pmCollapsed = pmWrappers.length > 0 && pmWrappers.every(w =>
+        w.classList.contains('filtered-collapsed') && w.style.display !== 'none' &&
+        w.querySelector('.filtered-collapse-toggle') !== null
+      );
+      const nonPmVisible = nonPmWrappers.length > 0 && nonPmWrappers.every(w =>
+        !w.classList.contains('filtered-collapsed')
+      );
+      // Reset
+      collapseFilteredFiles([]);
+      return (allExpanded && pmCollapsed && nonPmVisible) ? 'ok' : 'bad';
     })()
   `);
-  assert('Filtered-files notice shows/hides with extension filter', filteredNotice === 'ok', `result: ${filteredNotice}`);
+  assert('Filtered-out files collapse individually (not hide) with toggle', filteredCollapse === 'ok', `result: ${filteredCollapse}`);
+
+  // TEST: sortDiffByExtension pushes filtered-out extensions to the end
+  const sortExcludedLast = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const diff = 'diff --git a/a.js b/a.js\\n@@ -1 +1 @@\\n-a\\n+b\\ndiff --git a/b.json b/b.json\\n@@ -1 +1 @@\\n-a\\n+b\\ndiff --git a/c.pm b/c.pm\\n@@ -1 +1 @@\\n-a\\n+b';
+      const sorted = sortDiffByExtension(diff, ['.json']);
+      const jsPos = sorted.indexOf('a/a.js');
+      const jsonPos = sorted.indexOf('b.json');
+      const pmPos = sorted.indexOf('c.pm');
+      // .js and .pm (not excluded) come before .json (excluded)
+      return (jsPos >= 0 && pmPos >= 0 && jsonPos > jsPos && jsonPos > pmPos) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('sortDiffByExtension puts filtered-out extensions last', sortExcludedLast === 'ok', `result: ${sortExcludedLast}`);
 
   // TEST: Sidebar lists all files regardless of extension filter (PR 6460 fix)
   const sidebarListsAll = await mainWindow.webContents.executeJavaScript(`
@@ -1842,16 +1867,48 @@ async function runTests() {
   const arrowDisabledTest = await mainWindow.webContents.executeJavaScript(`
     (() => {
       if (typeof updatePrArrowStates !== 'function') return 'no-fn';
+      // Reset nav history so the arrows reflect the pending list only
+      prNavHistory = [];
+      prNavIndex = -1;
       // Simulate a list of 2 PRs with the first one current → prev disabled, next enabled
       cachedPrList = [{number: 1, repo:'default'}, {number: 2, repo:'default'}];
       currentPrNumber = 1;
       updatePrArrowStates();
       const prevDisabled = document.getElementById('prev-pr-arrow').classList.contains('disabled');
       const nextEnabled = !document.getElementById('next-pr-arrow').classList.contains('disabled');
+      // Restore a sane default for downstream tests
+      prNavHistory = [];
+      prNavIndex = -1;
       return (prevDisabled && nextEnabled) ? 'ok' : 'bad';
     })()
   `);
   assert('Arrows disable at ends of list', arrowDisabledTest === 'ok', `result: ${arrowDisabledTest}`);
+
+  // TEST: Navigation history — back arrow returns to a just-reviewed PR even
+  // after it's removed from the pending list
+  const navHistoryTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof recordNavVisit !== 'function') return 'no-fn';
+      if (typeof gotoPrevPr !== 'function') return 'no-goto-fn';
+      // Simulate: user viewed #101, then #102 (which then got reviewed & removed)
+      prNavHistory = [];
+      prNavIndex = -1;
+      recordNavVisit(101, 'default');
+      recordNavVisit(102, 'default');
+      const histLen = prNavHistory.length;
+      const idx102 = prNavIndex;
+      // Now #102 is removed from the pending list, but back should still work
+      cachedPrList = [{number: 101, repo: 'default'}];
+      currentPrNumber = 102;
+      updatePrArrowStates();
+      const prevEnabled = !document.getElementById('prev-pr-arrow').classList.contains('disabled');
+      // gotoPrevPr should navigate to #101 (history entry), not fail
+      const goToPrev = gotoPrevPr.toString();
+      const usesHistory = goToPrev.includes('prNavHistory') || goToPrev.includes('prNavIndex');
+      return (histLen === 2 && idx102 === 1 && prevEnabled && usesHistory) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Nav history keeps back arrow working after review removal', navHistoryTest === 'ok', `result: ${navHistoryTest}`);
 
   // TEST: All-done state shows celebratory screen and clears the diff
   const allDoneTest = await mainWindow.webContents.executeJavaScript(`
@@ -1967,16 +2024,17 @@ async function runTests() {
   `);
   assert('loadDiff and resetButtons functions exist', loadDiffResetsButtons === 'ok', `result: ${loadDiffResetsButtons}`);
 
-  // TEST: loadPrByNumber re-enables buttons on error
+  // TEST: loadPrByNumber routes errors to showBodyError (resets buttons internally)
   const loadPrResetsOnError = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const src = loadPrByNumber.toString();
-      // Should have resetButtons in the function body (error + catch paths)
-      const resetCount = (src.match(/resetButtons\\(\\)/g) || []).length;
-      return resetCount >= 2 ? 'ok' : 'missing';
+      // Error paths should call showBodyError (which resets buttons) in both the
+      // IPC-error block and the outer catch block.
+      const bodyErrorCount = (src.match(/showBodyError\\(/g) || []).length;
+      return bodyErrorCount >= 2 ? 'ok' : 'missing';
     })()
   `);
-  assert('loadPrByNumber calls resetButtons() on error paths', loadPrResetsOnError === 'ok', `result: ${loadPrResetsOnError}`);
+  assert('loadPrByNumber routes errors to showBodyError (resets buttons)', loadPrResetsOnError === 'ok', `result: ${loadPrResetsOnError}`);
 
   // Close PR dropdown
   await mainWindow.webContents.executeJavaScript(`

@@ -133,10 +133,11 @@ function computeDiffPositions(diffContent) {
   return map;
 }
 
-function sortDiffByExtension(diffContent) {
+function sortDiffByExtension(diffContent, excludedExts) {
   if (!diffContent || !diffContent.includes('diff --git')) return diffContent;
   const files = diffContent.split(/^diff --git /m);
   const validFiles = files.filter(f => f.trim());
+  const excluded = Array.isArray(excludedExts) ? excludedExts : [];
 
   function getExt(fileBlock) {
     const match = fileBlock.split('\n')[0].match(/a\/(.+?) b\//);
@@ -150,7 +151,10 @@ function sortDiffByExtension(diffContent) {
     return match ? match[1] : '';
   }
 
+  const groupOf = (f) => excluded.includes(getExt(f)) ? 1 : 0;
   validFiles.sort((a, b) => {
+    const ga = groupOf(a), gb = groupOf(b);
+    if (ga !== gb) return ga - gb; // excluded last
     const extA = getExt(a);
     const extB = getExt(b);
     if (extA !== extB) return extA.localeCompare(extB);
@@ -777,6 +781,35 @@ diff --git a/a/file.js b/a/file.js
 +d`;
     const sorted = sortDiffByExtension(diff);
     expect(sorted.indexOf('a/a/file.js')).toBeLessThan(sorted.indexOf('a/z/file.js'));
+  });
+
+  test('pushes excluded extensions to the end', () => {
+    const diff = `diff --git a/a.js b/a.js
+--- a/a.js
++++ b/a.js
+@@ -1 +1 @@
+-a
++b
+diff --git a/b.json b/b.json
+--- a/b.json
++++ b/b.json
+@@ -1 +1 @@
+-c
++d
+diff --git a/c.pm b/c.pm
+--- a/c.pm
++++ b/c.pm
+@@ -1 +1 @@
+-e
++f`;
+    const sorted = sortDiffByExtension(diff, ['.json']);
+    const jsPos = sorted.indexOf('a/a.js');
+    const jsonPos = sorted.indexOf('b.json');
+    const pmPos = sorted.indexOf('c.pm');
+    expect(jsPos).toBeGreaterThanOrEqual(0);
+    expect(pmPos).toBeGreaterThanOrEqual(0);
+    expect(jsonPos).toBeGreaterThan(jsPos);
+    expect(jsonPos).toBeGreaterThan(pmPos);
   });
 });
 
@@ -2567,15 +2600,15 @@ describe('Auto-advance after approve', () => {
     expect(invalidCheck[0]).toContain('resetButtons()');
   });
 
-  test('loadPrByNumber calls resetButtons() on IPC error path', () => {
+  test('loadPrByNumber routes IPC errors to showBodyError (not the title bar)', () => {
     const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey)');
     // Find the result.error block — use a broader search for the block
     const errorIdx = rendererSource.indexOf('if (result.error)', loadPrStart);
     expect(errorIdx).toBeGreaterThan(-1);
-    // Look for resetButtons() between here and the next 'return;'
+    // Look for showBodyError between here and the next 'return;'
     const returnIdx = rendererSource.indexOf('return;', errorIdx);
     const errorBlock = rendererSource.substring(errorIdx, returnIdx);
-    expect(errorBlock).toContain('resetButtons()');
+    expect(errorBlock).toContain('showBodyError(');
   });
 
   test('loadPrByNumber calls resetButtons() in catch block', () => {
@@ -2590,7 +2623,7 @@ describe('Auto-advance after approve', () => {
     const catchEnd = rendererSource.indexOf('\n  }', catchIdx + 10);
     const catchBlock = rendererSource.substring(catchIdx, catchEnd + 4);
 
-    expect(catchBlock).toContain('resetButtons()');
+    expect(catchBlock).toContain('showBodyError(');
   });
 
   test('submitReview auto-advance clears reviewBody before loading next PR', () => {

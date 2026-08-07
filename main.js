@@ -860,12 +860,16 @@ async function generateDiff(prNumber, repoKey) {
   const unifiedDiffFiles = new Set();
   for (const line of (diffOut || '').split('\n')) {
     if (line.startsWith('diff --git ')) {
-      const match = line.match(/b\/(.+)$/);
-      if (match) unifiedDiffFiles.add(match[1]);
+      const match = line.match(/diff --git a\/(.+?) b\/(.+)$/);
+      if (match) unifiedDiffFiles.add(match[2]);
     }
   }
 
-  // If reviewing since last review, use git diff for only the files changed after review
+  // If reviewing since last review, show the NET diff (base..head) for only the
+  // files changed after the review. A single git diff between base and head
+  // matches GitHub exactly — intermediate per-commit states (e.g. a placeholder
+  // added in one commit and removed in the next) cancel out instead of being
+  // shown as spurious diff lines.
   if (reviewInfo && baseSha && headSha) {
     try {
       // Get files changed by PR commits after the review (non-merge commits only).
@@ -897,115 +901,20 @@ async function generateDiff(prNumber, repoKey) {
         }
 
         if (changedSinceReview.size > 0) {
-          // Diff each non-merge commit individually to exclude merged master changes
-          // (read-only git ops — safe to run in parallel, bounded concurrency)
-          const commitDiffs = await mapLimit(afterReview, 4, async (c) => {
-            try {
-              return await execPromise(
-                `git diff ${c.sha}^..${c.sha}`,
-                { cwd: repoPath, timeout: 15000 }
-              );
-            } catch { return ''; }
-          });
-          const diffs = commitDiffs.filter(d => d);
-          if (diffs.length > 0) {
-            // Merge hunks for the same file so each file appears only once
-            const combined = diffs.join('\n');
-            const fileDiffs = {};
-            let currentFile = null;
-            let currentHeader = [];
-            let currentHunks = [];
-            let inHeader = false;
-
-            for (const line of combined.split('\n')) {
-              if (line.startsWith('diff --git ')) {
-                // Save previous file
-                if (currentFile && currentHeader.length > 0) {
-                  if (!fileDiffs[currentFile]) {
-                    fileDiffs[currentFile] = { header: currentHeader, hunks: [] };
-                  }
-                  fileDiffs[currentFile].hunks.push(...currentHunks);
-                }
-                // Extract file path from "diff --git a/path b/path"
-                const m = line.match(/diff --git a\/(.+?) b\/(.+?)$/);
-                currentFile = m ? m[2] : line;
-                currentHeader = [line];
-                currentHunks = [];
-                inHeader = true;
-              } else if (inHeader && (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ '))) {
-                // Use the latest --- and +++ lines (from last commit)
-                if (line.startsWith('--- ')) {
-                  currentHeader = currentHeader.filter(l => !l.startsWith('--- '));
-                  currentHeader.push(line);
-                } else if (line.startsWith('+++ ')) {
-                  currentHeader = currentHeader.filter(l => !l.startsWith('+++ '));
-                  currentHeader.push(line);
-                } else {
-                  currentHeader.push(line);
-                }
-              } else if (line.startsWith('@@ ')) {
-                inHeader = false;
-                currentHunks.push(line);
-              } else if (!inHeader) {
-                // Hunk content line
-                if (currentHunks.length > 0) {
-                  currentHunks.push(line);
-                }
-              }
-            }
-            // Save last file
-            if (currentFile && currentHeader.length > 0) {
-              if (!fileDiffs[currentFile]) {
-                fileDiffs[currentFile] = { header: currentHeader, hunks: [] };
-              }
-              fileDiffs[currentFile].hunks.push(...currentHunks);
-            }
-
-            // Reassemble: header + sorted hunks for each file
-            const merged = [];
-            for (const [path, data] of Object.entries(fileDiffs)) {
-              // Sort hunks by the line number in the @@ header
-              const hunkBlocks = [];
-              let currentBlock = [];
-              for (const line of data.hunks) {
-                if (line.startsWith('@@ ')) {
-                  if (currentBlock.length > 0) hunkBlocks.push(currentBlock);
-                  currentBlock = [line];
-                } else {
-                  currentBlock.push(line);
-                }
-              }
-              if (currentBlock.length > 0) hunkBlocks.push(currentBlock);
-              // Sort by the new-file start line number in @@ -a,b +c,d @@
-              hunkBlocks.sort((a, b) => {
-                const mA = a[0].match(/@@ -(\d+)(?:,\d+)? \+(\d+)/);
-                const mB = b[0].match(/@@ -(\d+)(?:,\d+)? \+(\d+)/);
-                return (mA ? parseInt(mA[2]) : 0) - (mB ? parseInt(mB[2]) : 0);
-              });
-              merged.push(data.header.join('\n'));
-              for (const block of hunkBlocks) {
-                merged.push(block.join('\n'));
-              }
-            }
-            diffOut = merged.join('\n');
-            log('INFO', `[generateDiff] Combined ${diffs.length} commit diffs into ${Object.keys(fileDiffs).length} files`);
-
-            // Filter out files that don't appear in gh pr diff
-            // (modified then reverted — net zero change)
-            if (unifiedDiffFiles.size > 0) {
-              const sections = diffOut.split(/^(?=diff --git )/m);
-              const filtered = sections.filter(section => {
-                const match = section.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
-                if (!match) return true; // Keep preamble
-                const filePath = match[2];
-                if (!unifiedDiffFiles.has(filePath)) {
-                  log('INFO', `[generateDiff] Filtering out ${filePath} — not in unified diff (reverted)`);
-                  return false;
-                }
-                return true;
-              });
-              diffOut = filtered.join('');
-              log('INFO', `[generateDiff] After filtering: ${unifiedDiffFiles.size} files in unified diff`);
+          // Build one net diff from base..head for exactly the files changed after
+          // the review. This excludes unrelated merged-master files while showing
+          // the true net change for each touched file (matching GitHub).
+          const fileList = Array.from(changedSinceReview)
+            .filter(f => !unifiedDiffFiles.size || unifiedDiffFiles.has(f))
+            .join(' ');
+          if (fileList.trim()) {
+            const netDiff = await execPromise(
+              `git diff ${baseSha}..${headSha} -- ${fileList}`,
+              { cwd: repoPath, timeout: 30000 }
+            ).catch(() => '');
+            if (netDiff && netDiff.trim()) {
+              diffOut = netDiff;
+              log('INFO', `[generateDiff] Using net base..head diff for ${changedSinceReview.size} file(s) changed since review`);
             }
           }
         }
@@ -1865,9 +1774,9 @@ function computePositionsFromDiff(diffContent) {
 
   for (const line of lines) {
     if (line.startsWith('diff --git')) {
-      const match = line.match(/b\/(.+)$/);
+      const match = line.match(/diff --git a\/(.+?) b\/(.+)$/);
       if (match) {
-        currentFile = match[1];
+        currentFile = match[2];
         inHeaders = true;
         position = 0;
         leftLine = 0;
