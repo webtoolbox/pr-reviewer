@@ -453,14 +453,14 @@
 
     /* Empty state */
     #empty-state {
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: calc(100vh - var(--review-bar-height, 52px)); color: #8b949e; font-size: 16px; gap: 12px;
+      display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100%; color: #8b949e; font-size: 16px; gap: 12px;
     }
 
     /* All-done state — celebratory screen when every PR has been reviewed */
     #all-done-state {
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: calc(100vh - var(--review-bar-height, 52px)); color: #8b949e; font-size: 16px; gap: 12px;
+      display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100%; color: #8b949e; font-size: 16px; gap: 12px;
     }
     .all-done-title { font-size: 22px; font-weight: 600; color: #c9d1d9; }
     #all-done-state .hint { font-size: 13px; color: #484f58; }
@@ -1849,25 +1849,6 @@
   </div>
 
   <div id="content">
-    <div id="empty-state">
-      <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#30363d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:16px">
-        <path d="M15 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7z"/>
-        <path d="M14 2v4a2 2 0 002 2h4"/>
-        <path d="M10 13H8"/>
-        <path d="M16 17H8"/>
-        <path d="M16 13h-2"/>
-      </svg>
-      <div style="color:#484f58;font-size:16px;font-weight:500">Select a pull request to review</div>
-      <div class="hint">Click the ▾ button or enter a PR number above</div>
-    </div>
-    <div id="all-done-state" style="display:none">
-      <svg class="all-done-check" width="96" height="96" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10" class="all-done-circle"/>
-        <path d="M7 12.5l3.2 3.2L17.5 8.5" class="all-done-checkmark"/>
-      </svg>
-      <div class="all-done-title">All caught up!</div>
-      <div class="hint">No more pull requests to review. Great work.</div>
-    </div>
     <div id="file-sidebar">
       <div id="file-sidebar-header">
         <span>Files Changed</span>
@@ -1882,6 +1863,25 @@
       <div id="file-sidebar-list"></div>
     </div>
     <div id="main-content" style="flex:1;min-width:0;display:flex;flex-direction:column;">
+      <div id="empty-state">
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#30363d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:16px">
+          <path d="M15 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7z"/>
+          <path d="M14 2v4a2 2 0 002 2h4"/>
+          <path d="M10 13H8"/>
+          <path d="M16 17H8"/>
+          <path d="M16 13h-2"/>
+        </svg>
+        <div style="color:#484f58;font-size:16px;font-weight:500">Select a pull request to review</div>
+        <div class="hint">Click the ▾ button or enter a PR number above</div>
+      </div>
+      <div id="all-done-state" style="display:none">
+        <svg class="all-done-check" width="96" height="96" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" class="all-done-circle"/>
+          <path d="M7 12.5l3.2 3.2L17.5 8.5" class="all-done-checkmark"/>
+        </svg>
+        <div class="all-done-title">All caught up!</div>
+        <div class="hint">No more pull requests to review. Great work.</div>
+      </div>
       <div id="diff-loading">
         <div class="diff-loading-inner">
           <svg class="diff-loading-spinner" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">

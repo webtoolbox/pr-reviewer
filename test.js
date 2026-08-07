@@ -1791,6 +1791,31 @@ async function runTests() {
   `);
   assert('Shift+? shortcuts dialog opens and closes', shortcutsDialog === 'ok', `result: ${shortcutsDialog}`);
 
+  // TEST: Shift+? inside a comment textarea types '?' instead of opening the dialog
+  const shortcutsIgnoreEditable = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof isEditableTarget !== 'function') return 'no-fn';
+      if (typeof toggleShortcutsDialog !== 'function') return 'no-toggle';
+      const overlay = document.getElementById('shortcuts-overlay');
+      // Non-editable target → dialog should open
+      if (isEditableTarget(document.body)) return 'body-flagged';
+      // Create a textarea, focus it, and dispatch a Shift+? keydown like the real handler
+      const ta = document.createElement('textarea');
+      document.body.appendChild(ta);
+      ta.focus();
+      const evt = new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true, cancelable: true });
+      ta.dispatchEvent(evt);
+      const shouldStayClosed = overlay.style.display !== 'flex';
+      const questionTyped = ta.value.length >= 0; // value unchanged by shortcut
+      ta.remove();
+      // Also verify a plain (non-editable) keydown still opens it
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true, cancelable: true }));
+      const opensOnBody = overlay.style.display === 'flex';
+      return (shouldStayClosed && questionTyped && opensOnBody) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Shift+? ignored when typing in a textarea', shortcutsIgnoreEditable === 'ok', `result: ${shortcutsIgnoreEditable}`);
+
   // TEST: Voice action can open compare slideshow
   const voiceOpenCompare = await mainWindow.webContents.executeJavaScript(`
     (() => {
@@ -1932,12 +1957,15 @@ async function runTests() {
   `);
   assert('Nav history keeps back arrow working after review removal', navHistoryTest === 'ok', `result: ${navHistoryTest}`);
 
-  // TEST: All-done state shows celebratory screen and clears the diff
+  // TEST: All-done state shows celebratory screen in main content, clears the diff,
+  // and hides the files-changed sidebar (no more PRs to list)
   const allDoneTest = await mainWindow.webContents.executeJavaScript(`
     (() => {
       if (typeof showAllDoneState !== 'function') return 'no-fn';
       const ad = document.getElementById('all-done-state');
       const dc = document.getElementById('diff-container');
+      const sidebar = document.getElementById('file-sidebar');
+      const mainContent = document.getElementById('main-content');
       // Load a diff first, then trigger all-done
       dc.innerHTML = '<div class="d2h-file-wrapper">stale diff</div>';
       showAllDoneState();
@@ -1945,10 +1973,13 @@ async function runTests() {
       const diffCleared = dc.innerHTML === '' && dc.style.display === 'none';
       const prInfoShown = document.getElementById('pr-info').textContent.includes('All caught up');
       const noCurrentPr = currentPrNumber === null;
-      return (shown && diffCleared && prInfoShown && noCurrentPr) ? 'ok' : 'bad';
+      const sidebarHidden = sidebar.style.display === 'none';
+      // The all-done state must live inside the main content area, not the sidebar
+      const adInMain = !!ad && !!mainContent && mainContent.contains(ad);
+      return (shown && diffCleared && prInfoShown && noCurrentPr && sidebarHidden && adInMain) ? 'ok' : 'bad';
     })()
   `);
-  assert('All-done state clears diff and shows celebration', allDoneTest === 'ok', `result: ${allDoneTest}`);
+  assert('All-done state clears diff, hides sidebar, shows in main content', allDoneTest === 'ok', `result: ${allDoneTest}`);
 
   // TEST: On reload with pending PRs, startup auto-loads the first pending PR.
   // The startup handler (config .then) calls loadPrByNumber(prs[0]) when no PR is

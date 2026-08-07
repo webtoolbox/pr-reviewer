@@ -2233,13 +2233,26 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Shift+? — show keyboard shortcuts dialog (with the meta modifier absent)
-  if (key === '?' && !isMeta) {
+  // Shift+? — show keyboard shortcuts dialog (with the meta modifier absent).
+  // Skip when typing in an editable field so '?' works normally in comments.
+  if (key === '?' && !isMeta && !isEditableTarget(e.target)) {
     e.preventDefault();
     toggleShortcutsDialog();
     return;
   }
 });
+
+// True when the keydown target is an editable element (input, textarea, or
+// contenteditable) — used to keep plain-character shortcuts from firing while
+// the user is typing.
+function isEditableTarget(target) {
+  if (!target) return false;
+  if (target.closest) {
+    const t = target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]');
+    if (t) return true;
+  }
+  return target.isContentEditable === true;
+}
 
 // Drag and drop
 document.addEventListener('dragover', (e) => {
@@ -2881,6 +2894,8 @@ function showAllDoneState() {
   if (es) es.style.display = 'none';
   if (ad) ad.style.display = 'flex';
   if (fileSidebarList) fileSidebarList.innerHTML = '';
+  // No more PRs → hide the files-changed sidebar entirely (nothing to list)
+  if (fileSidebar) fileSidebar.style.display = 'none';
   // Hide the review buttons + PR comment icon — there's no PR to act on
   if (btnPrComment) btnPrComment.style.display = 'none';
   if (btnApprove) btnApprove.style.display = 'none';
