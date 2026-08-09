@@ -516,14 +516,16 @@
     .d2h-file-wrapper.filtered-collapsed .context-expand-btn {
       display: none !important;
     }
-    .filtered-collapse-toggle {
+    /* Expand/collapse toggle on every file header. When collapsed, the chevron
+       rotates to point right (expanded) — clicking collapses/expands the file. */
+    .file-collapse-toggle {
       background: none; border: none; cursor: pointer; color: #8b949e;
       display: inline-flex; align-items: center; justify-content: center;
       padding: 2px 6px; margin-right: 4px; flex-shrink: 0;
       transition: color 0.15s, transform 0.15s;
     }
-    .filtered-collapse-toggle:hover { color: #c9d1d9; }
-    .filtered-collapse-toggle.expanded svg { transform: rotate(180deg); }
+    .file-collapse-toggle:hover { color: #c9d1d9; }
+    .file-collapse-toggle.collapsed svg { transform: rotate(-90deg); }
 
     /* Load error shown in the body (never in the PR title bar). */
     #body-error {

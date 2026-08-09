@@ -1686,8 +1686,10 @@ async function runTests() {
       collapseFilteredFiles([]);
       const allExpanded = document.querySelectorAll('.d2h-file-wrapper.filtered-collapsed').length === 0;
       // Simulate filtering out .pm files — those wrappers should get the collapse
-      // class and a toggle, while the whole wrapper is NOT display:none.
+      // class and a toggle (added by addFileCollapseToggles), while the whole
+      // wrapper is NOT display:none.
       collapseFilteredFiles(['.pm']);
+      if (typeof addFileCollapseToggles === 'function') addFileCollapseToggles();
       const pmWrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper')).filter(w => {
         const n = w.querySelector('.d2h-file-name');
         return n && n.textContent.trim().endsWith('.pm');
@@ -1698,17 +1700,47 @@ async function runTests() {
       });
       const pmCollapsed = pmWrappers.length > 0 && pmWrappers.every(w =>
         w.classList.contains('filtered-collapsed') && w.style.display !== 'none' &&
-        w.querySelector('.filtered-collapse-toggle') !== null
+        w.querySelector('.file-collapse-toggle') !== null
       );
       const nonPmVisible = nonPmWrappers.length > 0 && nonPmWrappers.every(w =>
         !w.classList.contains('filtered-collapsed')
       );
       // Reset
       collapseFilteredFiles([]);
+      if (typeof addFileCollapseToggles === 'function') addFileCollapseToggles();
       return (allExpanded && pmCollapsed && nonPmVisible) ? 'ok' : 'bad';
     })()
   `);
   assert('Filtered-out files collapse individually (not hide) with toggle', filteredCollapse === 'ok', `result: ${filteredCollapse}`);
+
+  // TEST: Every file header has an expand/collapse toggle; clicking it collapses
+  // and expands that file's diff section.
+  const collapseToggle = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof addFileCollapseToggles !== 'function') return 'no-fn';
+      // Give each wrapper a clean expanded state and add toggles to all headers
+      document.querySelectorAll('.d2h-file-wrapper').forEach(w => w.classList.remove('filtered-collapsed'));
+      collapsedFiles.clear();
+      addFileCollapseToggles();
+      const wrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper'));
+      if (wrappers.length === 0) return 'no-wrappers';
+      // Every header should have exactly one toggle
+      const toggles = wrappers.map(w => w.querySelector('.file-collapse-toggle')).filter(Boolean);
+      if (toggles.length !== wrappers.length) return 'toggle-count:' + toggles.length + '/' + wrappers.length;
+      // Click the first toggle: the file should collapse and the set should update
+      const first = wrappers[0];
+      const firstName = first.querySelector('.d2h-file-name').textContent.trim();
+      toggles[0].click();
+      const collapsedAfterClick = first.classList.contains('filtered-collapsed') && collapsedFiles.has(firstName);
+      // Click again: the file should expand and be removed from the set
+      first.querySelector('.file-collapse-toggle').click();
+      const expandedAfterClick = !first.classList.contains('filtered-collapsed') && !collapsedFiles.has(firstName);
+      // Other files must remain expanded
+      const othersExpanded = wrappers.slice(1).every(w => !w.classList.contains('filtered-collapsed'));
+      return (collapsedAfterClick && expandedAfterClick && othersExpanded) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Every file header has a working expand/collapse toggle', collapseToggle === 'ok', `result: ${collapseToggle}`);
 
   // TEST: sortDiffByExtension pushes filtered-out extensions to the end
   const sortExcludedLast = await mainWindow.webContents.executeJavaScript(`

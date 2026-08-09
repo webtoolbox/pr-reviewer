@@ -623,6 +623,7 @@ function loadDiff(content, filePath) {
   addCopyFileNameButtons();
   populateFileSidebar();
   addContextButtons();
+  addFileCollapseToggles();
   showReviewButtons();
 
 
@@ -1365,6 +1366,7 @@ function renderSingleFileInPlace(fileName, fileDiff) {
 
   // Re-apply post-processing to the new wrapper only
   newWrapper.querySelectorAll('.context-expand-btn').forEach(b => b.remove());
+  newWrapper.querySelectorAll('.file-collapse-toggle').forEach(b => b.remove());
   addCommentButtonsForWrapper(newWrapper, fileName);
   addFileCommentButtonsForWrapper(newWrapper, fileName);
   const header = newWrapper.querySelector('.d2h-file-header');
@@ -1386,6 +1388,9 @@ function renderSingleFileInPlace(fileName, fileDiff) {
   if (excludedExts.includes(ext)) {
     collapseFileWrapper(newWrapper, fileName);
   }
+
+  // Add the expand/collapse toggle last so it reflects the final collapsed state
+  addFileCollapseToggleForWrapper(newWrapper, fileName);
 
   // Sidebar indices stay valid (same wrapper order), so no need to repopulate.
   // But if file order can change, keep the sidebar in sync defensively:
@@ -3597,6 +3602,7 @@ let currentRepoPath = null;
 let currentBaseSha = null;
 let currentHeadSha = null;
 const fileContextLevels = new Map(); // filename -> current context lines count
+const collapsedFiles = new Set(); // filenames the user has collapsed via the header toggle
 
 // ===================== MULTI-REPO STATE =====================
 
@@ -3777,6 +3783,8 @@ function renderFilteredDiff() {
 
   // Collapse filtered-out file wrappers (collapsed by default, expandable each)
   collapseFilteredFiles(excludedExts);
+  // Add expand/collapse toggle to every file header (after collapse so state syncs)
+  addFileCollapseToggles();
 }
 
 /**
@@ -3910,8 +3918,7 @@ function collapseFilteredFiles(excludedExts) {
     // Non-excluded files: ensure they're expanded and don't have a stale toggle.
     if (!isExcluded) {
       wrapper.classList.remove('filtered-collapsed');
-      const existingToggle = wrapper.querySelector('.filtered-collapse-toggle');
-      if (existingToggle) existingToggle.remove();
+      collapsedFiles.delete(fileName);
       continue;
     }
 
@@ -3919,24 +3926,56 @@ function collapseFilteredFiles(excludedExts) {
   }
 }
 
-// Collapse a single file wrapper: hide the diff body, keep the header, and add
-// an expand/collapse toggle to the header so the user can expand this file.
+// Add an expand/collapse toggle to EVERY file header so the user can collapse
+// (or expand) any single file's diff section by clicking the chevron in its
+// header. The collapsed state is tracked in `collapsedFiles` so it survives
+// re-renders (renderFilteredDiff). Filtered-out files stay collapsed because
+// collapseFilteredFiles() adds them to collapsedFiles before this runs.
+function addFileCollapseToggles() {
+  // Remove stale toggles first to avoid duplicates on re-render
+  diffContainer.querySelectorAll('.file-collapse-toggle').forEach(b => b.remove());
+
+  const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+  fileWrappers.forEach(wrapper => {
+    const fileNameEl = wrapper.querySelector('.d2h-file-name');
+    const fileName = fileNameEl ? fileNameEl.textContent.trim() : 'unknown';
+    addFileCollapseToggleForWrapper(wrapper, fileName);
+  });
+}
+
+// Add a single expand/collapse toggle to one file wrapper's header.
+function addFileCollapseToggleForWrapper(wrapper, fileName) {
+  const header = wrapper.querySelector('.d2h-file-header');
+  if (!header) return;
+
+  // Honor existing filtered-collapsed state
+  if (wrapper.classList.contains('filtered-collapsed')) collapsedFiles.add(fileName);
+
+  const toggle = document.createElement('button');
+  toggle.className = 'file-collapse-toggle' + (collapsedFiles.has(fileName) ? ' collapsed' : '');
+  toggle.title = collapsedFiles.has(fileName) ? 'Expand file' : 'Collapse file';
+  toggle.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4.5 6.25a.75.75 0 011.06 0L8 8.69l2.44-2.44a.75.75 0 111.06 1.06L8 10.81 4.5 7.31a.75.75 0 010-1.06z"/></svg>';
+
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const collapsed = wrapper.classList.toggle('filtered-collapsed');
+    if (collapsed) collapsedFiles.add(fileName);
+    else collapsedFiles.delete(fileName);
+    toggle.classList.toggle('collapsed', collapsed);
+    toggle.title = collapsed ? 'Expand file' : 'Collapse file';
+  });
+
+  // Place toggle at the far left of the header (before the file name)
+  header.insertBefore(toggle, header.firstChild);
+}
+
+// Collapse a single file wrapper: hide the diff body, keep the header. The
+// expand/collapse toggle on the header (added by addFileCollapseToggles) lets
+// the user expand this file back.
 function collapseFileWrapper(wrapper, fileName) {
   wrapper.classList.add('filtered-collapsed');
-  const header = wrapper.querySelector('.d2h-file-header');
-  if (header && !header.querySelector('.filtered-collapse-toggle')) {
-    const toggle = document.createElement('button');
-    toggle.className = 'filtered-collapse-toggle';
-    toggle.title = 'Expand file';
-    toggle.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4.5 6.25a.75.75 0 011.06 0L8 8.69l2.44-2.44a.75.75 0 111.06 1.06L8 10.81 4.5 7.31a.75.75 0 010-1.06z"/></svg>';
-    toggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const collapsed = wrapper.classList.toggle('filtered-collapsed');
-      toggle.classList.toggle('expanded', !collapsed);
-      toggle.title = collapsed ? 'Expand file' : 'Collapse file';
-    });
-    header.insertBefore(toggle, header.firstChild);
-  }
+  collapsedFiles.add(fileName);
 }
 
 // Extract file extension from diff file block

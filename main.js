@@ -3030,62 +3030,28 @@ Keep rules concise — one sentence each when possible.`;
       log('INFO', '[propose-rules] AI response received, length:', stdout.length, 'chars');
       log('INFO', '[propose-rules] Raw response (first 500):', stdout.substring(0, 500));
       try {
-        // hermes output may include banners and box-drawing UI (each answer line
-        // prefixed with "│"). Strip that chrome first so the JSON strategies below
-        // can actually match. This was the cause of every "Failed to parse AI
-        // response" — the proposed-rules JSON was buried inside the box.
-        const cleaned = cleanHermesResponse(stdout);
-        const source = cleaned || stdout;
-        // hermes output may include banners — find the JSON object more aggressively
-        // Try multiple strategies to extract JSON
+        // The response should be a single JSON object. Clean any hermes
+        // chrome (warning banners, box-drawing UI) first, then parse directly.
+        const source = cleanHermesResponse(stdout) || stdout;
         let parsed = null;
-        
-        // Strategy 1: find JSON block that contains proposedRules
-        // Use non-greedy matching to avoid spanning across hermes banners
-        const proposedRulesMatch = source.match(/\{\s*"proposedRules"[\s\S]*?\}\s*\]/g);
-        if (proposedRulesMatch) {
-          for (const match of proposedRulesMatch) {
-            // Find the complete JSON object containing this match
-            const startIdx = stdout.indexOf(match);
-            if (startIdx < 0) continue;
-            // Walk backwards to find the opening brace
-            let braceCount = 0;
-            let jsonStart = startIdx;
-            for (let i = startIdx; i >= 0; i--) {
-              if (stdout[i] === '{') braceCount++;
-              if (stdout[i] === '}') braceCount--;
-              if (braceCount === 0) { jsonStart = i; break; }
-            }
-            const candidate = stdout.substring(jsonStart, startIdx + match.length + 100);
-            // Try to parse progressively smaller chunks
-            for (let end = candidate.length; end > 10; end--) {
-              try {
-                const obj = JSON.parse(candidate.substring(0, end));
-                if (obj.proposedRules) { parsed = obj; break; }
-              } catch {}
-            }
-            if (parsed) break;
-          }
-        }
-        
-        // Strategy 2: find largest JSON object (fallback)
+
+        // Strategy 1: the whole cleaned response is the JSON object.
+        try { parsed = JSON.parse(source); } catch {}
+
+        // Strategy 2 (defensive): if extra text wrapped the JSON, extract the
+        // first {...} object by brace matching and parse it.
         if (!parsed) {
-          const jsonMatches = source.match(/\{[^\{]*"proposedRules"[^\}]*\}/g);
-          if (jsonMatches) {
-            for (const match of jsonMatches) {
-              try {
-                const candidate = JSON.parse(match);
-                if (candidate.proposedRules) { parsed = candidate; break; }
-              } catch {}
+          const start = source.indexOf('{');
+          if (start !== -1) {
+            let depth = 0;
+            for (let i = start; i < source.length; i++) {
+              if (source[i] === '{') depth++;
+              else if (source[i] === '}') { depth--; if (depth === 0) {
+                const candidate = source.substring(start, i + 1);
+                try { parsed = JSON.parse(candidate); } catch {}
+                break;
+              }}
             }
-          }
-        }
-        
-        // Strategy 3: find JSON between ```json blocks
-        if (!parsed) {
-          const codeBlock = source.match(/```json\s*([\s\S]*?)```/);
-          if (codeBlock) {
-            parsed = JSON.parse(codeBlock[1].trim());
           }
         }
 
