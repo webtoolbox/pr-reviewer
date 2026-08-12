@@ -1057,8 +1057,13 @@ function addCommentButtonsForWrapper(wrapper, fileName) {
         btn.className = 'line-comment-btn';
         btn.title = 'Add comment (Cmd+Enter to submit)';
         btn.textContent = '+';
+        btn.addEventListener('click', (e) => {
+        	e.stopPropagation();
+        	e.preventDefault();
+        	openCommentDialog(line, btn, isRight, e);
+        });
         lineNumEl.appendChild(btn);
-      });
+        });
     });
   } else {
     const lines = wrapper.querySelectorAll('.d2h-code-line:not(.d2h-code-line-emptyplaceholder)');
@@ -1071,6 +1076,14 @@ function addCommentButtonsForWrapper(wrapper, fileName) {
       btn.className = 'line-comment-btn';
       btn.title = 'Add comment (Cmd+Enter to submit)';
       btn.textContent = '+';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        // Determine side from parent td class: d2h-del=LEFT, d2h-ins=RIGHT
+        const td = line.closest('td');
+        const isRight = td ? td.classList.contains('d2h-ins') : (row ? row.querySelector('.d2h-code-linenumber.d2h-ins') !== null : false);
+        openCommentDialog(line, btn, isRight, e);
+      });
       lineNumEl.appendChild(btn);
     });
   }
@@ -4766,12 +4779,14 @@ async function showRulesDialog(reviewFeedback) {
       html += `<div class="rule-item" data-index="${i}">
         <div class="rule-item-header">
           <input type="checkbox" id="rule-check-${i}" checked>
+          ${proposal.type === 'modify' ? '<span class="rule-type-badge rule-type-modify">Modify</span>' : ''}
           <span class="rule-reason">${escapeHtml(proposal.reason || '')}</span>
           <select id="rule-file-${i}">
             ${rulesAvailableFiles.map(f => `<option value="${f}" ${f === proposal.file ? 'selected' : ''}>${f}</option>`).join('')}
           </select>
         </div>
         <textarea id="rule-text-${i}">${escapeHtml(proposal.rule)}</textarea>
+        ${proposal.type === 'modify' && proposal.existingRule ? `<div class="rule-existing"><span class="rule-existing-label">Replaces existing rule:</span><div class="rule-existing-text">${escapeHtml(proposal.existingRule)}</div></div>` : ''}
       </div>`;
     });
     rulesBody.innerHTML = html;
@@ -4790,7 +4805,9 @@ btnRulesSave.addEventListener('click', async () => {
     if (checkbox && checkbox.checked) {
       rulesToSave.push({
         rule: document.getElementById(`rule-text-${i}`).value,
-        file: document.getElementById(`rule-file-${i}`).value
+        file: document.getElementById(`rule-file-${i}`).value,
+        type: proposal.type === 'modify' ? 'modify' : 'new',
+        existingRule: proposal.existingRule || ''
       });
     }
   });
@@ -4799,7 +4816,17 @@ btnRulesSave.addEventListener('click', async () => {
     btnRulesSave.disabled = true;
     btnRulesSave.textContent = 'Saving...';
     const result = await window.electronAPI.saveAgentRules({ rules: rulesToSave });
-    // Could show success/failure message here
+    if (result && result.error) {
+      showToast(`⚠ Could not save rules: ${escapeHtml(result.error)}`, 'error', 10000);
+    } else if (result && result.results) {
+      const ok = result.results.filter(r => r.success);
+      const failed = result.results.filter(r => !r.success);
+      if (failed.length > 0) {
+        showToast(`⚠ Saved ${ok.length} file(s), ${failed.length} failed: ${escapeHtml(failed.map(f => f.error).join('; '))}`, 'error', 12000);
+      } else {
+        showToast(`✓ Saved ${ok.reduce((n, r) => n + (r.count || 0), 0)} rule(s) to ${ok.map(r => r.file).join(', ')}`, 'success', 8000);
+      }
+    }
   }
   
   rulesOverlay.style.display = 'none';

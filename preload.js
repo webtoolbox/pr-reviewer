@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeAiChatStreamListener: (callback) => ipcRenderer.removeListener('ai-chat-stream', callback),
   saveAgentRules: (data) => ipcRenderer.invoke('save-agent-rules', data),
   deletePrFiles: (prNumber) => ipcRenderer.invoke('delete-pr-files', prNumber),
+  getSavedAgentRules: () => ipcRenderer.invoke('get-saved-agent-rules'),
   getNextPr: (prNumber) => ipcRenderer.invoke('get-next-pr', prNumber),
   listRepos: () => ipcRenderer.invoke('list-repos'),
   saveRepos: (repos) => ipcRenderer.invoke('save-repos', repos),

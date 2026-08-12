@@ -1677,6 +1677,64 @@ async function runTests() {
   `);
   assert('renderSingleFileInPlace swaps only the target file wrapper', singleSwapTest === 'ok', `result: ${singleSwapTest}`);
 
+  // TEST: Comment buttons created by addCommentButtonsForWrapper (used after
+  // context expand) actually open the comment dialog on click. Regression for
+  // the bug where the wrapper-specific path added buttons without a click handler.
+  const wrapperCommentBtnTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof addCommentButtonsForWrapper !== 'function') return 'no-fn';
+      if (typeof openCommentDialog !== 'function') return 'no-open-fn';
+      const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+      if (!wrappers.length) return 'no-wrappers';
+      // Pick the first wrapper, remove any existing buttons, re-run the wrapper
+      // path, then click the first comment button and check the dialog opens.
+      const wrapper = wrappers[0];
+      wrapper.querySelectorAll('.line-comment-btn').forEach(b => b.remove());
+      const fileName = wrapper.querySelector('.d2h-file-name')?.textContent.trim() || 'unknown';
+      addCommentButtonsForWrapper(wrapper, fileName);
+      const btn = wrapper.querySelector('.line-comment-btn');
+      if (!btn) return 'no-btn';
+      btn.click();
+      const form = document.getElementById('active-comment-form');
+      const opened = form ? 'opened' : 'not-opened';
+      if (form) closeCommentDialog();
+      return opened;
+    })()
+  `);
+  assert('Context-expand comment buttons open the comment dialog', wrapperCommentBtnTest === 'opened', `result: ${wrapperCommentBtnTest}`);
+
+  // TEST: A "modify" rule proposal is saved with type:"modify" and its
+  // existingRule text passed through, so main.js can replace in place.
+  const modifySaveTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof currentRuleProposals === 'undefined') return 'no-state';
+      // Simulate a modify proposal plus a new proposal
+      currentRuleProposals = [
+        { rule: 'new generalized rule', file: 'AGENTS.md', reason: 'test', type: 'modify', existingRule: 'old rule text' },
+        { rule: 'another new rule', file: 'AGENTS.md', reason: 'test', type: 'new', existingRule: '' }
+      ];
+      rulesAvailableFiles = ['AGENTS.md', '.github/instructions/perl.instructions.md'];
+      // Populate the DOM the way showRulesDialog does
+      rulesBody.innerHTML = currentRuleProposals.map((p, i) =>
+        '<div class="rule-item"><div class="rule-item-header">' +
+        '<input type="checkbox" id="rule-check-' + i + '" checked>' +
+        (p.type === 'modify' ? '<span class="rule-type-badge rule-type-modify">Modify</span>' : '') +
+        '<select id="rule-file-' + i + '"><option value="' + p.file + '" selected>' + p.file + '</option></select>' +
+        '</div><textarea id="rule-text-' + i + '">' + p.rule + '</textarea></div>'
+      ).join('');
+      btnRulesSave.click();
+      return new Promise((resolve) => setTimeout(() => resolve('saved'), 500));
+    })()
+  `);
+  await new Promise(r => setTimeout(r, 700));
+  const savedRules = await mainWindow.webContents.executeJavaScript(`window.electronAPI.getSavedAgentRules()`);
+  const modRule = Array.isArray(savedRules) ? savedRules.find(r => r.rule === 'new generalized rule') : null;
+  const newRule = Array.isArray(savedRules) ? savedRules.find(r => r.rule === 'another new rule') : null;
+  const modifyOk = modRule && modRule.type === 'modify' && modRule.existingRule === 'old rule text';
+  const newOk = newRule && newRule.type === 'new';
+  assert('Modify proposal saves with type=modify and existingRule', modifyOk, `mod: ${JSON.stringify(modRule)}`);
+  assert('New proposal saves with type=new', newOk, `new: ${JSON.stringify(newRule)}`);
+
   // TEST: Filtered-out files are collapsed (not hidden) with an individual expand toggle
   const filteredCollapse = await mainWindow.webContents.executeJavaScript(`
     (() => {
@@ -2379,6 +2437,15 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
   // Mock: return a simple diff with expanded context
   return { content: `diff --git a/${filePath} b/${filePath}\nindex 123..456 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,5 +1,5 @@\n line1\n line2\n-old\n+new\n line4\n line5\n` };
 });
+
+// Capture what saveAgentRules sends so tests can assert type/existingRule pass-through
+global.__savedAgentRules = [];
+ipcMain.handle('save-agent-rules', async (event, { rules }) => {
+  global.__savedAgentRules = rules;
+  return { results: rules.map(r => ({ file: r.file, success: true })) };
+});
+ipcMain.handle('get-saved-agent-rules', async () => global.__savedAgentRules || []);
+ipcMain.handle('delete-pr-files', async () => ({ success: true }));
 
 app.whenReady().then(async () => {
   mainWindow = new BrowserWindow({

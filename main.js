@@ -3010,14 +3010,18 @@ ${referencedFilesText}
 REVIEW FEEDBACK:
 ${feedbackText}
 
-Analyze the feedback. For each piece of feedback that is NOT already covered by an existing rule:
-1. Propose a brief, generalized rule that would prevent similar issues
-2. Recommend which file it belongs in (AGENTS.md for general rules, or the appropriate referenced file for language-specific rules)
+Analyze the feedback. For each piece of feedback:
+1. Determine whether an existing rule ALREADY explicitly and unambiguously prevents this exact issue.
+   - If NO existing rule covers it, propose a NEW brief, generalized rule.
+   - If an existing rule is too vague, too narrow, or only partially covers it, propose a MODIFICATION of that rule (type: "modify") that strengthens/generalizes it enough to prevent the feedback. A rule you can interpret either way is NOT sufficient coverage.
+2. Recommend which file it belongs in (AGENTS.md for general rules, or the appropriate referenced file for language-specific rules).
+3. Rules must be GENERALIZED — they must prevent the whole class of issue, not just this one PR. Avoid naming specific files, functions, or line numbers. Avoid describing a single specific situation (e.g. a method used in a condition and again in its output); capture the underlying principle instead.
 
 IMPORTANT: Your entire response MUST be ONLY a valid JSON object. No markdown, no explanation, no text before or after. Just the raw JSON object:
-{"proposedRules": [{"rule": "...", "file": "path/to/file.md", "reason": "brief reason"}], "availableFiles": ["AGENTS.md", ".github/instructions/perl.instructions.md", ...]}
+{"proposedRules": [{"rule": "...", "file": "path/to/file.md", "reason": "brief reason", "type": "new", "existingRule": ""}], "availableFiles": ["AGENTS.md", ".github/instructions/perl.instructions.md", ...]}
 
-If all feedback is already covered, return: {"proposedRules": [], "availableFiles": [...]}
+- \`type\` is "new" for a brand-new rule, or "modify" to change an existing rule. For "modify", \`existingRule\` must contain the EXACT current text of the rule being replaced, and \`rule\` must be the replacement text.
+- If all feedback is already fully covered by explicit rules, return: {"proposedRules": [], "availableFiles": [...]}
 Rules should be generalized, not specific to this one PR.
 Keep rules concise — one sentence each when possible.`;
 
@@ -3081,7 +3085,7 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
   const byFile = {};
   for (const r of rules) {
     if (!byFile[r.file]) byFile[r.file] = [];
-    byFile[r.file].push(r.rule);
+    byFile[r.file].push(r);
   }
   
   for (const [file, newRules] of Object.entries(byFile)) {
@@ -3094,9 +3098,26 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
         );
       } catch (err) { console.warn(`[propose-rules] Existing rules file ${file} not found or unreadable:`, err.message); }
       
-      // Append new rules
-      const additions = newRules.map(r => `- ${r}`).join('\n');
-      const updated = current.trim() + '\n\n## Added by Code Review\n' + additions + '\n';
+      // Apply each rule: "modify" replaces existingRule text in place; "new" appends
+      let updated = current;
+      const additions = [];
+      for (const r of newRules) {
+        if (r.type === 'modify' && r.existingRule) {
+          const idx = updated.indexOf(r.existingRule);
+          if (idx !== -1) {
+            updated = updated.slice(0, idx) + r.rule + updated.slice(idx + r.existingRule.length);
+          } else {
+            // existingRule text not found — fall back to appending
+            additions.push(r.rule);
+          }
+        } else {
+          additions.push(r.rule);
+        }
+      }
+      if (additions.length > 0) {
+        const sep = updated.length && !updated.endsWith('\n') ? '\n' : '';
+        updated = updated.trimEnd() + sep + additions.map(a => `- ${a}`).join('\n') + '\n';
+      }
       
       // Get SHA for update
       let sha = '';
@@ -3121,7 +3142,38 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
       } finally {
         try { fs.unlinkSync(rulesTmpPath); } catch (e) { console.warn('[propose-rules] Failed to clean up temp rules file:', e.message); }
       }
-      
+
+      // Best-effort sync: update the local working copy of this file from origin
+      // so the change is visible in the user's checkout, not just on GitHub.
+      // Only do this if the local repo is ON master (never a feature branch) and
+      // the local file is clean (no uncommitted edits), so we never clobber
+      // in-progress work or inject master changes into another branch.
+      try {
+        const localRepo = getLocalRepoPath(`${owner}/${repo}`);
+        if (fs.existsSync(localRepo)) {
+          const branch = await execPromise(`git -C "${localRepo}" rev-parse --abbrev-ref HEAD`).catch(() => '');
+          const isMaster = branch.trim() === 'master' || branch.trim() === 'main';
+          if (!isMaster) {
+            log('INFO', `[propose-rules] Skipped local sync for ${file} (repo on branch ${branch.trim() || 'unknown'}, not master)`);
+          } else {
+            const status = await execPromise(`git -C "${localRepo}" status --porcelain -- "${file}"`).catch(() => '');
+            if (!status.trim()) {
+              await execPromise(`git -C "${localRepo}" fetch origin master --quiet`).catch(() => {});
+              const updatedContent = await execPromise(`git -C "${localRepo}" show "origin/master:${file}"`).catch(() => '');
+              if (updatedContent) {
+                const abs = path.join(localRepo, file);
+                fs.writeFileSync(abs, updatedContent);
+                log('INFO', `[propose-rules] Updated local file ${file} in ${localRepo}`);
+              }
+            } else {
+              log('INFO', `[propose-rules] Skipped local sync for ${file} (has uncommitted changes)`);
+            }
+          }
+        }
+      } catch (localErr) {
+        log('WARN', '[propose-rules] Local file sync failed:', localErr.message);
+      }
+
       results.push({ file, success: true, count: newRules.length });
     } catch (err) {
       results.push({ file, success: false, error: err.message });
