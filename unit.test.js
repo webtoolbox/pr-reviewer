@@ -2921,7 +2921,7 @@ describe('generateDiff — no code file extension filter', () => {
 
 // ── Source-code inspection: renderer.js localStorage persistence ──
 
-describe('activeExtensions localStorage persistence', () => {
+describe('hiddenExtensions (file extension filter) persistence', () => {
   let rendererSource;
 
   beforeAll(() => {
@@ -2931,20 +2931,46 @@ describe('activeExtensions localStorage persistence', () => {
     );
   });
 
-  test('activeExtensions loads from localStorage on init', () => {
-    expect(rendererSource).toContain("localStorage.getItem('pr-reviewer-active-extensions')");
+  test('hiddenExtensions loads from localStorage on init', () => {
+    expect(rendererSource).toContain("localStorage.getItem('pr-reviewer-hidden-extensions')");
   });
 
-  test('saveActiveExtensions function exists and writes to localStorage', () => {
-    expect(rendererSource).toContain('function saveActiveExtensions()');
-    expect(rendererSource).toContain("localStorage.setItem('pr-reviewer-active-extensions'");
+  test('saveHiddenExtensions function exists and writes to localStorage', () => {
+    expect(rendererSource).toContain('function saveHiddenExtensions()');
+    expect(rendererSource).toContain("localStorage.setItem('pr-reviewer-hidden-extensions'");
   });
 
-  test('saveActiveExtensions is called when activeExtensions changes', () => {
-    // There should be at least 2 calls to saveActiveExtensions (openFileFilterDropdown + applyExtensionFilter)
-    const saveMatches = rendererSource.match(/saveActiveExtensions\(\)/g);
+  test('saveHiddenExtensions is called when a checkbox toggles', () => {
+    // The checkbox change handler, select-all, and select-none all call saveHiddenExtensions
+    const saveMatches = rendererSource.match(/saveHiddenExtensions\(\)/g);
     expect(saveMatches).not.toBeNull();
-    expect(saveMatches.length).toBeGreaterThanOrEqual(2);
+    expect(saveMatches.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('old whitelist model (activeExtensions) is fully removed', () => {
+    expect(rendererSource).not.toContain('activeExtensions');
+    expect(rendererSource).not.toContain('saveActiveExtensions');
+    expect(rendererSource).not.toContain('applyExtensionFilter');
+  });
+
+  test('a checkbox change only toggles that one extension (blacklist)', () => {
+    // The change handler must add/remove only the changed ext from hiddenExtensions,
+    // never re-derive the whole set from the current diff.
+    const changeSrc = rendererSource.substring(
+      rendererSource.indexOf("cb.addEventListener('change'"),
+      rendererSource.indexOf("// Update button state", rendererSource.indexOf("cb.addEventListener('change'"))
+    );
+    expect(changeSrc).toContain('hiddenExtensions.filter(h => h !== ext)');
+    expect(changeSrc).toContain('hiddenExtensions.push(ext)');
+    // Must not re-derive from all checkboxes (no applyExtensionFilter, no "allChecked" reset)
+    expect(changeSrc).not.toContain('allChecked');
+    expect(changeSrc).not.toContain('querySelectorAll');
+  });
+
+  test('collapsing logic hides extensions in hiddenExtensions, not a whitelist', () => {
+    // Every consumer should compute excluded = diff extensions that are in hiddenExtensions
+    const count = (rendererSource.match(/filter\(e => hiddenExtensions\.includes\(e\)\)/g) || []).length;
+    expect(count).toBeGreaterThanOrEqual(5);
   });
 
   test('no codeFileExtensions config reference in initFileFilter', () => {

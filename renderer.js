@@ -575,7 +575,7 @@ function loadDiff(content, filePath) {
 
   // Sort files by extension, then by name — filtered-out extensions go last
   const allExtsForSort = extractExtensionsFromDiff(content);
-  const excludedForSort = activeExtensions ? allExtsForSort.filter(e => !activeExtensions.includes(e)) : [];
+  const excludedForSort = allExtsForSort.filter(e => hiddenExtensions.includes(e));
   content = sortDiffByExtension(content, excludedForSort);
 
   currentDiff = content;
@@ -639,14 +639,10 @@ function loadDiff(content, filePath) {
   }
 
   // Apply extension filter to diff view on initial load
-  // Only if user has explicitly unchecked extensions (null = show all, [] = hide all)
-  if (activeExtensions !== null && activeExtensions.length > 0) {
-    const allExts = extractExtensionsFromDiff(currentDiffContent);
-    const excludedExts = allExts.filter(e => !activeExtensions.includes(e));
-    collapseFilteredFiles(excludedExts);
-  } else {
-    collapseFilteredFiles([]);
-  }
+  // Extensions in hiddenExtensions are collapsed on load
+  const allExts = extractExtensionsFromDiff(currentDiffContent);
+  const excludedExts = allExts.filter(e => hiddenExtensions.includes(e));
+  collapseFilteredFiles(excludedExts);
 
   // Try to load saved draft
   if (currentFilePath) {
@@ -1395,9 +1391,7 @@ function renderSingleFileInPlace(fileName, fileDiff) {
 
   // Preserve collapsed state for filtered-out files
   const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
-  const excludedExts = activeExtensions
-    ? extractExtensionsFromDiff(currentDiffContent).filter(e => !activeExtensions.includes(e))
-    : [];
+  const excludedExts = extractExtensionsFromDiff(currentDiffContent).filter(e => hiddenExtensions.includes(e));
   if (excludedExts.includes(ext)) {
     collapseFileWrapper(newWrapper, fileName);
   }
@@ -3398,24 +3392,26 @@ const filterSelectAll = document.getElementById('filter-select-all');
 const filterSelectNone = document.getElementById('filter-select-none');
 
 let fileFilterOpen = false;
-// Persist active extensions across PR loads via localStorage
-// null = show all, [...] = show only these extensions, [] = stale/broken → treat as null
-let activeExtensions = (() => {
+// Persist hidden (unchecked) extensions across PR loads via localStorage.
+// Blacklist model: hiddenExtensions = extensions the user has unchecked.
+// Toggling one checkbox only ever changes that one extension — it never
+// resets or re-derives the state of any other extension, even when the
+// current PR's diff doesn't contain them.
+let hiddenExtensions = (() => {
   try {
-    const stored = localStorage.getItem('pr-reviewer-active-extensions');
-    if (!stored) return null;
+    const stored = localStorage.getItem('pr-reviewer-hidden-extensions');
+    if (!stored) return [];
     const parsed = JSON.parse(stored);
-    // Empty array is a stale state — treat as "show all"
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
-  } catch { return null; }
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
 })();
 let allExtensionsInDiff = [];
 // Update filter button on startup in case extensions were persisted
 setTimeout(() => { if (typeof updateFilterButtonState === 'function') updateFilterButtonState(); }, 0);
 
-function saveActiveExtensions() {
+function saveHiddenExtensions() {
   try {
-    localStorage.setItem('pr-reviewer-active-extensions', JSON.stringify(activeExtensions));
+    localStorage.setItem('pr-reviewer-hidden-extensions', JSON.stringify(hiddenExtensions));
   } catch { /* ignore quota errors */ }
 }
 
@@ -3463,9 +3459,8 @@ function openFileFilterDropdown() {
 
   let html = '';
   for (const ext of extensionsToShow) {
-    // If activeExtensions is null (blank config), check all
-    // If activeExtensions is an array, only check those in the array
-    const checked = (activeExtensions === null || activeExtensions.includes(ext)) ? 'checked' : '';
+    // A checkbox is checked unless that extension is in the hidden (blacklist) set
+    const checked = !hiddenExtensions.includes(ext) ? 'checked' : '';
     html += `
       <div class="filter-item">
         <input type="checkbox" id="ext-${ext}" value="${ext}" ${checked}>
@@ -3474,21 +3469,21 @@ function openFileFilterDropdown() {
   }
   filterList.innerHTML = html;
 
-  // Auto-apply on checkbox change
+  // Toggle only the specific extension that changed — never re-derive or reset
+  // the state of other extensions from the current diff.
   filterList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-    cb.addEventListener('change', applyExtensionFilter);
-  });
-
-  // Normalize: if all diff extensions are checked, treat as "no filter"
-  const allCheckedNow = extensionsToShow.length > 0 &&
-    extensionsToShow.every(ext => {
-      const cb = filterList.querySelector(`input[value="${ext}"]`);
-      return cb && cb.checked;
+    cb.addEventListener('change', (e) => {
+      const ext = e.target.value;
+      if (e.target.checked) {
+        hiddenExtensions = hiddenExtensions.filter(h => h !== ext);
+      } else if (!hiddenExtensions.includes(ext)) {
+        hiddenExtensions.push(ext);
+      }
+      saveHiddenExtensions();
+      updateFilterButtonState();
+      if (currentDiffContent) renderFilteredDiff();
     });
-  if (allCheckedNow || extensionsToShow.length === 0) {
-    activeExtensions = null;
-    saveActiveExtensions();
-  }
+  });
 
   // Update button state
   updateFilterButtonState();
@@ -3496,8 +3491,8 @@ function openFileFilterDropdown() {
 
 // Update filter button appearance
 function updateFilterButtonState() {
-  // null means show all (blank config), array means filtered
-  const isFiltered = activeExtensions !== null;
+  // Filtered whenever at least one extension is hidden
+  const isFiltered = hiddenExtensions.length > 0;
   btnFileFilter.classList.toggle('active', isFiltered);
 }
 
@@ -3506,7 +3501,11 @@ filterSelectAll.addEventListener('click', () => {
   filterList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
     cb.checked = true;
   });
-  applyExtensionFilter();
+  // Reveal every extension
+  hiddenExtensions = [];
+  saveHiddenExtensions();
+  updateFilterButtonState();
+  if (currentDiffContent) renderFilteredDiff();
 });
 
 // Select none
@@ -3514,27 +3513,14 @@ filterSelectNone.addEventListener('click', () => {
   filterList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
     cb.checked = false;
   });
-  applyExtensionFilter();
-});
-
-// Apply extension filter (called on checkbox change, select all/none)
-function applyExtensionFilter() {
-  const selected = [];
-  filterList.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
-    selected.push(cb.value);
-  });
-  // If all or none selected, set to null (show all)
-  const allChecked = selected.length === allExtensionsInDiff.length;
-  const noneChecked = selected.length === 0;
-  activeExtensions = allChecked ? null : (noneChecked ? [] : selected);
-  saveActiveExtensions();
+  // Hide every extension present in the current diff
+  const toHide = new Set(hiddenExtensions);
+  allExtensionsInDiff.forEach(ext => toHide.add(ext));
+  hiddenExtensions = Array.from(toHide);
+  saveHiddenExtensions();
   updateFilterButtonState();
-
-  // Re-render the diff with filtered extensions
-  if (currentDiffContent) {
-    renderFilteredDiff();
-  }
-}
+  if (currentDiffContent) renderFilteredDiff();
+});
 
 // Close dropdown when clicking outside
 document.addEventListener('click', (e) => {
@@ -3569,9 +3555,7 @@ function applyFileNameFilter() {
   const fileListLinks = document.querySelectorAll('.d2h-file-list .d2h-file-link');
 
   // Compute excluded extensions for combined filtering
-  const excludedExts = activeExtensions
-    ? (allExtensionsInDiff || []).filter(e => !activeExtensions.includes(e))
-    : [];
+  const excludedExts = (allExtensionsInDiff || []).filter(e => hiddenExtensions.includes(e));
 
   fileWrappers.forEach(wrapper => {
     const fileNameEl = wrapper.querySelector('.d2h-file-name');
@@ -3762,7 +3746,7 @@ function renderFilteredDiff() {
   // Determine which extensions are excluded (before sorting so filtered files
   // are pushed to the bottom)
   const allExts = extractExtensionsFromDiff(currentDiffContent);
-  const excludedExts = activeExtensions ? allExts.filter(e => !activeExtensions.includes(e)) : [];
+  const excludedExts = allExts.filter(e => hiddenExtensions.includes(e));
 
   // Always render ALL files — sorted by extension, filtered-out extensions last
   const sortedDiff = sortDiffByExtension(currentDiffContent, excludedExts);

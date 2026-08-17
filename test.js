@@ -678,11 +678,27 @@ async function runTests() {
   );
   assert('Apply button removed', applyBtnGone);
 
-  // TEST: applyExtensionFilter function exists (replaces Apply button)
-  const applyExtFn = await mainWindow.webContents.executeJavaScript(
-    `typeof applyExtensionFilter === 'function'`
+  // TEST: File extension filter auto-applies on checkbox change (no Apply button)
+  const autoApplyFilter = await mainWindow.webContents.executeJavaScript(
+    `typeof saveHiddenExtensions === 'function' && typeof renderFilteredDiff === 'function'`
   );
-  assert('applyExtensionFilter function exists', applyExtFn);
+  assert('Extension filter auto-applies (saveHiddenExtensions + renderFilteredDiff exist)', autoApplyFilter);
+
+  // TEST: Toggling one extension only changes that one (blacklist, persists across PRs)
+  const toggleIsolation = await mainWindow.webContents.executeJavaScript(
+    `(() => {
+      if (typeof hiddenExtensions === 'undefined') return 'no-var';
+      hiddenExtensions = ['.css'];
+      // Simulate toggling .cgi off: only .cgi should be added, .css must stay
+      const ext = '.cgi';
+      if (!hiddenExtensions.includes(ext)) hiddenExtensions.push(ext);
+      const cssStillHidden = hiddenExtensions.includes('.css');
+      const onlyTwo = hiddenExtensions.length === 2;
+      hiddenExtensions = [];
+      return (cssStillHidden && onlyTwo) ? 'ok' : 'bad';
+    })()`
+  );
+  assert('Toggling one extension does not reset others', toggleIsolation === 'ok', `result: ${toggleIsolation}`);
 
   // ===================== AUTO-FIX WITH AI TESTS =====================
 
@@ -1819,12 +1835,12 @@ async function runTests() {
     (() => {
       if (typeof populateFileSidebar !== 'function') return 'no-fn';
       // Simulate an active extension filter that would exclude some files
-      activeExtensions = ['.pl'];
+      hiddenExtensions = ['.pl'];
       populateFileSidebar();
       const sidebarItems = document.querySelectorAll('#file-sidebar-list .sidebar-file-row').length;
       const wrapperCount = document.querySelectorAll('.d2h-file-wrapper').length;
       // Restore
-      activeExtensions = null;
+      hiddenExtensions = [];
       return (wrapperCount > 0 && sidebarItems === wrapperCount) ? 'ok' : 'mismatch';
     })()
   `);
