@@ -2157,10 +2157,7 @@ if (btnOpen) btnOpen.addEventListener('click', async () => {
   }
 });
 
-btnApprove.addEventListener('click', () => {
-  if (comments.length > 0 && !confirm('You have line comments but are approving. Continue?')) return;
-  submitReview('approve');
-});
+btnApprove.addEventListener('click', () => submitReview('approve'));
 
 btnRequestChanges.addEventListener('click', () => submitReview('request_changes'));
 btnComment.addEventListener('click', () => submitReview('comment'));
