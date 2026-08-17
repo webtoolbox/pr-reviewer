@@ -2678,6 +2678,61 @@ describe('Auto-advance after approve', () => {
   });
 });
 
+// ── Since-review net diff (exclude master merges) ──
+
+describe('computeSinceReviewNetDiff (since-review net diff)', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  test('function exists', () => {
+    expect(mainSource).toContain('async function computeSinceReviewNetDiff(');
+  });
+
+  test('replays PR commits via cherry-pick -n onto a detached temp worktree', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toContain('git worktree add --detach');
+    expect(funcSrc).toContain('git cherry-pick -n');
+    // No-commit mode means no author config needed and no commits created
+    expect(funcSrc).toContain('cherry-pick -n');
+  });
+
+  test('resolves conflicts by taking the PR commit version (--theirs)', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toContain('git checkout --theirs');
+    expect(funcSrc).toContain('git add -A');
+  });
+
+  test('diffs the worktree against the review base', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toMatch(/git diff \$\{baseSha\}/);
+  });
+
+  test('cleans up the temp worktree in a finally block', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toContain('finally');
+    expect(funcSrc).toContain('git worktree remove --force');
+    expect(funcSrc).toContain('fs.rmSync');
+  });
+
+  test('generateDiff calls it instead of the old net base..head diff', () => {
+    expect(mainSource).toContain('computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas)');
+    // The old implementation must be gone
+    expect(mainSource).not.toContain('git diff ${baseSha}..${headSha} -- ${fileList}');
+    expect(mainSource).not.toContain('Using net base..head diff');
+  });
+});
+
 // ── Rules dialog auto-advance fix ──
 
 describe('Rules dialog auto-advance fix', () => {

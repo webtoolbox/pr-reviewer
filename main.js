@@ -746,6 +746,65 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
+// Compute the net diff of ONLY the PR's own commits since the last review,
+// applied on top of the review base commit. This is what GitHub shows as
+// "changes since your review": intermediate placeholder states cancel out
+// (added in one commit, removed in the next), while master's merged-in
+// changes are excluded. A plain `git diff base..head` cannot do this because
+// the PR branch absorbs master merges into the base..head range.
+//
+// Implementation: create a detached temp worktree at the review base, replay
+// the given (non-merge, after-review) commit SHAs onto it via cherry-pick -n
+// (no commit, so no author config needed), resolving any conflict by taking
+// the PR commit's version (these are the PR's own changes), then diff the
+// worktree against the review base. The worktree is removed in a finally.
+async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
+  if (!repoPath || !baseSha || !afterReviewShas || afterReviewShas.length === 0) {
+    return '';
+  }
+  const worktreePath = path.join(getGeneratedDir(), `wt-since-review-${Date.now()}`);
+  let created = false;
+  try {
+    await execPromise(`git worktree add --detach ${worktreePath} ${baseSha}`, { cwd: repoPath, timeout: 60000 });
+    created = true;
+
+    // Replay the PR's own commits onto the review base.
+    for (const sha of afterReviewShas) {
+      try {
+        await execPromise(`git cherry-pick -n ${sha}`, { cwd: worktreePath, timeout: 30000 });
+      } catch (err) {
+        // Conflict — resolve by keeping the PR commit's version of each file.
+        const conflicted = await execPromise(
+          `git diff --name-only --diff-filter=U`,
+          { cwd: worktreePath }
+        ).catch(() => '');
+        const files = conflicted.split('\n').filter(Boolean);
+        if (files.length === 0) {
+          // No conflicted paths reported but cherry-pick still failed (e.g.
+          // a commit that deletes a file we also have). Take the PR side.
+          await execPromise(`git checkout --theirs -- .`, { cwd: worktreePath }).catch(() => {});
+        } else {
+          await execPromise(`git checkout --theirs -- ${files.join(' ')}`, { cwd: worktreePath }).catch(() => {});
+        }
+        await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
+      }
+    }
+
+    // Net diff of the worktree (review base + PR commits) vs the review base.
+    const netDiff = await execPromise(`git diff ${baseSha}`, { cwd: worktreePath, timeout: 60000 }).catch(() => '');
+    return netDiff;
+  } catch (err) {
+    log('ERROR', '[generateDiff] since-review net diff failed:', err.message);
+    return '';
+  } finally {
+    if (created) {
+      try { await execPromise(`git worktree remove --force ${worktreePath}`, { cwd: repoPath, timeout: 30000 }); }
+      catch (e) { log('WARN', '[generateDiff] Failed to remove temp worktree:', e.message); }
+    }
+    try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+  }
+}
+
 // Generate diff for a PR — supports full diff or since-last-review
 async function generateDiff(prNumber, repoKey) {
   const safePr = safePrNumber(prNumber);
@@ -856,20 +915,10 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('No files changed since last review');
   }
 
-  // Extract file paths from the unified diff — used to filter per-commit diffs later
-  const unifiedDiffFiles = new Set();
-  for (const line of (diffOut || '').split('\n')) {
-    if (line.startsWith('diff --git ')) {
-      const match = line.match(/diff --git a\/(.+?) b\/(.+)$/);
-      if (match) unifiedDiffFiles.add(match[2]);
-    }
-  }
-
-  // If reviewing since last review, show the NET diff (base..head) for only the
-  // files changed after the review. A single git diff between base and head
-  // matches GitHub exactly — intermediate per-commit states (e.g. a placeholder
-  // added in one commit and removed in the next) cancel out instead of being
-  // shown as spurious diff lines.
+  // If reviewing since last review, build the net diff from ONLY the PR's own
+  // commits after the review (see computeSinceReviewNetDiff). This matches
+  // GitHub's "changes since your review" — placeholder states cancel out while
+  // master's merged-in changes are excluded.
   if (reviewInfo && baseSha && headSha) {
     try {
       // Get files changed by PR commits after the review (non-merge commits only).
@@ -901,21 +950,20 @@ async function generateDiff(prNumber, repoKey) {
         }
 
         if (changedSinceReview.size > 0) {
-          // Build one net diff from base..head for exactly the files changed after
-          // the review. This excludes unrelated merged-master files while showing
-          // the true net change for each touched file (matching GitHub).
-          const fileList = Array.from(changedSinceReview)
-            .filter(f => !unifiedDiffFiles.size || unifiedDiffFiles.has(f))
-            .join(' ');
-          if (fileList.trim()) {
-            const netDiff = await execPromise(
-              `git diff ${baseSha}..${headSha} -- ${fileList}`,
-              { cwd: repoPath, timeout: 30000 }
-            ).catch(() => '');
-            if (netDiff && netDiff.trim()) {
-              diffOut = netDiff;
-              log('INFO', `[generateDiff] Using net base..head diff for ${changedSinceReview.size} file(s) changed since review`);
-            }
+          // Build the net diff of ONLY the PR's own commits since the review,
+          // applied on top of the review base. This is what GitHub shows as
+          // "changes since your review". A plain `git diff base..head` is wrong
+          // here: the PR branch merges master repeatedly, so base..head sweeps
+          // in every master merge the branch absorbed (e.g. PR 6845 had 3,328
+          // merge commits inflating a 25-file diff to 5.5MB). Replaying just the
+          // after-review commits onto the review base cancels intermediate
+          // placeholder states (added in one commit, removed in the next) while
+          // excluding master's merged-in changes.
+          const afterReviewShas = afterReview.map(c => c.sha).filter(Boolean);
+          const netDiff = await computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas);
+          if (netDiff && netDiff.trim()) {
+            diffOut = netDiff;
+            log('INFO', `[generateDiff] Using since-review net diff (replayed ${afterReviewShas.length} PR commits) for ${changedSinceReview.size} file(s)`);
           }
         }
       }
