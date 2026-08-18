@@ -3074,7 +3074,9 @@ describe('hiddenExtensions (file extension filter) persistence', () => {
   test('old whitelist model (activeExtensions) is fully removed', () => {
     expect(rendererSource).not.toContain('activeExtensions');
     expect(rendererSource).not.toContain('saveActiveExtensions');
-    expect(rendererSource).not.toContain('applyExtensionFilter');
+    // The old whitelist helper is gone. (applyExtensionFilterInPlace is the
+    // new blacklist collapse helper and is intentionally present.)
+    expect(rendererSource).not.toMatch(/applyExtensionFilter[^I]/);
   });
 
   test('a checkbox change only toggles that one extension (blacklist)', () => {
@@ -3086,9 +3088,34 @@ describe('hiddenExtensions (file extension filter) persistence', () => {
     );
     expect(changeSrc).toContain('hiddenExtensions.filter(h => h !== ext)');
     expect(changeSrc).toContain('hiddenExtensions.push(ext)');
-    // Must not re-derive from all checkboxes (no applyExtensionFilter, no "allChecked" reset)
+    // Must not re-derive from all checkboxes (no allChecked reset)
     expect(changeSrc).not.toContain('allChecked');
     expect(changeSrc).not.toContain('querySelectorAll');
+  });
+
+  test('extension checkbox toggles collapse in place without re-rendering the diff', () => {
+    // The checkbox change handler, select-all, and select-none must call the
+    // lightweight applyExtensionFilterInPlace() instead of the expensive
+    // renderFilteredDiff() (which re-runs diff2html over the whole diff on every
+    // toggle — the cause of the slow/hanging filter).
+    const changeSrc = rendererSource.substring(
+      rendererSource.indexOf("cb.addEventListener('change'"),
+      rendererSource.indexOf("// Update button state", rendererSource.indexOf("cb.addEventListener('change'"))
+    );
+    expect(changeSrc).toContain('applyExtensionFilterInPlace()');
+    expect(changeSrc).not.toContain('renderFilteredDiff()');
+  });
+
+  test('applyExtensionFilterInPlace collapses/expands wrappers without diff2html', () => {
+    const fnStart = rendererSource.indexOf('function applyExtensionFilterInPlace()');
+    const fnEnd = rendererSource.indexOf('\n// Select all', fnStart);
+    const fnSrc = rendererSource.substring(fnStart, fnEnd);
+    // Collapses excluded + expands non-excluded in the existing DOM
+    expect(fnSrc).toContain('collapseFilteredFiles(excludedExts)');
+    expect(fnSrc).toContain('addFileCollapseToggles()');
+    // Must NOT re-render via diff2html (that's the slow path)
+    expect(fnSrc).not.toContain('Diff2HtmlUI');
+    expect(fnSrc).not.toContain('new Diff2HtmlUI');
   });
 
   test('collapsing logic hides extensions in hiddenExtensions, not a whitelist', () => {

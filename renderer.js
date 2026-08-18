@@ -3483,7 +3483,7 @@ function openFileFilterDropdown() {
       }
       saveHiddenExtensions();
       updateFilterButtonState();
-      if (currentDiffContent) renderFilteredDiff();
+      if (currentDiffContent) applyExtensionFilterInPlace();
     });
   });
 
@@ -3498,6 +3498,26 @@ function updateFilterButtonState() {
   btnFileFilter.classList.toggle('active', isFiltered);
 }
 
+// Apply the extension filter WITHOUT re-rendering the diff. Toggling an
+// extension checkbox used to call renderFilteredDiff(), which re-ran diff2html
+// (with matching:'words' and syntax highlighting) over the whole diff on every
+// change — very slow on large diffs. Instead we collapse/expand the already
+// rendered file wrappers in place, which is O(files) and instant.
+function applyExtensionFilterInPlace() {
+  if (!currentDiffContent) return;
+  const allExts = extractExtensionsFromDiff(currentDiffContent);
+  const excludedExts = allExts.filter(e => hiddenExtensions.includes(e));
+
+  // Collapse excluded files, expand non-excluded (updates collapsedFiles too).
+  collapseFilteredFiles(excludedExts);
+  // Sync the header chevron toggles with the new collapse state.
+  addFileCollapseToggles();
+  // Keep the name filter consistent with the current collapse state.
+  if (currentNameFilter) applyFileNameFilter();
+  // Reflect the changed visibility in the file sidebar.
+  populateFileSidebar();
+}
+
 // Select all
 filterSelectAll.addEventListener('click', () => {
   filterList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
@@ -3507,7 +3527,7 @@ filterSelectAll.addEventListener('click', () => {
   hiddenExtensions = [];
   saveHiddenExtensions();
   updateFilterButtonState();
-  if (currentDiffContent) renderFilteredDiff();
+  if (currentDiffContent) applyExtensionFilterInPlace();
 });
 
 // Select none
@@ -3521,7 +3541,7 @@ filterSelectNone.addEventListener('click', () => {
   hiddenExtensions = Array.from(toHide);
   saveHiddenExtensions();
   updateFilterButtonState();
-  if (currentDiffContent) renderFilteredDiff();
+  if (currentDiffContent) applyExtensionFilterInPlace();
 });
 
 // Close dropdown when clicking outside
