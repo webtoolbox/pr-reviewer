@@ -393,7 +393,7 @@ async function runTests() {
   const prefFieldIds = await mainWindow.webContents.executeJavaScript(`
     ['pref-ai-command', 'pref-ai-tag', 'pref-editor-cmd', 'pref-context-lines',
      'pref-diff-mode', 'pref-diff-view-mode', 'pref-img-enabled', 'pref-s3-bucket', 'pref-s3-prefix',
-     'pref-aws-profile', 'pref-aws-region', 'pref-title-contains',
+     'pref-aws-profile', 'pref-aws-region', 'pref-title-excludes',
      'pref-review-requested', 'pref-autofix-enabled', 'pref-rules-enabled']
     .map(id => ({ id, exists: !!document.getElementById(id) }))
   `);
@@ -497,7 +497,7 @@ async function runTests() {
 
   // TEST: New preference fields exist
   const newPrefFields = await mainWindow.webContents.executeJavaScript(`
-    ['pref-title-contains','pref-review-requested','pref-diff-mode','pref-diff-view-mode','pref-s3-prefix']
+    ['pref-title-excludes','pref-review-requested','pref-diff-mode','pref-diff-view-mode','pref-s3-prefix']
     .map(id => ({ id, exists: !!document.getElementById(id) }))
   `);
   const allNewFieldsExist = newPrefFields.every(f => f.exists);

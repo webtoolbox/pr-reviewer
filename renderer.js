@@ -4894,7 +4894,7 @@ const prefFields = [
   { id: 'pref-context-lines', key: 'contextLines', type: 'number' },
   { id: 'pref-diff-mode', key: 'diff.mode', type: 'select' },
   { id: 'pref-diff-view-mode', key: 'diff.viewMode', type: 'select' },
-  { id: 'pref-title-contains', key: 'prFilter.titleContains', type: 'text' },
+  { id: 'pref-title-excludes', key: 'prFilter.excludeTitleStartsWith', type: 'csv', placeholder: 'comma-separated, e.g. For Merge' },
   { id: 'pref-review-requested', key: 'prFilter.reviewRequested', type: 'checkbox' },
   { id: 'pref-autofix-enabled', key: 'autoFix.enabled', type: 'checkbox' },
   { id: 'pref-rules-enabled', key: 'rules.enabled', type: 'checkbox' },
@@ -4932,6 +4932,8 @@ async function openPreferences() {
       const value = getNestedValue(config, field.key);
       if (field.type === 'checkbox') {
         el.checked = !!value;
+      } else if (field.type === 'csv') {
+        el.value = Array.isArray(value) ? value.join(', ') : (value || '');
       } else {
         el.value = value !== undefined && value !== null ? value : '';
       }
@@ -4962,6 +4964,8 @@ async function savePreferences() {
     } else if (field.type === 'number') {
       value = parseInt(el.value, 10);
       if (isNaN(value)) continue;
+    } else if (field.type === 'csv') {
+      value = el.value.split(',').map(s => s.trim()).filter(Boolean);
     } else {
       value = el.value.trim();
     }

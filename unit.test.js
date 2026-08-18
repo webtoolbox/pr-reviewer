@@ -1509,7 +1509,7 @@ describe('loadConfig merge logic', () => {
     aiTagPrefix: '@Hermes',
     contextLines: 5,
     imageUpload: { enabled: false, s3Bucket: '' },
-    prFilter: { reviewRequested: true, titleContains: '' },
+    prFilter: { reviewRequested: true, excludeTitleStartsWith: [] },
     autoFix: { enabled: true }
   };
 
@@ -1540,8 +1540,8 @@ describe('loadConfig merge logic', () => {
   });
 
   test('deep merges prFilter', () => {
-    const config = mergeConfigs(defaults, null, { prFilter: { titleContains: 'merge' } });
-    expect(config.prFilter.titleContains).toBe('merge');
+    const config = mergeConfigs(defaults, null, { prFilter: { excludeTitleStartsWith: ['For Merge'] } });
+    expect(config.prFilter.excludeTitleStartsWith).toEqual(['For Merge']);
     // Same as above — reviewRequested from defaults is lost
     expect(config.prFilter.reviewRequested).toBeUndefined();
   });
@@ -1549,6 +1549,52 @@ describe('loadConfig merge logic', () => {
   test('deep merges autoFix', () => {
     const config = mergeConfigs(defaults, null, { autoFix: { enabled: false } });
     expect(config.autoFix.enabled).toBe(false);
+  });
+});
+
+// ── PR title exclusion filter ──
+
+describe('PR list filter excludes titles starting with prefixes', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  function applyFilter(prs, prefixes) {
+    const p = prefixes.map(x => x.toLowerCase());
+    return prs.filter(pr => {
+      const title = (pr.title || '').toLowerCase();
+      return !p.some(x => title.startsWith(x));
+    });
+  }
+
+  test('drops PRs whose title starts with a listed prefix', () => {
+    const prs = [
+      { number: 1, title: 'For Merge: ship it' },
+      { number: 2, title: 'For merge something' },
+      { number: 3, title: 'For review: fix bug' },
+      { number: 4, title: 'Something For Merge later' } // not at start — kept
+    ];
+    const out = applyFilter(prs, ['For Merge']);
+    expect(out.map(p => p.number)).toEqual([3, 4]);
+  });
+
+  test('is case-insensitive', () => {
+    const out = applyFilter([{ number: 1, title: 'FOR MERGE: x' }], ['For Merge']);
+    expect(out).toEqual([]);
+  });
+
+  test('all three filter sites use excludeTitleStartsWith (not titleContains)', () => {
+    // Just assert the helper pattern appears at least 3 times and old key is gone
+    const exclusions = (mainSource.match(/excludeTitleStartsWith\.length/g) || []).length;
+    expect(exclusions).toBeGreaterThanOrEqual(3);
+    expect(mainSource).not.toContain("filter.titleContains");
+    expect(mainSource).not.toContain("filterConfig.titleContains");
+  });
+
+  test('save-preferences merges prFilter', () => {
+    expect(mainSource).toContain("if (prefs.prFilter !== undefined) appConfig.prFilter = { ...(appConfig.prFilter || {}), ...prefs.prFilter };");
   });
 });
 

@@ -7,7 +7,7 @@
   "reviewSaveDir": "",
   "prFilter": {
     "reviewRequested": true,
-    "titleContains": "for review"
+    "excludeTitleStartsWith": ["For Merge"]
   },
   "repos": [
     { "owner": "webtoolbox", "name": "Website-Toolbox", "checked": true }

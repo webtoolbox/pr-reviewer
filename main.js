@@ -75,7 +75,7 @@ function loadConfig() {
     aiTagPrefix: '@Hermes',
     hermesProfile: 'wt',
     reviewSaveDir: '',  // Will default to app userData/reviews
-    prFilter: { reviewRequested: true, titleContains: '' },
+    prFilter: { reviewRequested: true, excludeTitleStartsWith: [] },
     repoOwner: '',
     repoName: '',
     repoPath: '',
@@ -1592,9 +1592,12 @@ ipcMain.handle('list-prs', async () => {
         if (filter.reviewRequested) {
           prs = prs.filter(pr => pr.reviewers && pr.reviewers.includes(owner));
         }
-        if (filter.titleContains) {
-          const needle = filter.titleContains.toLowerCase();
-          prs = prs.filter(pr => pr.title.toLowerCase().includes(needle));
+        if (filter.excludeTitleStartsWith && filter.excludeTitleStartsWith.length) {
+          const prefixes = filter.excludeTitleStartsWith.map(p => p.toLowerCase());
+          prs = prs.filter(pr => {
+            const title = (pr.title || '').toLowerCase();
+            return !prefixes.some(p => title.startsWith(p));
+          });
         }
 
         prs.sort((a, b) => new Date(b.created) - new Date(a.created));
@@ -1745,9 +1748,12 @@ ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
         if (filterConfig.reviewRequested) {
           repoPrs = repoPrs.filter(pr => pr.reviewers && pr.reviewers.includes(owner));
         }
-        if (filterConfig.titleContains) {
-          const needle = filterConfig.titleContains.toLowerCase();
-          repoPrs = repoPrs.filter(pr => pr.title.toLowerCase().includes(needle));
+        if (filterConfig.excludeTitleStartsWith && filterConfig.excludeTitleStartsWith.length) {
+          const prefixes = filterConfig.excludeTitleStartsWith.map(p => p.toLowerCase());
+          repoPrs = repoPrs.filter(pr => {
+            const title = (pr.title || '').toLowerCase();
+            return !prefixes.some(p => title.startsWith(p));
+          });
         }
 
         // Add repo field to each PR
@@ -2702,6 +2708,7 @@ ipcMain.handle('save-preferences', async (event, prefs) => {
     if (prefs.imageUpload !== undefined) appConfig.imageUpload = { ...(appConfig.imageUpload || {}), ...prefs.imageUpload };
     if (prefs.cleanup !== undefined) appConfig.cleanup = { ...(appConfig.cleanup || {}), ...prefs.cleanup };
     if (prefs.rules !== undefined) appConfig.rules = { ...(appConfig.rules || {}), ...prefs.rules };
+    if (prefs.prFilter !== undefined) appConfig.prFilter = { ...(appConfig.prFilter || {}), ...prefs.prFilter };
 
     // Save to private config file
     const privateDir = path.join(app.getPath('home'), '.config', 'pr-reviewer');
@@ -3374,9 +3381,12 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
       }
     }
     
-    if (filter.titleContains) {
-      const needle = filter.titleContains.toLowerCase();
-      prs = prs.filter(pr => (pr.title || '').toLowerCase().includes(needle));
+    if (filter.excludeTitleStartsWith && filter.excludeTitleStartsWith.length) {
+      const prefixes = filter.excludeTitleStartsWith.map(p => p.toLowerCase());
+      prs = prs.filter(pr => {
+        const title = (pr.title || '').toLowerCase();
+        return !prefixes.some(p => title.startsWith(p));
+      });
     }
     
     // Find next PR after current
