@@ -75,7 +75,7 @@ function loadConfig() {
     aiTagPrefix: '@Hermes',
     hermesProfile: 'wt',
     reviewSaveDir: '',  // Will default to app userData/reviews
-    prFilter: { reviewRequested: true, excludeTitleStartsWith: [] },
+    prFilter: { reviewRequested: true, titleContains: '', excludeTitleStartsWith: [] },
     repoOwner: '',
     repoName: '',
     repoPath: '',
@@ -1599,6 +1599,10 @@ ipcMain.handle('list-prs', async () => {
             return !prefixes.some(p => title.startsWith(p));
           });
         }
+        if (filter.titleContains) {
+          const needle = filter.titleContains.toLowerCase();
+          prs = prs.filter(pr => (pr.title || '').toLowerCase().includes(needle));
+        }
 
         prs.sort((a, b) => new Date(b.created) - new Date(a.created));
         resolve({ prs });
@@ -1754,6 +1758,10 @@ ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
             const title = (pr.title || '').toLowerCase();
             return !prefixes.some(p => title.startsWith(p));
           });
+        }
+        if (filterConfig.titleContains) {
+          const needle = filterConfig.titleContains.toLowerCase();
+          repoPrs = repoPrs.filter(pr => (pr.title || '').toLowerCase().includes(needle));
         }
 
         // Add repo field to each PR
@@ -3387,6 +3395,10 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
         const title = (pr.title || '').toLowerCase();
         return !prefixes.some(p => title.startsWith(p));
       });
+    }
+    if (filter.titleContains) {
+      const needle = filter.titleContains.toLowerCase();
+      prs = prs.filter(pr => (pr.title || '').toLowerCase().includes(needle));
     }
     
     // Find next PR after current

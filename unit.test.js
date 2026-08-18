@@ -1585,12 +1585,18 @@ describe('PR list filter excludes titles starting with prefixes', () => {
     expect(out).toEqual([]);
   });
 
-  test('all three filter sites use excludeTitleStartsWith (not titleContains)', () => {
-    // Just assert the helper pattern appears at least 3 times and old key is gone
+  test('both excludeTitleStartsWith and titleContains filters are present at all three sites', () => {
+    // Exclusion filter applied at all three listing sites
     const exclusions = (mainSource.match(/excludeTitleStartsWith\.length/g) || []).length;
     expect(exclusions).toBeGreaterThanOrEqual(3);
-    expect(mainSource).not.toContain("filter.titleContains");
-    expect(mainSource).not.toContain("filterConfig.titleContains");
+    // The optional titleContains include filter coexists (blank by default)
+    const contains = (mainSource.match(/filter\.titleContains/g) || []).length;
+    const containsCfg = (mainSource.match(/filterConfig\.titleContains/g) || []).length;
+    expect(contains + containsCfg).toBeGreaterThanOrEqual(3);
+  });
+
+  test('titleContains is opt-in (blank in default config)', () => {
+    expect(mainSource).toContain('titleContains: \'\'');
   });
 
   test('save-preferences merges prFilter', () => {

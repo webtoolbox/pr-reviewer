@@ -4894,6 +4894,7 @@ const prefFields = [
   { id: 'pref-context-lines', key: 'contextLines', type: 'number' },
   { id: 'pref-diff-mode', key: 'diff.mode', type: 'select' },
   { id: 'pref-diff-view-mode', key: 'diff.viewMode', type: 'select' },
+  { id: 'pref-title-contains', key: 'prFilter.titleContains', type: 'text', placeholder: 'e.g. for review (blank to show all)' },
   { id: 'pref-title-excludes', key: 'prFilter.excludeTitleStartsWith', type: 'csv', placeholder: 'comma-separated, e.g. For Merge' },
   { id: 'pref-review-requested', key: 'prFilter.reviewRequested', type: 'checkbox' },
   { id: 'pref-autofix-enabled', key: 'autoFix.enabled', type: 'checkbox' },
