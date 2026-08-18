@@ -2725,6 +2725,23 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(funcSrc).toContain('fs.rmSync');
   });
 
+  test('uses a space-free os.tmpdir worktree path and shell-quotes it', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    // Worktree must NOT live under the app-data generated dir (which contains
+    // "Application Support" with a space) — an unquoted path there breaks
+    // exec()/git worktree add, causing the since-review diff to fail and fall
+    // back to the huge full PR diff.
+    expect(funcSrc).toContain("path.join(os.tmpdir(), `pr-reviewer-since-review-");
+    expect(funcSrc).not.toContain("getGeneratedDir(), `wt-since-review-");
+    // Shell-quote the temp path in git commands (os.tmpdir is space-free in
+    // practice, but quoting is belt-and-suspenders).
+    expect(funcSrc).toContain('const wtQ = JSON.stringify(worktreePath)');
+    expect(funcSrc).toContain('git worktree add --detach ${wtQ}');
+    expect(funcSrc).toContain('git worktree remove --force ${wtQ}');
+  });
+
   test('generateDiff calls it instead of the old net base..head diff', () => {
     expect(mainSource).toContain('computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas)');
     // The old implementation must be gone

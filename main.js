@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { execFile, exec, execSync } = require('child_process');
@@ -765,7 +766,8 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
   if (!repoPath || !baseSha || !afterReviewShas || afterReviewShas.length === 0) {
     return { diff: '', sinceReviewRef: null };
   }
-  const worktreePath = path.join(getGeneratedDir(), `wt-since-review-${Date.now()}`);
+  const worktreePath = path.join(os.tmpdir(), `pr-reviewer-since-review-${Date.now()}`);
+  const wtQ = JSON.stringify(worktreePath); // shell-quote the (space-containing) temp path
   // Deterministic, base-scoped ref so expand/other ops can diff against the
   // same rebased state. Overwriting on repeat loads keeps it fresh.
   const sinceReviewRef = `refs/tmp/pr-reviewer-since-review/${baseSha}`;
@@ -774,7 +776,7 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
     // Remove any stale ref for this base before writing the new rebase.
     await execPromise(`git update-ref -d ${sinceReviewRef}`, { cwd: repoPath }).catch(() => {});
 
-    await execPromise(`git worktree add --detach ${worktreePath} ${baseSha}`, { cwd: repoPath, timeout: 60000 });
+    await execPromise(`git worktree add --detach ${wtQ} ${baseSha}`, { cwd: repoPath, timeout: 60000 });
     created = true;
 
     // Replay the PR's own commits onto the review base.
@@ -793,7 +795,7 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
           // a commit that deletes a file we also have). Take the PR side.
           await execPromise(`git checkout --theirs -- .`, { cwd: worktreePath }).catch(() => {});
         } else {
-          await execPromise(`git checkout --theirs -- ${files.join(' ')}`, { cwd: worktreePath }).catch(() => {});
+          await execPromise(`git checkout --theirs -- ${files.map(f => JSON.stringify(f)).join(' ')}`, { cwd: worktreePath }).catch(() => {});
         }
         await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
       }
@@ -821,7 +823,7 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
     return { diff: '', sinceReviewRef: null };
   } finally {
     if (created) {
-      try { await execPromise(`git worktree remove --force ${worktreePath}`, { cwd: repoPath, timeout: 30000 }); }
+      try { await execPromise(`git worktree remove --force ${wtQ}`, { cwd: repoPath, timeout: 30000 }); }
       catch (e) { log('WARN', '[generateDiff] Failed to remove temp worktree:', e.message); }
     }
     try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
