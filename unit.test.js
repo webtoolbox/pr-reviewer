@@ -2782,14 +2782,21 @@ describe('expand-diff-context uses since-review range when available', () => {
   });
 
   test('cleanupSinceReviewRefs prunes stale refs at startup', () => {
-    expect(mainSource).toContain('function cleanupSinceReviewRefs()');
-    expect(mainSource).toContain("git for-each-ref --format='%(refname)' 'refs/tmp/pr-reviewer-since-review/*'");
+    expect(mainSource).toContain('function cleanupSinceReviewRefs(retentionMs');
+    // Startup runs it with no retention arg (prune everything)
+    expect(mainSource).toContain('cleanupSinceReviewRefs();');
+    expect(mainSource).toContain("git for-each-ref --format='%(refname) %(creatordate:unix)' 'refs/tmp/pr-reviewer-since-review/*'");
     expect(mainSource).toContain('git update-ref -d');
-    // Called on startup alongside cleanupOldFiles/cleanupWorktrees
-    const callIdx = mainSource.indexOf('cleanupOldFiles();');
-    expect(callIdx).toBeGreaterThan(-1);
-    const sinceCallIdx = mainSource.indexOf('cleanupSinceReviewRefs();');
-    expect(sinceCallIdx).toBeGreaterThan(callIdx);
+    // Prune-all on startup via isFinite check
+    expect(mainSource).toContain('const pruneAll = !isFinite(retentionMs);');
+  });
+
+  test('cleanupSinceReviewRefs prunes by age on a periodic interval', () => {
+    // Periodic scheduler prunes refs older than 24h
+    expect(mainSource).toContain('cleanupSinceReviewRefs(24 * 60 * 60 * 1000)');
+    // Runs on an interval (3600000ms = hourly)
+    expect(mainSource).toContain('setInterval');
+    expect(mainSource).toContain('3600000');
   });
 });
 

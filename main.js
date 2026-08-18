@@ -1013,21 +1013,34 @@ async function generateDiff(prNumber, repoKey) {
 
 // Clean up stale since-review temp refs (refs/tmp/pr-reviewer-since-review/*).
 // These are written per review-base to keep context expansion consistent with
-// the displayed diff; they're safe to prune at startup (no PR loaded yet) and
-// are re-created on each PR load.
-function cleanupSinceReviewRefs() {
+// the displayed diff. They're only needed while a PR is open for expansion, so
+// pruning refs older than a retention window bounds growth regardless of how
+// long the app stays running. Runs at startup (retentionMs = Infinity => all)
+// and on a periodic interval (retentionMs = 24h).
+function cleanupSinceReviewRefs(retentionMs = Infinity) {
   const repoPath = getLocalRepoPath(`${appConfig.repoOwner}/${appConfig.repoName}`);
   try {
     const refs = execSync(
-      `git for-each-ref --format='%(refname)' 'refs/tmp/pr-reviewer-since-review/*'`,
+      `git for-each-ref --format='%(refname) %(creatordate:unix)' 'refs/tmp/pr-reviewer-since-review/*'`,
       { cwd: repoPath, encoding: 'utf8', timeout: 5000 }
     ).trim();
     if (!refs) return;
+    // retentionMs === Infinity means "prune everything" (startup); otherwise
+    // prune refs older than the window.
+    const pruneAll = !isFinite(retentionMs);
+    const cutoffMs = Date.now() - retentionMs;
     let pruned = 0;
-    for (const ref of refs.split('\n')) {
-      if (!ref.trim()) continue;
-      try { execSync(`git update-ref -d ${ref.trim()}`, { cwd: repoPath, timeout: 5000 }); pruned++; }
-      catch {}
+    for (const line of refs.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 2 || !parts[0]) continue;
+      const ref = parts[0];
+      const createdMs = parseInt(parts[1], 10) * 1000;
+      // A ref we can't date (parse failed) is kept for the next round unless
+      // we're pruning everything.
+      if (pruneAll || isNaN(createdMs) || createdMs < cutoffMs) {
+        try { execSync(`git update-ref -d ${ref}`, { cwd: repoPath, timeout: 5000 }); pruned++; }
+        catch {}
+      }
     }
     if (pruned > 0) log('INFO', `[cleanup] Pruned ${pruned} stale since-review ref(s)`);
   } catch {}
@@ -1535,6 +1548,13 @@ setInterval(() => {
     }
   }
 }, 300000);
+
+// Prune stale since-review refs on a schedule so refs don't accumulate while
+// the app stays open across many reviewed PRs. 24h retention is far beyond how
+// long a PR stays open for expansion, so this bounds growth tightly.
+setInterval(() => {
+  try { cleanupSinceReviewRefs(24 * 60 * 60 * 1000); } catch {}
+}, 3600000);
 
 ipcMain.handle('list-prs', async () => {
   const owner = appConfig.repoOwner;
