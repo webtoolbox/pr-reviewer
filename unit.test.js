@@ -3523,3 +3523,37 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain('appendAiChatMsg');
   });
 });
+
+// ── Comment text preserves line breaks ──
+
+describe('Comment text preserves line breaks in the UI', () => {
+  let indexHtml;
+
+  beforeAll(() => {
+    indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  });
+
+  test('line-comment-marker .comment-text uses white-space: pre-wrap', () => {
+    const rule = indexHtml.match(/\.line-comment-marker \.comment-text \{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule[0]).toContain('white-space: pre-wrap');
+    expect(rule[0]).toContain('word-break: break-word');
+  });
+
+  test('file-comment-marker .comment-text uses white-space: pre-wrap', () => {
+    const rule = indexHtml.match(/\.file-comment-marker \.comment-text \{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule[0]).toContain('white-space: pre-wrap');
+    expect(rule[0]).toContain('word-break: break-word');
+  });
+
+  test('local comment markers render escaped text without collapsing newlines', () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    // All four local marker render paths (new line + line-level edit, file + line)
+    // put the escaped display text into a span.comment-text, relying on the CSS
+    // pre-wrap to keep line breaks visible (HTML would otherwise collapse them).
+    const markerSpans = rendererSource.match(/class="comment-text">\$\{escapeHtml\(displayText\)\}<\/span>/g);
+    expect(markerSpans).not.toBeNull();
+    expect(markerSpans.length).toBeGreaterThanOrEqual(4);
+  });
+});
