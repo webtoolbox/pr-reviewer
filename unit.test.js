@@ -2731,7 +2731,69 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(mainSource).not.toContain('git diff ${baseSha}..${headSha} -- ${fileList}');
     expect(mainSource).not.toContain('Using net base..head diff');
   });
+
+  test('persists rebased state to a since-review ref so expand stays consistent', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    expect(funcSrc).toContain('refs/tmp/pr-reviewer-since-review/');
+    expect(funcSrc).toContain('git update-ref');
+    expect(funcSrc).toContain('commit -m "tmp since-review rebase"');
+    // Returns { diff, sinceReviewRef } so the caller can thread it through
+    expect(funcSrc).toContain('return { diff: netDiff, sinceReviewRef');
+  });
+
+  test('generateDiff threads sinceReviewRef into its result', () => {
+    expect(mainSource).toContain('sinceReviewRef = netResult.sinceReviewRef;');
+    expect(mainSource).toMatch(/filesChanged: changedFiles\.length, prData, sinceReviewRef\s*}/);
+  });
+
+  test('load-pr includes sinceReviewRef in its response', () => {
+    expect(mainSource).toContain('sinceReviewRef: result.sinceReviewRef || null');
+  });
+
+  test('prefetch-pr cache includes sinceReviewRef', () => {
+    expect(mainSource).toContain('sinceReviewRef: result.sinceReviewRef || null');
+  });
 });
+
+// ── Expand context stays consistent with since-review diff ──
+
+describe('expand-diff-context uses since-review range when available', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  test('accepts sinceReviewRef parameter', () => {
+    const hIdx = mainSource.indexOf("ipcMain.handle('expand-diff-context'");
+    const hSrc = mainSource.substring(hIdx, hIdx + 300);
+    expect(hSrc).toContain('sinceReviewRef');
+  });
+
+  test('diffs against the since-review ref first when present', () => {
+    const hIdx = mainSource.indexOf("ipcMain.handle('expand-diff-context'");
+    const hSrc = mainSource.substring(hIdx, mainSource.indexOf('\n});', hIdx));
+    expect(hSrc).toContain("if (sinceReviewRef && baseSha)");
+    expect(hSrc).toMatch(/git diff \$\{baseSha\} \$\{sinceReviewRef\}/);
+    // The since-review branch must come before the 3-dot fallback
+    expect(hSrc.indexOf('sinceReviewRef && baseSha')).toBeLessThan(hSrc.indexOf('origin/master...'));
+  });
+
+  test('cleanupSinceReviewRefs prunes stale refs at startup', () => {
+    expect(mainSource).toContain('function cleanupSinceReviewRefs()');
+    expect(mainSource).toContain("git for-each-ref --format='%(refname)' 'refs/tmp/pr-reviewer-since-review/*'");
+    expect(mainSource).toContain('git update-ref -d');
+    // Called on startup alongside cleanupOldFiles/cleanupWorktrees
+    const callIdx = mainSource.indexOf('cleanupOldFiles();');
+    expect(callIdx).toBeGreaterThan(-1);
+    const sinceCallIdx = mainSource.indexOf('cleanupSinceReviewRefs();');
+    expect(sinceCallIdx).toBeGreaterThan(callIdx);
+  });
+});
+
+
 
 // ── Rules dialog auto-advance fix ──
 

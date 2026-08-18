@@ -757,14 +757,23 @@ async function mapLimit(items, limit, fn) {
 // the given (non-merge, after-review) commit SHAs onto it via cherry-pick -n
 // (no commit, so no author config needed), resolving any conflict by taking
 // the PR commit's version (these are the PR's own changes), then diff the
-// worktree against the review base. The worktree is removed in a finally.
+// worktree against the review base. The rebased state is also written to a
+// persistent ref (`sinceReviewRef`) so later per-file operations (context
+// expansion) can diff against the exact same base — keeping them consistent
+// with what's displayed. The worktree itself is removed in a finally.
 async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
   if (!repoPath || !baseSha || !afterReviewShas || afterReviewShas.length === 0) {
-    return '';
+    return { diff: '', sinceReviewRef: null };
   }
   const worktreePath = path.join(getGeneratedDir(), `wt-since-review-${Date.now()}`);
+  // Deterministic, base-scoped ref so expand/other ops can diff against the
+  // same rebased state. Overwriting on repeat loads keeps it fresh.
+  const sinceReviewRef = `refs/tmp/pr-reviewer-since-review/${baseSha}`;
   let created = false;
   try {
+    // Remove any stale ref for this base before writing the new rebase.
+    await execPromise(`git update-ref -d ${sinceReviewRef}`, { cwd: repoPath }).catch(() => {});
+
     await execPromise(`git worktree add --detach ${worktreePath} ${baseSha}`, { cwd: repoPath, timeout: 60000 });
     created = true;
 
@@ -792,10 +801,24 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
 
     // Net diff of the worktree (review base + PR commits) vs the review base.
     const netDiff = await execPromise(`git diff ${baseSha}`, { cwd: worktreePath, timeout: 60000 }).catch(() => '');
-    return netDiff;
+
+    // Persist the rebased state as a commit so it survives worktree removal
+    // and can be referenced later (context expansion). Write it to the ref
+    // from the main repo so the object is shared.
+    await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
+    const rebasedCommit = await execPromise(
+      `git -c user.name="PR Reviewer" -c user.email="pr-reviewer@local" commit -m "tmp since-review rebase"`,
+      { cwd: worktreePath }
+    ).catch(() => '');
+    const commitSha = (rebasedCommit.match(/\[[^\]]*\]\s*(\w{40})/) || [])[1];
+    if (commitSha) {
+      await execPromise(`git update-ref ${sinceReviewRef} ${commitSha}`, { cwd: repoPath }).catch((e) => log('WARN', '[generateDiff] failed to write since-review ref:', e.message));
+    }
+
+    return { diff: netDiff, sinceReviewRef: commitSha ? sinceReviewRef : null };
   } catch (err) {
     log('ERROR', '[generateDiff] since-review net diff failed:', err.message);
-    return '';
+    return { diff: '', sinceReviewRef: null };
   } finally {
     if (created) {
       try { await execPromise(`git worktree remove --force ${worktreePath}`, { cwd: repoPath, timeout: 30000 }); }
@@ -843,6 +866,9 @@ async function generateDiff(prNumber, repoKey) {
   const prJson = results[0];
   let diffOut = results[1];
   const baseResult = results[2];
+  // Set when a since-review net diff is produced; lets per-file operations
+  // (context expansion) diff against the same rebased base as the display.
+  let sinceReviewRef = null;
 
   const prData = JSON.parse(prJson || '{}');
   const headSha = prData.headRefOid;
@@ -960,9 +986,11 @@ async function generateDiff(prNumber, repoKey) {
           // placeholder states (added in one commit, removed in the next) while
           // excluding master's merged-in changes.
           const afterReviewShas = afterReview.map(c => c.sha).filter(Boolean);
-          const netDiff = await computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas);
+          const netResult = await computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas);
+          const netDiff = netResult.diff;
           if (netDiff && netDiff.trim()) {
             diffOut = netDiff;
+            sinceReviewRef = netResult.sinceReviewRef;
             log('INFO', `[generateDiff] Using since-review net diff (replayed ${afterReviewShas.length} PR commits) for ${changedSinceReview.size} file(s)`);
           }
         }
@@ -980,7 +1008,29 @@ async function generateDiff(prNumber, repoKey) {
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);
   fs.writeFileSync(tmpPath, diffOut);
 
-  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData };
+  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData, sinceReviewRef };
+}
+
+// Clean up stale since-review temp refs (refs/tmp/pr-reviewer-since-review/*).
+// These are written per review-base to keep context expansion consistent with
+// the displayed diff; they're safe to prune at startup (no PR loaded yet) and
+// are re-created on each PR load.
+function cleanupSinceReviewRefs() {
+  const repoPath = getLocalRepoPath(`${appConfig.repoOwner}/${appConfig.repoName}`);
+  try {
+    const refs = execSync(
+      `git for-each-ref --format='%(refname)' 'refs/tmp/pr-reviewer-since-review/*'`,
+      { cwd: repoPath, encoding: 'utf8', timeout: 5000 }
+    ).trim();
+    if (!refs) return;
+    let pruned = 0;
+    for (const ref of refs.split('\n')) {
+      if (!ref.trim()) continue;
+      try { execSync(`git update-ref -d ${ref.trim()}`, { cwd: repoPath, timeout: 5000 }); pruned++; }
+      catch {}
+    }
+    if (pruned > 0) log('INFO', `[cleanup] Pruned ${pruned} stale since-review ref(s)`);
+  } catch {}
 }
 
 // Create application menu with "New Window" option
@@ -1193,6 +1243,7 @@ app.whenReady().then(() => {
   if (cleanup.runOnStartup !== false) {
     cleanupOldFiles();
     cleanupWorktrees();
+    cleanupSinceReviewRefs();
   }
 
   // Create initial window with CLI args
@@ -1362,19 +1413,20 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
     const prBody = prData.body || '';
 
     return {
-      content,
-      fileName,
-      filePath: result.diffPath,
-      prNumber,
-      prTitle,
-      prAuthor,
-      prAssignees,
-      prBody,
-      reviewInfo: result.reviewInfo,
-      filesChanged: result.filesChanged,
-      repoPath: getLocalRepoPath(repo),
-      baseSha: result.baseSha || null,
-      headSha: result.headSha || null
+    content,
+    fileName,
+    filePath: result.diffPath,
+    prNumber,
+    prTitle,
+    prAuthor,
+    prAssignees,
+    prBody,
+    reviewInfo: result.reviewInfo,
+    filesChanged: result.filesChanged,
+    repoPath: getLocalRepoPath(repo),
+    baseSha: result.baseSha || null,
+    headSha: result.headSha || null,
+    sinceReviewRef: result.sinceReviewRef || null
     };
   } catch (err) {
     log('ERROR', '[pr] load failed:', err.message);
@@ -1448,7 +1500,8 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       filesChanged: result.filesChanged,
       repoPath: getLocalRepoPath(repo),
       baseSha: result.baseSha || null,
-      headSha: result.headSha || null
+      headSha: result.headSha || null,
+      sinceReviewRef: result.sinceReviewRef || null
     };
     log('INFO', '[prefetch-pr] Cached PR #' + safePr + ':', content.length, 'chars');
     return { status: 'done' };
@@ -3319,7 +3372,7 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
 });
 
 // Expand diff context for a single file
-ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha }) => {
+ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha, sinceReviewRef } = {}) => {
   try {
     // Validate inputs to prevent shell injection
     const ctxLines = parseInt(contextLines, 10);
@@ -3329,9 +3382,24 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
     if (!filePath || /[;&|`$(){}!<>"]/.test(filePath)) {
       return { error: 'Invalid file path', content: '' };
     }
-    // Use same range as generateDiff: three-dot against origin/master first, two-dot as fallback
+    // Use the same range as the displayed since-review diff when available.
+    // A since-review diff is computed by replaying only the PR's own commits
+    // onto the review base (see computeSinceReviewNetDiff); expanding a file
+    // must diff against that same rebased base, otherwise the extra lines come
+    // from a different range (e.g. master merges) and don't match what's on
+    // screen. When no since-review ref exists, fall back to the historical
+    // 3-dot (merge-base) then 2-dot ranges.
     let diffOut = '';
-    if (headSha) {
+    if (sinceReviewRef && baseSha) {
+      const cmdSince = `git diff ${baseSha} ${sinceReviewRef} -U${ctxLines} -- "${filePath}"`;
+      log('INFO', '[expand-diff-context] Using since-review range:', cmdSince);
+      try {
+        diffOut = await execPromise(cmdSince, { cwd: repoPath, timeout: 15000 });
+      } catch (e) {
+        log('WARN', '[expand-diff-context] since-review range failed:', e.message);
+      }
+    }
+    if (!diffOut && headSha) {
       try {
         const cmd3 = `git diff origin/master...${headSha} -U${ctxLines} -- "${filePath}"`;
         log('INFO', '[expand-diff-context] Trying 3-dot:', cmd3);

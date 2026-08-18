@@ -1311,7 +1311,8 @@ async function handleContextExpand(fileName) {
       filePath: fileName,
       contextLines: newContext,
       baseSha: currentBaseSha,
-      headSha: currentHeadSha
+      headSha: currentHeadSha,
+      sinceReviewRef: currentSinceReviewRef
     });
 
     if (result.error) {
@@ -3098,6 +3099,7 @@ async function loadPrByNumber(prNumber, repoKey) {
     currentRepoPath = result.repoPath || null;
     currentBaseSha = result.baseSha || null;
     currentHeadSha = result.headSha || null;
+    currentSinceReviewRef = result.sinceReviewRef || null;
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
@@ -3595,6 +3597,7 @@ let currentPrBody = '';
 let currentRepoPath = null;
 let currentBaseSha = null;
 let currentHeadSha = null;
+let currentSinceReviewRef = null;
 const fileContextLevels = new Map(); // filename -> current context lines count
 const collapsedFiles = new Set(); // filenames the user has collapsed via the header toggle
 
