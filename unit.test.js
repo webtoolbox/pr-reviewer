@@ -3829,6 +3829,18 @@ describe('Function preview popover', () => {
     expect(rendererSource).toContain("->\\s*([a-z_]\\w*)\\s*\\(");
   });
 
+  test('smart resolution infers class from arrow chain and walks inheritance', () => {
+    // Renderer: infer the class for a `Module::Class->new(...)->method()` chain
+    // so the method resolves in the right class, not codebase-wide.
+    expect(rendererSource).toContain("matchAll(/([A-Za-z_]\\w*(?:::\\w+)+)\\s*->/g)");
+    // Main: follow the inheritance chain (@ISA / use base / extends) so a method
+    // inherited from a parent class (e.g. OAuthConnection -> Framework -> load)
+    // is found in the parent.
+    expect(mainSource).toContain("getParentPackages");
+    expect(mainSource).toContain("our\\s+@ISA\\s*=\\s*\\(?\\s*qw");
+    expect(mainSource).toContain("findInClass");
+  });
+
   test('extractFunctionBody extracts a Perl sub with nested braces', () => {
     const content = [
       'package Foo;',

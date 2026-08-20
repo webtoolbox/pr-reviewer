@@ -2725,21 +2725,55 @@ function defGrepPattern(lang, funcName) {
   return `function\\s+${n}\\b|\\b${n}\\s*[:=]\\s*(?:async\\s*)?(?:function|\\([^)]*\\)\\s*=>)|\\b${n}\\s*\\([^)]*\\)\\s*\\{`;
 }
 
+// Extract parent class/module names a package inherits from, by reading its
+// `our @ISA = qw(...)`, `use base qw(...)`, or `extends '...'` declarations.
+function getParentPackages(content) {
+  if (!content) return [];
+  const parents = [];
+  const addMatches = (re) => {
+    let m;
+    while ((m = re.exec(content)) !== null) {
+      const s = m[1] || '';
+      for (const p of s.matchAll(/[A-Za-z_]\w*(?:::\w+)+/g)) parents.push(p[0]);
+    }
+  };
+  addMatches(/our\s+@ISA\s*=\s*\(?\s*qw\s*\(([^)]*)\)/g);
+  addMatches(/use\s+base\s+\(?\s*qw\s*\(([^)]*)\)/g);
+  addMatches(/\bextends\s+['"]([A-Za-z_]\w*(?:::\w+)+)['"]/g);
+  return parents;
+}
+
+// Search a class's own package file(s) for funcName, walking the inheritance
+// chain (parents via @ISA / use base / extends). Returns { code, file } or null.
+async function findInClass(repoPath, tree, module, funcName, seen) {
+  if (seen.has(module)) return null;
+  seen.add(module);
+  const pkgFiles = await grepFilePaths(repoPath, tree, `package ${module};`, true);
+  for (const f of pkgFiles) {
+    const content = await readFileAtTree(repoPath, tree, f);
+    if (!content) continue;
+    const body = extractFunctionBody(content, funcName);
+    if (body) return { code: body, file: f };
+    // Not defined here; search the parents this class inherits from.
+    for (const parent of getParentPackages(content)) {
+      const found = await findInClass(repoPath, tree, parent, funcName, seen);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 // Resolve the definition of funcName across the repo. Tries each tree in order
 // (PR head first, then master as a fallback). For a qualified Perl call the
-// module's package file is searched first so the correct sub wins; otherwise it
-// greps the whole codebase and prefers the caller's own file. Returns
-// { code, file, tree } or null.
+// module's package file is searched first (following inheritance), so the
+// correct sub wins; otherwise it greps the whole codebase and prefers the
+// caller's own file. Returns { code, file, tree } or null.
 async function resolveFunctionPreview(repoPath, trees, filePath, funcName, lang, module) {
   for (const tree of trees) {
     // 1) Qualified Perl call: locate the package file, look for the sub there.
     if (module) {
-      const pkgFiles = await grepFilePaths(repoPath, tree, `package ${module};`, true);
-      for (const f of pkgFiles) {
-        const content = await readFileAtTree(repoPath, tree, f);
-        const body = content ? extractFunctionBody(content, funcName) : null;
-        if (body) return { code: body, file: f, tree };
-      }
+      const found = await findInClass(repoPath, tree, module, funcName, new Set());
+      if (found) return { code: found.code, file: found.file, tree };
     }
     // 2) Codebase-wide search; prefer the caller's own file, then first match.
     const candidates = await grepFilePaths(repoPath, tree, defGrepPattern(lang, funcName));

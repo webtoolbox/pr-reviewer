@@ -4254,6 +4254,13 @@ function resolvePreviewTarget(text, lang) {
   // `Custom::OO::OAuthConnection->new(...)->load()` where `new` is a keyword but
   // `load` is a genuine method call.
   const targets = [];
+  // For Perl arrow-method calls (`->method(`), infer the class from the nearest
+  // `Module::Class->` earlier in the same chain so we can resolve the method in
+  // the right class rather than codebase-wide.
+  const classQualifiedArrow = lang === 'perl'
+    ? Array.from(text.matchAll(/([A-Za-z_]\w*(?:::\w+)+)\s*->/g))
+        .map(mm => ({ idx: mm.index, cls: mm[1] }))
+    : [];
   for (const p of FUNC_CALL_PATTERNS) {
     if (p.lang !== lang) continue;
     const re = new RegExp(p.re.source, 'g');
@@ -4268,10 +4275,15 @@ function resolvePreviewTarget(text, lang) {
         if (CALL_KEYWORDS.has(raw)) continue;
         targets.push({ name: raw, module: '', isDef: false });
       } else if (p.method) {
-        // `->method(...)` or `->method (...)` — the module/class isn't known from
-        // the call, so we resolve the method name codebase-wide.
+        // `->method(...)`. If a `Module::Class->` appears earlier in this chain,
+        // use it as the class; otherwise resolve codebase-wide.
         if (CALL_KEYWORDS.has(raw)) continue;
-        targets.push({ name: raw, module: '', isDef: false });
+        let module = '';
+        for (const c of classQualifiedArrow) {
+          if (c.idx < m.index) module = c.cls;
+          else break;
+        }
+        targets.push({ name: raw, module, isDef: false });
       }
     }
   }
