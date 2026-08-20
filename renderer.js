@@ -37,6 +37,15 @@ function getAiTagLabel(text) {
 let fileCommentCounts = {};
 let currentCommentIndex = -1; // For batch navigation
 let commentUidCounter = 0; // Unique ID counter for stable comment references
+
+// Allocate the next available unique comment uid, avoiding any collision with
+// existing comments (defensive: restored comments carry uids from a previous
+// session, so the counter alone can't be trusted).
+function nextCommentUid() {
+  const used = new Set(comments.map(c => c._uid).filter(Boolean));
+  while (used.has(commentUidCounter)) commentUidCounter++;
+  return ++commentUidCounter;
+}
 let collaborators = []; // GitHub collaborators for @mentions
 
 // DOM elements
@@ -665,6 +674,7 @@ function restoreDraft(draft) {
   console.log('[restoreDraft] Restoring', draftComments.length, 'comments');
   for (const c of draftComments) {
     if (!c._uid) c._uid = ++commentUidCounter;
+    else commentUidCounter = Math.max(commentUidCounter, c._uid);
     // Verify the comment's target line exists in current diff before adding
     if (c.level !== 'file' && !findDiffLineRow(c.file, c.line, c.side)) {
       console.warn('[restoreDraft] Skipping stale comment:', c.file, c.line, c.side);
@@ -1567,7 +1577,7 @@ function renderFileCommentMarker(comment) {
 
   const marker = document.createElement('div');
   marker.className = 'file-comment-marker' + (comment.isAiTagged ? ' ai-tagged' : '');
-  marker.dataset.commentUid = comment._uid || (comment._uid = ++commentUidCounter);
+  marker.dataset.commentUid = comment._uid || (comment._uid = nextCommentUid());
 
   const displayText = comment.isAiTagged ? stripAiTag(comment.text) : comment.text;
   const tagLabel = comment.isAiTagged ? getAiTagLabel(comment.text) : '';
@@ -1671,7 +1681,7 @@ function submitComment() {
   const level = commentTarget.level || 'line';
 
   const comment = {
-    _uid: ++commentUidCounter,
+    _uid: nextCommentUid(),
     file: commentTarget.file,
     line: commentTarget.line,
     side: commentTarget.side,
@@ -1699,7 +1709,7 @@ function submitComment() {
 function renderLineCommentMarker(comment) {
   const marker = document.createElement('tr');
   marker.className = 'line-comment-marker' + (comment.isAiTagged ? ' ai-tagged' : '');
-  marker.dataset.commentUid = comment._uid || (comment._uid = ++commentUidCounter);
+  marker.dataset.commentUid = comment._uid || (comment._uid = nextCommentUid());
   const markerCell = document.createElement('td');
   markerCell.setAttribute('colspan', '2');
 

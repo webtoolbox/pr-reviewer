@@ -3829,6 +3829,15 @@ describe('Function preview popover', () => {
     expect(rendererSource).toContain("->\\s*([a-z_]\\w*)\\s*\\(");
   });
 
+  test('comment uids never collide across restored and new comments', () => {
+    // Restored drafts keep _uid values from a previous session; new comments
+    // must allocate uids above all existing ones so editComment never resolves
+    // a marker to a different file's comment.
+    expect(rendererSource).toContain('function nextCommentUid');
+    expect(rendererSource).toContain('while (used.has(commentUidCounter)) commentUidCounter++;');
+    expect(rendererSource).toContain('else commentUidCounter = Math.max(commentUidCounter, c._uid);');
+  });
+
   test('smart resolution infers class from arrow chain and walks inheritance', () => {
     // Renderer: infer the class for a `Module::Class->new(...)->method()` chain
     // so the method resolves in the right class, not codebase-wide.
