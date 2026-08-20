@@ -534,7 +534,11 @@
       border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
       padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px; line-height: 1.5; color: #c9d1d9;
-      white-space: pre; display: none; pointer-events: none;
+      white-space: pre; display: none; pointer-events: auto;
+    }
+    /* Keep long source lines horizontally scrollable inside the popover. */
+    .func-preview-popover .func-preview-body {
+      overflow-x: auto; overflow-y: auto; max-height: 280px;
     }
     .func-preview-popover .func-preview-title {
       display: block; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;

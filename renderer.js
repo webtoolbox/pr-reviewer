@@ -4180,11 +4180,19 @@ const funcPreviewCache = new Map(); // `${lang}|${module}|${name}` -> { code, fi
 let funcPreviewPopover = null; // lazily-created popover element
 let funcPreviewTimer = null;   // hover-delay timer
 let funcPreviewAnchor = null;  // the line element the pending preview is for
+let funcPreviewHideTimer = null; // grace-period timer before hiding
 
 function getFuncPreviewPopover() {
   if (!funcPreviewPopover) {
     funcPreviewPopover = document.createElement('div');
     funcPreviewPopover.className = 'func-preview-popover';
+    // Allow the cursor to enter the popover without it disappearing, so the
+    // user can scroll long lines. When the cursor enters, cancel any pending
+    // hide; when it leaves the popover, hide after a short grace period.
+    funcPreviewPopover.addEventListener('mouseenter', () => {
+      if (funcPreviewHideTimer) { clearTimeout(funcPreviewHideTimer); funcPreviewHideTimer = null; }
+    });
+    funcPreviewPopover.addEventListener('mouseleave', () => scheduleHideFuncPreview());
     document.body.appendChild(funcPreviewPopover);
   }
   return funcPreviewPopover;
@@ -4192,7 +4200,19 @@ function getFuncPreviewPopover() {
 
 function hideFuncPreview() {
   if (funcPreviewTimer) { clearTimeout(funcPreviewTimer); funcPreviewTimer = null; }
+  if (funcPreviewHideTimer) { clearTimeout(funcPreviewHideTimer); funcPreviewHideTimer = null; }
   if (funcPreviewPopover) funcPreviewPopover.style.display = 'none';
+}
+
+// Hide the popover after a short delay so the cursor has a moment to travel
+// from the anchor line into the popover (needed to scroll it). Cancelled if
+// the cursor reaches the popover first.
+function scheduleHideFuncPreview() {
+  if (funcPreviewTimer) { clearTimeout(funcPreviewTimer); funcPreviewTimer = null; }
+  if (funcPreviewHideTimer) clearTimeout(funcPreviewHideTimer);
+  funcPreviewHideTimer = setTimeout(() => {
+    if (funcPreviewPopover) funcPreviewPopover.style.display = 'none';
+  }, 300);
 }
 
 // Show the popover for a sub/function. For a call site, `module` is the Perl
@@ -4208,11 +4228,12 @@ function showFuncPreview(fileName, name, module, lang, anchorEl, mouseX, mouseY)
   fileLabel.className = 'func-preview-file';
   fileLabel.textContent = module ? `${module}::${name}` : '';
   popover.appendChild(fileLabel);
-  popover.appendChild(document.createElement('div')); // body placeholder
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'func-preview-body';
+  popover.appendChild(bodyEl);
   popover.style.display = 'block';
   positionFuncPreview(popover, mouseX, mouseY);
 
-  const bodyEl = popover.querySelector('div:last-child');
   bodyEl.textContent = 'Loading…';
 
   const key = `${lang}|${module || ''}|${name}`;
@@ -4375,7 +4396,10 @@ function addFunctionPreviewHandlers() {
         }, FUNC_PREVIEW_DELAY);
       });
       lineEl.addEventListener('mouseleave', () => {
-        hideFuncPreview();
+        // Don't hide instantly — give the cursor a moment to move into the
+        // popover so it can scroll long lines. hideFuncPreview() (instant) is
+        // still used where an immediate dismissal is correct.
+        scheduleHideFuncPreview();
       });
     });
   });

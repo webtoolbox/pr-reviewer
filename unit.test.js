@@ -3788,10 +3788,11 @@ describe('Collapsed files reorder to end', () => {
 // ── Function preview popover ──
 
 describe('Function preview popover', () => {
-  let mainSource, rendererSource;
+  let mainSource, rendererSource, htmlSource;
   beforeAll(() => {
     mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
     rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    htmlSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   });
 
   test('get-function-preview IPC handler exists and is wired', () => {
@@ -3836,6 +3837,21 @@ describe('Function preview popover', () => {
     expect(rendererSource).toContain('function nextCommentUid');
     expect(rendererSource).toContain('while (used.has(commentUidCounter)) commentUidCounter++;');
     expect(rendererSource).toContain('else commentUidCounter = Math.max(commentUidCounter, c._uid);');
+  });
+
+  test('preview popover is scrollable and stays open while moving to it', () => {
+    // The popover must be pointer-interactive (scroll long lines) instead of
+    // pointer-events:none, and hiding must wait a grace period so the cursor
+    // can travel from the anchor line into the popover. Entering the popover
+    // cancels the pending hide.
+    expect(rendererSource).toContain('scheduleHideFuncPreview');
+    expect(rendererSource).toContain("funcPreviewPopover.addEventListener('mouseenter'");
+    expect(rendererSource).toContain("funcPreviewPopover.addEventListener('mouseleave'");
+    expect(rendererSource).toContain("bodyEl.className = 'func-preview-body'");
+    // CSS: pointer-events auto + horizontally scrollable body
+    expect(htmlSource).toContain('pointer-events: auto');
+    expect(htmlSource).toContain('.func-preview-body {');
+    expect(htmlSource).toContain('overflow-x: auto');
   });
 
   test('smart resolution infers class from arrow chain and walks inheritance', () => {
