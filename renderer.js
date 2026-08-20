@@ -643,7 +643,7 @@ function loadDiff(content, filePath) {
   const allExts = extractExtensionsFromDiff(currentDiffContent);
   const excludedExts = allExts.filter(e => hiddenExtensions.includes(e));
   collapseFilteredFiles(excludedExts);
-
+  reorderCollapsedFilesLast();
   // Try to load saved draft
   if (currentFilePath) {
     loadSavedDraft(currentFilePath).then(draft => {
@@ -3802,6 +3802,8 @@ function renderFilteredDiff() {
   collapseFilteredFiles(excludedExts);
   // Add expand/collapse toggle to every file header (after collapse so state syncs)
   addFileCollapseToggles();
+  // All collapsed files (filtered-out + user-collapsed) appear at the end
+  reorderCollapsedFilesLast();
 }
 
 /**
@@ -3981,6 +3983,8 @@ function addFileCollapseToggleForWrapper(wrapper, fileName) {
     else collapsedFiles.delete(fileName);
     toggle.classList.toggle('collapsed', collapsed);
     toggle.title = collapsed ? 'Expand file' : 'Collapse file';
+    // Keep all collapsed files grouped at the end after a manual toggle
+    reorderCollapsedFilesLast();
   });
 
   // Place toggle at the far left of the header (before the file name)
@@ -3993,6 +3997,44 @@ function addFileCollapseToggleForWrapper(wrapper, fileName) {
 function collapseFileWrapper(wrapper, fileName) {
   wrapper.classList.add('filtered-collapsed');
   collapsedFiles.add(fileName);
+}
+
+// Move every collapsed file wrapper to the END of the diff, after all expanded
+// files, preserving their relative order. This makes the expanded files appear
+// first so the reviewer can scan them without scrolling past collapsed sections.
+// Re-run after any render (loadDiff, renderFilteredDiff) and after the user
+// toggles a single file collapsed.
+//
+// CRITICAL: the file wrappers are rendered inside a container div that carries
+// the `.d2h-dark-color-scheme` class (`.d2h-wrapper`). We must reorder the
+// wrappers WITHIN that themed parent — appending them to #diff-container would
+// hoist them out of the dark-scheme ancestor and break the diff's dark styling.
+function reorderCollapsedFilesLast() {
+  const container = document.getElementById('diff-container');
+  if (!container) return;
+  const wrappers = Array.from(container.querySelectorAll('.d2h-file-wrapper'));
+  if (wrappers.length === 0) return;
+  // The parent that all wrappers share — the themed .d2h-wrapper (or #diff-container
+  // as a fallback). Reorder inside this parent so dark-theme styling is preserved.
+  const parent = wrappers[0].parentElement || container;
+  // Safety: if a previous bug hoisted wrappers out of the dark-scheme ancestor,
+  // move them back under the ancestor that has .d2h-dark-color-scheme.
+  let themedParent = null;
+  for (let n = parent; n; n = n.parentElement) {
+    if (n.classList && n.classList.contains('d2h-dark-color-scheme')) { themedParent = n; break; }
+  }
+  const target = themedParent || parent;
+
+  const expanded = wrappers.filter(w => !w.classList.contains('filtered-collapsed'));
+  const collapsed = wrappers.filter(w => w.classList.contains('filtered-collapsed'));
+  if (collapsed.length === 0 || expanded.length === 0) return; // nothing to reorder
+
+  // Re-append expanded wrappers first (preserving order), then collapsed ones,
+  // so all collapsed files land at the end. Use a fragment to avoid extra reflows.
+  const frag = document.createDocumentFragment();
+  expanded.forEach(w => frag.appendChild(w));
+  collapsed.forEach(w => frag.appendChild(w));
+  target.appendChild(frag);
 }
 
 // Extract file extension from diff file block

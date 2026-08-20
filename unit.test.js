@@ -3668,3 +3668,36 @@ describe('Comment text preserves line breaks in the UI', () => {
     expect(markerSpans.length).toBeGreaterThanOrEqual(4);
   });
 });
+
+// ── Collapsed files reorder to end ──
+
+describe('Collapsed files reorder to end', () => {
+  let rendererSource;
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+  });
+
+  test('reorderCollapsedFilesLast exists and appends collapsed wrappers last', () => {
+    expect(rendererSource).toContain('function reorderCollapsedFilesLast');
+    const funcSrc = rendererSource.substring(
+      rendererSource.indexOf('function reorderCollapsedFilesLast'),
+      rendererSource.indexOf('function reorderCollapsedFilesLast') + 2000
+    );
+    // Groups expanded first then collapsed into a fragment appended to the target
+    expect(funcSrc).toContain('expanded.forEach(w => frag.appendChild(w));');
+    expect(funcSrc).toContain('collapsed.forEach(w => frag.appendChild(w));');
+    expect(funcSrc).toContain('target.appendChild(frag);');
+    // Must reorder WITHIN the themed (.d2h-dark-color-scheme) parent — appending
+    // to #diff-container would hoist wrappers out of the dark scheme and break
+    // the diff's dark styling. Verify the themed-ancestor lookup exists.
+    expect(funcSrc).toContain('d2h-dark-color-scheme');
+  });
+
+  test('reorderCollapsedFilesLast is called after renders and on toggle', () => {
+    expect(rendererSource).toContain('reorderCollapsedFilesLast();');
+    // Called in loadDiff, renderFilteredDiff, and the toggle click handler
+    const calls = rendererSource.match(/reorderCollapsedFilesLast\(\);/g);
+    expect(calls).not.toBeNull();
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
