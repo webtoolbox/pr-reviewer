@@ -2612,6 +2612,29 @@ describe('Dark color scheme consistency', () => {
     expect(contextExpandSection).toContain('replaceFileInDiff');
     expect(contextExpandSection).toContain('fileName');
   });
+
+  test('context expand re-inserts comments after in-place wrapper swap', () => {
+    // renderSingleFileInPlace swaps the old wrapper with a freshly rendered one
+    // (oldWrapper.replaceWith(newWrapper)), which destroys comment markers. It
+    // must re-run reinsertCommentsForFile so the user's comments survive the
+    // "Show more lines" expand.
+    const renderInPlaceSection = rendererSource.substring(
+      rendererSource.indexOf('function renderSingleFileInPlace'),
+      rendererSource.indexOf('function replaceFileInDiff')
+    );
+    expect(renderInPlaceSection).toContain('oldWrapper.replaceWith(newWrapper);');
+    expect(renderInPlaceSection).toContain('reinsertCommentsForFile(fileName);');
+    expect(rendererSource).toContain('function reinsertCommentsForFile');
+    // reinsertCommentsForFile must handle BOTH the user's local draft comments
+    // and GitHub inline review comments.
+    const reinsertFn = rendererSource.substring(
+      rendererSource.indexOf('function reinsertCommentsForFile'),
+      rendererSource.indexOf('function insertInlineCommentsForFile')
+    );
+    expect(reinsertFn).toContain('renderFileCommentMarker(c)');
+    expect(reinsertFn).toContain('renderLineCommentMarker(c)');
+    expect(reinsertFn).toContain('insertInlineCommentsForFile(fileName');
+  });
 });
 
 // ── Auto-advance after approve ──

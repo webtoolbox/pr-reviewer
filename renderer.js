@@ -788,6 +788,79 @@ function insertInlineComments(commentsByFileLine, repliesByParentId) {
   }
 }
 
+// Re-insert this file's comment markers after its wrapper is re-rendered in
+// place (e.g. by "Show more lines" / context expand). Replacing the wrapper
+// destroys every marker that lived inside it, so we must re-render both the
+// user's local draft comments (the `comments` array) and any GitHub inline
+// review comments for this file.
+function reinsertCommentsForFile(fileName) {
+  // Local draft comments (the user's own)
+  for (const c of comments) {
+    if (c.file !== fileName) continue;
+    if (c.level === 'file') {
+      renderFileCommentMarker(c);
+    } else {
+      renderLineCommentMarker(c);
+    }
+  }
+
+  // GitHub inline review comments for this file. Build the same grouped maps
+  // fetchAndDisplayReviewComments builds, then insert only into this file.
+  if (!inlineReviewComments || inlineReviewComments.length === 0) return;
+  const commentsByFileLine = {};
+  const repliesByParentId = {};
+  for (const comment of inlineReviewComments) {
+    if (comment.inReplyToId) {
+      if (!repliesByParentId[comment.inReplyToId]) repliesByParentId[comment.inReplyToId] = [];
+      repliesByParentId[comment.inReplyToId].push(comment);
+    } else {
+      const key = `${comment.path}:${comment.line || comment.originalLine}`;
+      if (!commentsByFileLine[key]) commentsByFileLine[key] = [];
+      commentsByFileLine[key].push(comment);
+    }
+  }
+  insertInlineCommentsForFile(fileName, commentsByFileLine, repliesByParentId);
+}
+
+// Insert inline review comments for a single named file only (used after a
+// single file's wrapper is re-rendered in place). Looks up rows by LINE NUMBER
+// (not array index) because context expansion adds rows the original parsedDiff
+// doesn't know about.
+function insertInlineCommentsForFile(fileName, commentsByFileLine, repliesByParentId) {
+  const wrapper = Array.from(diffContainer.querySelectorAll('.d2h-file-wrapper')).find(w => {
+    const nameEl = w.querySelector('.d2h-file-name');
+    return nameEl && nameEl.textContent.trim() === fileName;
+  });
+  if (!wrapper) return;
+
+  for (const [key, lineComments] of Object.entries(commentsByFileLine)) {
+    const filePart = key.substring(0, key.lastIndexOf(':'));
+    if (filePart !== fileName) continue;
+    const lineNum = parseInt(key.substring(key.lastIndexOf(':') + 1), 10);
+    if (!lineNum) continue;
+    // Pick the side from the first comment; fall back to RIGHT.
+    const side = lineComments[0].side === 'LEFT' ? 'LEFT' : 'RIGHT';
+
+    const row = findDiffLineRow(fileName, lineNum, side);
+    if (!row) continue;
+    const lineEl = side === 'LEFT'
+      ? row.querySelector('.d2h-code-line, .d2h-code-side-line.d2h-del, .d2h-code-side-line')
+      : row.querySelector('.d2h-code-line, .d2h-code-side-line.d2h-ins, .d2h-code-side-line');
+    if (!lineEl) continue;
+
+    const commentContainer = document.createElement('div');
+    commentContainer.className = 'inline-review-comments';
+    commentContainer.dataset.line = lineNum;
+    commentContainer.dataset.file = fileName;
+    commentContainer.dataset.side = side;
+    for (const comment of lineComments) {
+      const defaultExpanded = comment.resolved === false;
+      commentContainer.appendChild(createReviewCommentElement(comment, repliesByParentId, defaultExpanded));
+    }
+    lineEl.parentNode.insertBefore(commentContainer, lineEl.nextSibling);
+  }
+}
+
 function createReviewCommentElement(comment, repliesByParentId, defaultExpanded = false) {
   const el = document.createElement('div');
   el.className = 'inline-review-comment' + (defaultExpanded ? '' : ' resolved-collapsed');
@@ -1399,6 +1472,8 @@ function renderSingleFileInPlace(fileName, fileDiff) {
 
   // Add the expand/collapse toggle last so it reflects the final collapsed state
   addFileCollapseToggleForWrapper(newWrapper, fileName);
+  // Re-insert this file's comment markers — swapping the wrapper destroyed them
+  reinsertCommentsForFile(fileName);
 
   // Sidebar indices stay valid (same wrapper order), so no need to repopulate.
   // But if file order can change, keep the sidebar in sync defensively:
