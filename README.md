@@ -37,6 +37,7 @@ Reviewing PRs on GitHub means clicking into a PR, reading the description, scann
 ### Core Review Features
 - **Side-by-side diff viewing** powered by diff2html
 - **Line-level commenting** on both left (old) and right (new) sides
+- **Sub/function preview popover** — hover over a Perl subroutine or JavaScript function (its definition OR a call site anywhere in the codebase) to see its source inline
 - **File-level comments** for overall feedback on a file
 - **Three review types**: Comment, Request Changes, Approve
 - **Direct GitHub submission** — reviews submitted directly to GitHub
@@ -84,6 +85,14 @@ Reviewing PRs on GitHub means clicking into a PR, reading the description, scann
 - **User mentions** — type @ in any comment to get an autosuggest dropdown of repo collaborators. Select a collaborator to insert @username. Fetches real collaborators via the GitHub API.
 
 ![Mention Dropdown](screenshots/mention-dropdown.jpg)
+
+### Sub/Function Preview
+- **Hover to preview** — hover over any Perl subroutine (`sub`) or JavaScript function (its definition or a call site) to see the full source in a popover
+- **Resolves across the codebase** — call sites like `Custom::MB::Undelete::showDeletedTopicError(@threadid)` resolve to the defining module anywhere in the repo, not just the file on screen
+- **Inheritance-aware** — Perl arrow-method calls (`$obj->load()`) infer the class from the call chain and follow the `@ISA`/`use base`/`extends` hierarchy to find inherited methods
+- **Master-branch fallback** — if a symbol isn't at the PR head, the search falls back to `master`
+- **Fast & cached** — git grep / git show results are cached, so repeated hovers are instant
+- **Scrollable** — long lines can be scrolled horizontally inside the popover
 
 ### Auto-fix with AI
 - **Automatic PR creation** — review comments are sent to the configured AI agent which creates a new PR with the necessary fixes
