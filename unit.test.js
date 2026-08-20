@@ -2824,6 +2824,21 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
   test('prefetch-pr cache includes sinceReviewRef', () => {
     expect(mainSource).toContain('sinceReviewRef: result.sinceReviewRef || null');
   });
+
+  test('get-pr-info serves cached metadata from prefetch cache', () => {
+    const hIdx = mainSource.indexOf("ipcMain.handle('get-pr-info'");
+    const hSrc = mainSource.substring(hIdx, mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) > 0 ? mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) : hIdx + 1500);
+    // Reads prefetch cache before hitting the network
+    expect(hSrc).toContain('prefetchCache[cacheKey]');
+    expect(hSrc).toContain("if (prefetched && prefetched !== 'in-progress')");
+    // Returns cached title/author/assignees/body
+    expect(hSrc).toContain('prTitle: prefetched.prTitle ||');
+    expect(hSrc).toContain('prAuthor: prefetched.prAuthor ||');
+    expect(hSrc).toContain('prAssignees: prefetched.prAssignees ||');
+    expect(hSrc).toContain('prBody: prefetched.prBody ||');
+    // Must NOT consume the cache entry (load-pr still needs the diff)
+    expect(hSrc).not.toContain('delete prefetchCache[cacheKey]');
+  });
 });
 
 // ── Expand context stays consistent with since-review diff ──

@@ -1454,6 +1454,24 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
 ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
   const safePr = safePrNumber(prNumber);
   if (!safePr) return { error: 'Invalid PR number' };
+  // Serve title/author/assignees from the prefetch cache when available so the
+  // title appears instantly alongside the diff. Do NOT consume the entry here —
+  // load-pr still needs it for the diff content.
+  const cacheKey = `${safePr}:${repo || 'default'}`;
+  const prefetched = prefetchCache[cacheKey];
+  if (prefetched && prefetched !== 'in-progress') {
+    log('INFO', '[get-pr-info] Returning cached metadata for PR #' + safePr);
+    return {
+      prTitle: prefetched.prTitle || '',
+      prAuthor: prefetched.prAuthor || '',
+      prAssignees: prefetched.prAssignees || [],
+      prBody: prefetched.prBody || '',
+      state: prefetched.state || '',
+      filesChanged: prefetched.filesChanged || 0,
+      headSha: prefetched.headSha || '',
+      baseSha: prefetched.baseSha || ''
+    };
+  }
   let owner, repoName;
   if (repo && repo.includes('/')) {
     [owner, repoName] = repo.split('/');
