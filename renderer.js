@@ -4135,10 +4135,16 @@ const FUNC_DEF_PATTERNS = [
 const FUNC_CALL_PATTERNS = [
   // Perl fully-qualified: capture both the module prefix and the sub name.
   { lang: 'perl', re: /\b([A-Za-z_]\w*(?:::\w+)+)\s*\(/, qualified: true },
+  // Perl arrow-method call: `->method(...)` / `$obj->method(...)`. The class
+  // isn't known from the call, so resolve the method name codebase-wide.
+  { lang: 'perl', re: /->\s*([a-z_]\w*)\s*\(/, method: true },
   // Perl bare call: capture the trailing identifier, but ignore control keywords.
   { lang: 'perl', re: /\b([a-z_]\w*)\s*\(/, bare: true },
   // JS method/function call.
-  { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*\(/, bare: true }
+  { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*\(/, bare: true },
+  // JS arrow-method call: `obj.method(...)` — handled by bare since the method
+  // name is the captured identifier, but also catch `->method(` (e.g. Perl-ish).
+  { lang: 'js', re: /\.\s*([A-Za-z_$][\w$]*)\s*\(/, method: true }
 ];
 
 // Control keywords / built-ins that must not be treated as a bare call target.
@@ -4243,22 +4249,36 @@ function resolvePreviewTarget(text, lang) {
     const m = text.match(p.re);
     if (m && m[1]) return { name: m[1], module: '', isDef: true };
   }
-  // Calls.
+  // Calls. Collect every call-like token on the line, then prefer the first one
+  // that is a real function/method (not a keyword). This handles chains like
+  // `Custom::OO::OAuthConnection->new(...)->load()` where `new` is a keyword but
+  // `load` is a genuine method call.
+  const targets = [];
   for (const p of FUNC_CALL_PATTERNS) {
     if (p.lang !== lang) continue;
-    const m = text.match(p.re);
-    if (!m || !m[1]) continue;
-    if (p.qualified) {
-      // "Module::Sub::name" -> module = everything but last, name = last segment
-      const parts = m[1].split('::');
-      return { name: parts[parts.length - 1], module: parts.slice(0, -1).join('::'), isDef: false };
-    }
-    if (p.bare) {
-      if (CALL_KEYWORDS.has(m[1])) continue;
-      return { name: m[1], module: '', isDef: false };
+    const re = new RegExp(p.re.source, 'g');
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const raw = m[1];
+      if (!raw) continue;
+      if (p.qualified) {
+        const parts = raw.split('::');
+        targets.push({ name: parts[parts.length - 1], module: parts.slice(0, -1).join('::'), isDef: false });
+      } else if (p.bare) {
+        if (CALL_KEYWORDS.has(raw)) continue;
+        targets.push({ name: raw, module: '', isDef: false });
+      } else if (p.method) {
+        // `->method(...)` or `->method (...)` — the module/class isn't known from
+        // the call, so we resolve the method name codebase-wide.
+        if (CALL_KEYWORDS.has(raw)) continue;
+        targets.push({ name: raw, module: '', isDef: false });
+      }
     }
   }
-  return null;
+  // Prefer a qualified target (most specific) over a bare one, then the first.
+  const qualified = targets.find(t => t.module);
+  if (qualified) return qualified;
+  return targets.length ? targets[0] : null;
 }
 
 function renderFuncPreviewBody(bodyEl, result) {
@@ -4300,8 +4320,14 @@ function addFunctionPreviewHandlers() {
     const fileName = fileNameEl ? fileNameEl.textContent.trim() : '';
     if (!fileName) return;
 
-    // Only Perl and JS files are relevant.
-    const lang = /\.(pm|pl|cgi|t|psgi|plx|fcgi)$/i.test(fileName) ? 'perl'
+    // Only Perl and JS files are relevant. Perl scripts also live in
+    // extensionless paths (cgi-bin/board/oauth, tool/*, data/cgi/*), so treat
+    // those as Perl too. JS is detected by its extensions.
+    const isPerlByExt = /\.(pm|pl|cgi|t|psgi|plx|fcgi)$/i.test(fileName);
+    const isPerlPath = /\/(cgi-bin|board|tool|members|data\/cgi|command_line)\//i.test(fileName)
+      || fileName.startsWith('cgi-bin/') || fileName.startsWith('tool/')
+      || fileName.startsWith('data/cgi/') || fileName.startsWith('board/');
+    const lang = isPerlByExt || isPerlPath ? 'perl'
       : /\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(fileName) ? 'js' : null;
     if (!lang) return;
 

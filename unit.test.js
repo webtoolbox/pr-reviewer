@@ -3816,6 +3816,17 @@ describe('Function preview popover', () => {
     expect(rendererSource).toContain('FUNC_CALL_PATTERNS');
     expect(rendererSource).toContain('FUNC_PREVIEW_DELAY');
     expect(rendererSource).toContain('resolvePreviewTarget');
+    // Perl detection covers extensionless cgi-bin/board paths (e.g. cgi-bin/board/oauth).
+    expect(rendererSource).toContain("isPerlPath");
+    expect(rendererSource).toContain("fileName.startsWith('cgi-bin/')");
+  });
+
+  test('resolvePreviewTarget handles arrow-method and qualified calls', () => {
+    // The renderer source must scan ALL call matches on a line (not just the
+    // first) so `new(...)->load()` resolves to `load`, and detect extensionless
+    // Perl paths so cgi-bin/board/oauth lines get bound.
+    expect(rendererSource).toContain("re.exec(text)");
+    expect(rendererSource).toContain("->\\s*([a-z_]\\w*)\\s*\\(");
   });
 
   test('extractFunctionBody extracts a Perl sub with nested braces', () => {
