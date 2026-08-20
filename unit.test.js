@@ -164,6 +164,66 @@ function sortDiffByExtension(diffContent, excludedExts) {
   return validFiles.map(f => 'diff --git ' + f).join('');
 }
 
+// Copy of main.js extractFunctionBody for unit testing the hover-preview logic.
+function extractFunctionBody(content, funcName) {
+  if (!content) return null;
+  const lines = content.split('\n');
+  const nameRe = new RegExp(`\\bsub\\s+${funcName}\\b`);
+  const jsFnRe = new RegExp(`(?:function\\s+|^\\s*${funcName}\\s*=\\s*(?:async\\s*)?function|\\b${funcName}\\s*(?::\\s*function|\\s*=\\s*\\([^)]*\\)\\s*=>|\\s*\\([^)]*\\)\\s*\\{))`);
+
+  let startLine = -1;
+  const perlMatch = new RegExp(`^(\\s*sub\\s+${funcName}\\b)`);
+  const jsMatch = new RegExp(`^(\\s*(?:async\\s+)?function\\s+${funcName}\\b)`);
+  const jsAssignMatch = new RegExp(`^(\\s*${funcName}\\s*=\\s*(?:async\\s*)?(?:function|\\())`);
+  const jsArrowMatch = new RegExp(`^(\\s*(?:const|let|var)\\s+${funcName}\\s*=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>)`);
+  const jsMethodMatch = new RegExp(`^(\\s*${funcName}\\s*\\([^)]*\\)\\s*\\{)`);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (perlMatch.test(line) || jsMatch.test(line) || jsAssignMatch.test(line) ||
+        jsArrowMatch.test(line) || jsMethodMatch.test(line)) {
+      startLine = i;
+      break;
+    }
+  }
+  if (startLine === -1) return null;
+
+  let braceIdx = -1;
+  const open = lines[startLine].indexOf('{');
+  if (open !== -1) {
+    braceIdx = open;
+  } else {
+    for (let j = startLine; j < lines.length; j++) {
+      const o = lines[j].indexOf('{');
+      if (o !== -1) { braceIdx = o; break; }
+    }
+  }
+  if (braceIdx === -1) return null;
+
+  let depth = 0;
+  const result = [];
+  let inSingle = false, inDouble = false, inLineComment = false;
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i];
+    let out = '';
+    for (let c = 0; c < line.length; c++) {
+      const ch = line[c];
+      if (inLineComment) { out += ch; continue; }
+      if (inSingle) { out += ch; if (ch === "'") inSingle = false; continue; }
+      if (inDouble) { out += ch; if (ch === '"' && line[c-1] !== '\\') inDouble = false; continue; }
+      if (ch === "'") { inSingle = true; out += ch; continue; }
+      if (ch === '"') { inDouble = true; out += ch; continue; }
+      if (ch === '#') { inLineComment = true; out += ch; continue; }
+      if (ch === '{') { depth++; out += ch; continue; }
+      if (ch === '}') { depth--; out += ch; if (depth === 0) { result.push(out); return result.join('\n'); } continue; }
+      out += ch;
+    }
+    result.push(out);
+    inLineComment = false;
+  }
+  return result.join('\n');
+}
+
 function extractExtensionsFromDiff(diffContent) {
   const extensions = new Set();
   const lines = diffContent.split('\n');
@@ -3722,5 +3782,81 @@ describe('Collapsed files reorder to end', () => {
     const calls = rendererSource.match(/reorderCollapsedFilesLast\(\);/g);
     expect(calls).not.toBeNull();
     expect(calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ── Function preview popover ──
+
+describe('Function preview popover', () => {
+  let mainSource, rendererSource;
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+  });
+
+  test('get-function-preview IPC handler exists and is wired', () => {
+    expect(mainSource).toContain("ipcMain.handle('get-function-preview'");
+    expect(mainSource).toContain('git show ${cleanSha}:${filePath}');
+  });
+
+  test('preload exposes getFunctionPreview', () => {
+    const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+    expect(preloadSource).toContain('getFunctionPreview: (data) => ipcRenderer.invoke(\'get-function-preview\', data)');
+  });
+
+  test('renderer attaches hover handlers for perl/js definitions', () => {
+    expect(rendererSource).toContain('function addFunctionPreviewHandlers');
+    expect(rendererSource).toContain("window.electronAPI.getFunctionPreview");
+    expect(rendererSource).toContain('addFunctionPreviewHandlers();');
+    expect(rendererSource).toContain('FUNC_DEF_PATTERNS');
+  });
+
+  test('extractFunctionBody extracts a Perl sub with nested braces', () => {
+    const content = [
+      'package Foo;',
+      'sub bar {',
+      '  my $x = 1;',
+      '  if ($x) {',
+      '    return $x;',
+      '  }',
+      '}',
+      'sub baz {',
+      '  return 2;',
+      '}'
+    ].join('\n');
+    const body = extractFunctionBody(content, 'bar');
+    expect(body).toContain('sub bar {');
+    expect(body).toContain('return $x;');
+    expect(body).not.toContain('sub baz');
+  });
+
+  test('extractFunctionBody extracts a JS function declaration', () => {
+    const content = [
+      'function add(a, b) {',
+      '  return a + b;',
+      '}',
+      'function sub(a, b) {',
+      '  return a - b;',
+      '}'
+    ].join('\n');
+    const body = extractFunctionBody(content, 'add');
+    expect(body).toContain('function add(a, b) {');
+    expect(body).toContain('return a + b;');
+    expect(body).not.toContain('return a - b;');
+  });
+
+  test('extractFunctionBody returns null for missing function', () => {
+    expect(extractFunctionBody('sub foo { return 1; }', 'missing')).toBeNull();
+  });
+
+  test('extractFunctionBody handles JS arrow function with braces on next line', () => {
+    const content = [
+      'const doThing = (x) => {',
+      '  return x * 2;',
+      '};'
+    ].join('\n');
+    const body = extractFunctionBody(content, 'doThing');
+    expect(body).toContain('const doThing = (x) => {');
+    expect(body).toContain('return x * 2;');
   });
 });

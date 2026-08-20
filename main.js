@@ -2657,6 +2657,106 @@ ipcMain.handle('get-file-blame', async (event, { prNumber, filePath, repo }) => 
 // Collaborators cache (session-level, per-repo)
 let collaboratorsCache = {};
 
+// Fetch the body of a named Perl subroutine or JS function from the repo at a
+// given SHA, for the hover-preview popover in the diff view.
+ipcMain.handle('get-function-preview', async (event, { filePath, funcName, sha, repo }) => {
+  if (!filePath || !funcName) return { error: 'Missing filePath or funcName' };
+  // Validate filePath: reject shell metacharacters (including double-quote)
+  if (/[;&|`$(){}!<>"\n]/.test(filePath)) return { error: 'Invalid file path' };
+  const repoPath = getLocalRepoPath(repo);
+  const cleanSha = String(sha || '').replace(/[^0-9a-f]/gi, '');
+  if (!cleanSha) return { error: 'Missing valid SHA' };
+  try {
+    // Read the file at the PR head SHA via git show
+    const content = await execPromise(
+      `git show ${cleanSha}:${filePath}`,
+      { cwd: repoPath, timeout: 30000 }
+    );
+    const body = extractFunctionBody(content, funcName);
+    if (!body) return { error: `Could not find ${funcName}` };
+    return { code: body };
+  } catch (err) {
+    // Fall back to the working-tree file if git show fails (e.g. file not at that SHA)
+    const fullPath = path.join(repoPath, filePath);
+    try {
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const body = extractFunctionBody(content, funcName);
+      if (!body) return { error: `Could not find ${funcName}` };
+      return { code: body };
+    } catch (readErr) {
+      return { error: `Failed to read file: ${readErr.message}` };
+    }
+  }
+});
+
+// Extract the source of a named Perl sub or JS function from file content.
+// Returns the full definition including its signature and body (brace-balanced),
+// or null if not found.
+function extractFunctionBody(content, funcName) {
+  if (!content) return null;
+  const lines = content.split('\n');
+  const nameRe = new RegExp(`\\bsub\\s+${funcName}\\b`);
+  const jsFnRe = new RegExp(`(?:function\\s+|^\\s*${funcName}\\s*=\\s*(?:async\\s*)?function|\\b${funcName}\\s*(?::\\s*function|\\s*=\\s*\\([^)]*\\)\\s*=>|\\s*\\([^)]*\\)\\s*\\{))`);
+  const isPerl = nameRe.test(content) || /\.(pm|pl|cgi|t|psgi)$/i.test(lines[0] || '') ? true : false;
+
+  // Find the definition line
+  let startLine = -1;
+  const perlMatch = new RegExp(`^(\\s*sub\\s+${funcName}\\b)`);
+  const jsMatch = new RegExp(`^(\\s*(?:async\\s+)?function\\s+${funcName}\\b)`);
+  const jsAssignMatch = new RegExp(`^(\\s*${funcName}\\s*=\\s*(?:async\\s*)?(?:function|\\())`);
+  const jsArrowMatch = new RegExp(`^(\\s*(?:const|let|var)\\s+${funcName}\\s*=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>)`);
+  const jsMethodMatch = new RegExp(`^(\\s*${funcName}\\s*\\([^)]*\\)\\s*\\{)`);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (perlMatch.test(line) || jsMatch.test(line) || jsAssignMatch.test(line) ||
+        jsArrowMatch.test(line) || jsMethodMatch.test(line)) {
+      startLine = i;
+      break;
+    }
+  }
+  if (startLine === -1) return null;
+
+  // Determine the opening brace position on the start line
+  let braceIdx = -1;
+  const open = lines[startLine].indexOf('{');
+  if (open !== -1) {
+    braceIdx = open;
+  } else {
+    // Arrow function may not have a brace on the same line; find the next brace
+    for (let j = startLine; j < lines.length; j++) {
+      const o = lines[j].indexOf('{');
+      if (o !== -1) { braceIdx = o; break; }
+    }
+  }
+  if (braceIdx === -1) return null;
+
+  // Collect from the start line, counting braces to find the matching close
+  let depth = 0;
+  const result = [];
+  let inSingle = false, inDouble = false, inLineComment = false;
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i];
+    let out = '';
+    // Brace-balance, skipping braces inside strings/comments
+    for (let c = 0; c < line.length; c++) {
+      const ch = line[c];
+      if (inLineComment) { out += ch; continue; }
+      if (inSingle) { out += ch; if (ch === "'") { inSingle = false; if (line[c-1] !== '\\') { /* escape handled below */ } } continue; }
+      if (inDouble) { out += ch; if (ch === '"' && line[c-1] !== '\\') inDouble = false; continue; }
+      if (ch === "'") { inSingle = true; out += ch; continue; }
+      if (ch === '"') { inDouble = true; out += ch; continue; }
+      if (ch === '#') { inLineComment = true; out += ch; continue; }
+      if (ch === '{') { depth++; out += ch; continue; }
+      if (ch === '}') { depth--; out += ch; if (depth === 0) { result.push(out); return result.join('\n'); } continue; }
+      out += ch;
+    }
+    result.push(out);
+    inLineComment = false;
+  }
+  return result.join('\n');
+}
+
 ipcMain.handle('get-collaborators', async (event, repoKey) => {
   const cacheKey = repoKey || 'default';
   if (collaboratorsCache[cacheKey]) return collaboratorsCache[cacheKey];

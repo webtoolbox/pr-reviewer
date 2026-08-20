@@ -644,6 +644,7 @@ function loadDiff(content, filePath) {
   const excludedExts = allExts.filter(e => hiddenExtensions.includes(e));
   collapseFilteredFiles(excludedExts);
   reorderCollapsedFilesLast();
+  addFunctionPreviewHandlers();
   // Try to load saved draft
   if (currentFilePath) {
     loadSavedDraft(currentFilePath).then(draft => {
@@ -1472,6 +1473,8 @@ function renderSingleFileInPlace(fileName, fileDiff) {
 
   // Add the expand/collapse toggle last so it reflects the final collapsed state
   addFileCollapseToggleForWrapper(newWrapper, fileName);
+  // Attach hover handlers to the freshly-rendered wrapper's function/sub lines
+  addFunctionPreviewHandlers();
   // Re-insert this file's comment markers — swapping the wrapper destroyed them
   reinsertCommentsForFile(fileName);
 
@@ -3879,6 +3882,7 @@ function renderFilteredDiff() {
   addFileCollapseToggles();
   // All collapsed files (filtered-out + user-collapsed) appear at the end
   reorderCollapsedFilesLast();
+  addFunctionPreviewHandlers();
 }
 
 /**
@@ -4110,6 +4114,139 @@ function reorderCollapsedFilesLast() {
   expanded.forEach(w => frag.appendChild(w));
   collapsed.forEach(w => frag.appendChild(w));
   target.appendChild(frag);
+}
+
+// ===================== FUNCTION PREVIEW POPOVER =====================
+
+// Regexes that detect a function/subroutine definition in a code line and
+// capture its name. Perl subs and the common JS forms (declarations,
+// assignments, arrows, method shorthand).
+const FUNC_DEF_PATTERNS = [
+  { lang: 'perl', re: /\bsub\s+([A-Za-z_]\w*)\b/ },
+  { lang: 'js', re: /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/ },
+  { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?function\b/ },
+  { lang: 'js', re: /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/ },
+  { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/ }
+];
+
+// Simple cache so we don't re-fetch the same function body repeatedly.
+const funcPreviewCache = new Map(); // `${filePath}:${name}` -> { code } | { error }
+
+let funcPreviewPopover = null; // lazily-created popover element
+
+function getFuncPreviewPopover() {
+  if (!funcPreviewPopover) {
+    funcPreviewPopover = document.createElement('div');
+    funcPreviewPopover.className = 'func-preview-popover';
+    document.body.appendChild(funcPreviewPopover);
+  }
+  return funcPreviewPopover;
+}
+
+function hideFuncPreview() {
+  if (funcPreviewPopover) funcPreviewPopover.style.display = 'none';
+}
+
+function showFuncPreview(fileName, name, lang, anchorEl, mouseX, mouseY) {
+  const popover = getFuncPreviewPopover();
+  const title = document.createElement('span');
+  title.className = 'func-preview-title';
+  title.textContent = `${lang === 'perl' ? 'sub' : 'function'} ${name}`;
+  popover.innerHTML = '';
+  popover.appendChild(title);
+  popover.appendChild(document.createElement('div')); // body placeholder
+  popover.style.display = 'block';
+  positionFuncPreview(popover, mouseX, mouseY);
+
+  const bodyEl = popover.querySelector('div:last-child');
+  bodyEl.textContent = 'Loading…';
+
+  const key = `${fileName}:${name}`;
+  if (funcPreviewCache.has(key)) {
+    renderFuncPreviewBody(bodyEl, funcPreviewCache.get(key));
+    positionFuncPreview(popover, mouseX, mouseY);
+    return;
+  }
+
+  window.electronAPI.getFunctionPreview({
+    filePath: fileName,
+    funcName: name,
+    sha: currentHeadSha,
+    repo: currentRepoKey
+  }).then(result => {
+    if (!funcPreviewCache.has(key)) funcPreviewCache.set(key, result || { error: 'No response' });
+    // Only update if this popover is still showing for the same target
+    if (popover.style.display === 'block' && bodyEl.parentNode === popover) {
+      renderFuncPreviewBody(bodyEl, result);
+      positionFuncPreview(popover, mouseX, mouseY);
+    }
+  }).catch(err => {
+    const r = { error: err.message };
+    funcPreviewCache.set(key, r);
+    if (popover.style.display === 'block' && bodyEl.parentNode === popover) renderFuncPreviewBody(bodyEl, r);
+  });
+}
+
+function renderFuncPreviewBody(bodyEl, result) {
+  if (result && result.code) {
+    bodyEl.className = '';
+    bodyEl.textContent = result.code;
+  } else {
+    bodyEl.className = 'func-preview-error';
+    bodyEl.textContent = (result && result.error) ? `Could not preview: ${result.error}` : 'Could not preview function';
+  }
+}
+
+// Place the popover near the cursor, flipping to the left/above if it would
+// overflow the viewport.
+function positionFuncPreview(popover, mouseX, mouseY) {
+  popover.style.left = '0px';
+  popover.style.top = '0px';
+  const rect = popover.getBoundingClientRect();
+  let left = mouseX + 16;
+  let top = mouseY + 16;
+  if (left + rect.width > window.innerWidth - 8) left = Math.max(8, mouseX - rect.width - 16);
+  if (top + rect.height > window.innerHeight - 8) top = Math.max(8, mouseY - rect.height - 16);
+  popover.style.left = left + 'px';
+  popover.style.top = top + 'px';
+}
+
+// Attach hover handlers to code lines that define a Perl sub or JS function.
+// Called after every diff render (loadDiff, renderFilteredDiff, in-place swaps).
+function addFunctionPreviewHandlers() {
+  if (!window.electronAPI || !window.electronAPI.getFunctionPreview) return;
+  const wrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+  wrappers.forEach(wrapper => {
+    const fileNameEl = wrapper.querySelector('.d2h-file-name');
+    const fileName = fileNameEl ? fileNameEl.textContent.trim() : '';
+    if (!fileName) return;
+
+    // Only Perl and JS files are relevant.
+    const lang = /\.(pm|pl|cgi|t|psgi|plx|fcgi)$/i.test(fileName) ? 'perl'
+      : /\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(fileName) ? 'js' : null;
+    if (!lang) return;
+
+    const codeLines = wrapper.querySelectorAll('.d2h-code-line-ctn, .d2h-code-side-line .d2h-code-line-ctn');
+    codeLines.forEach(lineEl => {
+      if (lineEl.dataset.funcPreviewBound === '1') return;
+      const text = lineEl.textContent || '';
+      let matched = null;
+      for (const p of FUNC_DEF_PATTERNS) {
+        if (p.lang !== lang) continue;
+        const m = text.match(p.re);
+        if (m && m[1]) { matched = m[1]; break; }
+      }
+      if (!matched) return;
+      lineEl.dataset.funcPreviewBound = '1';
+      lineEl.classList.add('func-hover-target');
+      lineEl.addEventListener('mousemove', (e) => {
+        showFuncPreview(fileName, matched, lang, lineEl, e.clientX, e.clientY);
+      });
+      lineEl.addEventListener('mouseleave', () => {
+        hideFuncPreview();
+      });
+    });
+  });
 }
 
 // Extract file extension from diff file block
