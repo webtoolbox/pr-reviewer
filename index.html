@@ -628,6 +628,12 @@
 
     /* File-level comment button */
     .d2h-file-header { display: flex; align-items: center; overflow: hidden; border-radius: 8px 8px 0 0; }
+
+    /* Keep the current file's diff header pinned just below the app's fixed
+       top bar while scrolling through a file, so the user always knows which
+       file they are reading. diff2html's default pins it at top:0, which would
+       slide it underneath the review bar. */
+    .d2h-file-header.d2h-sticky-header { top: var(--review-bar-height, 52px); }
     .d2h-file-name-wrapper { flex: 1; min-width: 0; width: auto !important; display: flex; align-items: center; gap: 6px; }
     .d2h-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .d2h-file-name-wrapper .d2h-tag { margin-left: auto; flex-shrink: 0; }
