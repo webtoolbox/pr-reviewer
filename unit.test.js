@@ -3796,7 +3796,10 @@ describe('Function preview popover', () => {
 
   test('get-function-preview IPC handler exists and is wired', () => {
     expect(mainSource).toContain("ipcMain.handle('get-function-preview'");
-    expect(mainSource).toContain('git show ${cleanSha}:${filePath}');
+    // Now resolves across the whole codebase (module-scoped search + master fallback)
+    expect(mainSource).toContain('resolveFunctionPreview');
+    expect(mainSource).toContain("['master']");
+    expect(mainSource).toContain('package ${module};');
   });
 
   test('preload exposes getFunctionPreview', () => {
@@ -3804,11 +3807,15 @@ describe('Function preview popover', () => {
     expect(preloadSource).toContain('getFunctionPreview: (data) => ipcRenderer.invoke(\'get-function-preview\', data)');
   });
 
-  test('renderer attaches hover handlers for perl/js definitions', () => {
+  test('renderer attaches hover handlers for perl/js definitions AND calls', () => {
     expect(rendererSource).toContain('function addFunctionPreviewHandlers');
     expect(rendererSource).toContain("window.electronAPI.getFunctionPreview");
     expect(rendererSource).toContain('addFunctionPreviewHandlers();');
     expect(rendererSource).toContain('FUNC_DEF_PATTERNS');
+    // Call-site preview: fully-qualified Perl calls and JS calls, plus a hover delay.
+    expect(rendererSource).toContain('FUNC_CALL_PATTERNS');
+    expect(rendererSource).toContain('FUNC_PREVIEW_DELAY');
+    expect(rendererSource).toContain('resolvePreviewTarget');
   });
 
   test('extractFunctionBody extracts a Perl sub with nested braces', () => {

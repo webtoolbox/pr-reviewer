@@ -2659,33 +2659,119 @@ let collaboratorsCache = {};
 
 // Fetch the body of a named Perl subroutine or JS function from the repo at a
 // given SHA, for the hover-preview popover in the diff view.
-ipcMain.handle('get-function-preview', async (event, { filePath, funcName, sha, repo }) => {
+// ── Cross-codebase function/sub preview resolution ─────────────────────────────
+// git grep / git show results are cached so repeated hovers over the same symbol
+// (or over symbols in the same file) resolve instantly without re-running git.
+
+const gitGrepCache = new Map();      // `${repoPath}|${tree}|${pattern}|F/E` -> string[] (file paths)
+const fileContentCache = new Map();  // `${repoPath}|${tree}|${file}` -> content string | null
+
+function runGitCapture(repoPath, args) {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd: repoPath, timeout: 30000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      resolve({ ok: !err, stdout: stdout || '' });
+    });
+  });
+}
+
+// `git grep -l <tree>` prefixes each line with `<tree>:`; strip it to get the path.
+function stripTreePrefix(line, tree) {
+  if (tree && line.startsWith(tree + ':')) return line.slice(tree.length + 1);
+  const m = line.match(/^[0-9a-f]{7,40}:(.*)$/);
+  return m ? m[1] : line;
+}
+
+function isSourceFile(p) {
+  return /\.(pm|pl|cgi|t|psgi|plx|fcgi|js|jsx|ts|tsx|mjs|cjs)$/i.test(p);
+}
+
+async function grepFilePaths(repoPath, tree, pattern, fixed = false) {
+  const key = `${repoPath}|${tree}|${pattern}|${fixed ? 'F' : 'E'}`;
+  if (gitGrepCache.has(key)) return gitGrepCache.get(key);
+  const args = ['grep', '-l', '--no-color'];
+  if (fixed) args.push('-F', '-e', pattern);
+  else args.push('-E', '-e', pattern);
+  args.push(tree, '--');
+  const r = await runGitCapture(repoPath, args);
+  let paths = [];
+  if (r.ok) {
+    paths = r.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+      .map(s => stripTreePrefix(s, tree))
+      .filter(isSourceFile);
+  }
+  gitGrepCache.set(key, paths);
+  return paths;
+}
+
+async function readFileAtTree(repoPath, tree, file) {
+  const key = `${repoPath}|${tree}|${file}`;
+  if (fileContentCache.has(key)) return fileContentCache.get(key);
+  const args = ['show', `${tree}:${file}`];
+  const r = await runGitCapture(repoPath, args);
+  const content = r.ok && r.stdout ? r.stdout : null;
+  fileContentCache.set(key, content);
+  return content;
+}
+
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// A grep pattern that only matches DEFINITION lines (so call sites like
+// `Module::sub(...)` don't match). JS pattern keeps to the common declaration
+// forms (function decl, assignment, arrow, and object/class method shorthand);
+// extractFunctionBody confirms and does the real extraction.
+function defGrepPattern(lang, funcName) {
+  const n = escapeRegex(funcName);
+  if (lang === 'perl') return `^\\s*sub\\s+${n}\\b`;
+  return `function\\s+${n}\\b|\\b${n}\\s*[:=]\\s*(?:async\\s*)?(?:function|\\([^)]*\\)\\s*=>)|\\b${n}\\s*\\([^)]*\\)\\s*\\{`;
+}
+
+// Resolve the definition of funcName across the repo. Tries each tree in order
+// (PR head first, then master as a fallback). For a qualified Perl call the
+// module's package file is searched first so the correct sub wins; otherwise it
+// greps the whole codebase and prefers the caller's own file. Returns
+// { code, file, tree } or null.
+async function resolveFunctionPreview(repoPath, trees, filePath, funcName, lang, module) {
+  for (const tree of trees) {
+    // 1) Qualified Perl call: locate the package file, look for the sub there.
+    if (module) {
+      const pkgFiles = await grepFilePaths(repoPath, tree, `package ${module};`, true);
+      for (const f of pkgFiles) {
+        const content = await readFileAtTree(repoPath, tree, f);
+        const body = content ? extractFunctionBody(content, funcName) : null;
+        if (body) return { code: body, file: f, tree };
+      }
+    }
+    // 2) Codebase-wide search; prefer the caller's own file, then first match.
+    const candidates = await grepFilePaths(repoPath, tree, defGrepPattern(lang, funcName));
+    const ordered = candidates.slice().sort(
+      (a, b) => (a === filePath ? -1 : 0) - (b === filePath ? -1 : 0)
+    );
+    for (const f of ordered) {
+      const content = await readFileAtTree(repoPath, tree, f);
+      const body = content ? extractFunctionBody(content, funcName) : null;
+      if (body) return { code: body, file: f, tree };
+    }
+  }
+  return null;
+}
+
+ipcMain.handle('get-function-preview', async (event, { filePath, funcName, module, lang, sha, repo }) => {
   if (!filePath || !funcName) return { error: 'Missing filePath or funcName' };
   // Validate filePath: reject shell metacharacters (including double-quote)
   if (/[;&|`$(){}!<>"\n]/.test(filePath)) return { error: 'Invalid file path' };
   const repoPath = getLocalRepoPath(repo);
   const cleanSha = String(sha || '').replace(/[^0-9a-f]/gi, '');
-  if (!cleanSha) return { error: 'Missing valid SHA' };
+  // funcName must be a valid identifier to prevent regex injection into git grep.
+  if (!/^[A-Za-z_][\w$]*$/.test(String(funcName))) return { error: 'Invalid function name' };
+  const cleanLang = lang === 'perl' ? 'perl' : 'js';
+  const cleanModule = String(module || '').replace(/[^A-Za-z0-9_:]/g, '');
+  const trees = cleanSha ? [cleanSha, 'master'] : ['master'];
   try {
-    // Read the file at the PR head SHA via git show
-    const content = await execPromise(
-      `git show ${cleanSha}:${filePath}`,
-      { cwd: repoPath, timeout: 30000 }
-    );
-    const body = extractFunctionBody(content, funcName);
-    if (!body) return { error: `Could not find ${funcName}` };
-    return { code: body };
+    const found = await resolveFunctionPreview(repoPath, trees, filePath, funcName, cleanLang, cleanModule);
+    if (found) return { code: found.code, file: found.file };
+    return { error: `Could not find ${funcName}` };
   } catch (err) {
-    // Fall back to the working-tree file if git show fails (e.g. file not at that SHA)
-    const fullPath = path.join(repoPath, filePath);
-    try {
-      const content = fs.readFileSync(fullPath, 'utf8');
-      const body = extractFunctionBody(content, funcName);
-      if (!body) return { error: `Could not find ${funcName}` };
-      return { code: body };
-    } catch (readErr) {
-      return { error: `Failed to read file: ${readErr.message}` };
-    }
+    return { error: err.message };
   }
 });
 

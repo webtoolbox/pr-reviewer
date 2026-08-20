@@ -4129,10 +4129,41 @@ const FUNC_DEF_PATTERNS = [
   { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/ }
 ];
 
+// Patterns that match a CALL to a sub/function (not its definition), so hovering
+// a call site also previews the target. Perl: qualified (`Module::sub(...)`) or
+// bare (`sub(...)`) calls. JS: `obj.method(...)` / `name(...)` calls.
+const FUNC_CALL_PATTERNS = [
+  // Perl fully-qualified: capture both the module prefix and the sub name.
+  { lang: 'perl', re: /\b([A-Za-z_]\w*(?:::\w+)+)\s*\(/, qualified: true },
+  // Perl bare call: capture the trailing identifier, but ignore control keywords.
+  { lang: 'perl', re: /\b([a-z_]\w*)\s*\(/, bare: true },
+  // JS method/function call.
+  { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*\(/, bare: true }
+];
+
+// Control keywords / built-ins that must not be treated as a bare call target.
+const CALL_KEYWORDS = new Set([
+  // Perl
+  'if', 'elsif', 'unless', 'while', 'until', 'for', 'foreach', 'return',
+  'my', 'our', 'local', 'sub', 'use', 'require', 'print', 'printf',
+  'defined', 'exists', 'delete', 'grep', 'map', 'sort', 'keys', 'values',
+  'shift', 'unshift', 'push', 'pop', 'sprintf', 'join', 'split', 'length',
+  'substr', 'ref', 'bless', 'die', 'warn', 'new', 'do', 'eval', 'chomp',
+  'scalar', 'wantarray', 'caller', 'goto', 'not', 'and', 'or', 'eq', 'ne',
+  'gt', 'lt', 'ge', 'le', 'cmp', 'chr', 'ord', 'int', 'abs', 'sqrt',
+  // JS
+  'if', 'for', 'while', 'switch', 'return', 'function', 'typeof', 'new',
+  'var', 'let', 'const', 'do', 'else', 'case', 'catch', 'throw', 'try',
+  'delete', 'void', 'in', 'of', 'this', 'await', 'yield', 'async', 'import',
+  'export', 'class', 'extends', 'super'
+]);
+
 // Simple cache so we don't re-fetch the same function body repeatedly.
-const funcPreviewCache = new Map(); // `${filePath}:${name}` -> { code } | { error }
+const funcPreviewCache = new Map(); // `${lang}|${module}|${name}` -> { code, file } | { error }
 
 let funcPreviewPopover = null; // lazily-created popover element
+let funcPreviewTimer = null;   // hover-delay timer
+let funcPreviewAnchor = null;  // the line element the pending preview is for
 
 function getFuncPreviewPopover() {
   if (!funcPreviewPopover) {
@@ -4144,16 +4175,23 @@ function getFuncPreviewPopover() {
 }
 
 function hideFuncPreview() {
+  if (funcPreviewTimer) { clearTimeout(funcPreviewTimer); funcPreviewTimer = null; }
   if (funcPreviewPopover) funcPreviewPopover.style.display = 'none';
 }
 
-function showFuncPreview(fileName, name, lang, anchorEl, mouseX, mouseY) {
+// Show the popover for a sub/function. For a call site, `module` is the Perl
+// package prefix (e.g. "Custom::MB::Undelete") or '' for bare/JS calls.
+function showFuncPreview(fileName, name, module, lang, anchorEl, mouseX, mouseY) {
   const popover = getFuncPreviewPopover();
   const title = document.createElement('span');
   title.className = 'func-preview-title';
   title.textContent = `${lang === 'perl' ? 'sub' : 'function'} ${name}`;
   popover.innerHTML = '';
   popover.appendChild(title);
+  const fileLabel = document.createElement('div');
+  fileLabel.className = 'func-preview-file';
+  fileLabel.textContent = module ? `${module}::${name}` : '';
+  popover.appendChild(fileLabel);
   popover.appendChild(document.createElement('div')); // body placeholder
   popover.style.display = 'block';
   positionFuncPreview(popover, mouseX, mouseY);
@@ -4161,9 +4199,10 @@ function showFuncPreview(fileName, name, lang, anchorEl, mouseX, mouseY) {
   const bodyEl = popover.querySelector('div:last-child');
   bodyEl.textContent = 'Loading…';
 
-  const key = `${fileName}:${name}`;
+  const key = `${lang}|${module || ''}|${name}`;
   if (funcPreviewCache.has(key)) {
     renderFuncPreviewBody(bodyEl, funcPreviewCache.get(key));
+    if (fileLabel) fileLabel.textContent = module ? `${module}::${name}` : '';
     positionFuncPreview(popover, mouseX, mouseY);
     return;
   }
@@ -4171,6 +4210,8 @@ function showFuncPreview(fileName, name, lang, anchorEl, mouseX, mouseY) {
   window.electronAPI.getFunctionPreview({
     filePath: fileName,
     funcName: name,
+    module: module || '',
+    lang: lang,
     sha: currentHeadSha,
     repo: currentRepoKey
   }).then(result => {
@@ -4178,6 +4219,10 @@ function showFuncPreview(fileName, name, lang, anchorEl, mouseX, mouseY) {
     // Only update if this popover is still showing for the same target
     if (popover.style.display === 'block' && bodyEl.parentNode === popover) {
       renderFuncPreviewBody(bodyEl, result);
+      // Show which file the body came from when we resolved across the codebase.
+      if (result && result.file && fileLabel) {
+        fileLabel.textContent = (module ? `${module}::${name}` : name) + '  (' + result.file + ')';
+      }
       positionFuncPreview(popover, mouseX, mouseY);
     }
   }).catch(err => {
@@ -4185,6 +4230,35 @@ function showFuncPreview(fileName, name, lang, anchorEl, mouseX, mouseY) {
     funcPreviewCache.set(key, r);
     if (popover.style.display === 'block' && bodyEl.parentNode === popover) renderFuncPreviewBody(bodyEl, r);
   });
+}
+
+// Resolve which target a code line references. Prefers a definition (hover a
+// `sub foo {` directly) but also handles call sites (`Module::foo(...)`,
+// `foo(...)`, `obj.method(...)`), returning { name, module, isDef } or null.
+function resolvePreviewTarget(text, lang) {
+  if (!text) return null;
+  // Definitions first: a definition line should preview its own body.
+  for (const p of FUNC_DEF_PATTERNS) {
+    if (p.lang !== lang) continue;
+    const m = text.match(p.re);
+    if (m && m[1]) return { name: m[1], module: '', isDef: true };
+  }
+  // Calls.
+  for (const p of FUNC_CALL_PATTERNS) {
+    if (p.lang !== lang) continue;
+    const m = text.match(p.re);
+    if (!m || !m[1]) continue;
+    if (p.qualified) {
+      // "Module::Sub::name" -> module = everything but last, name = last segment
+      const parts = m[1].split('::');
+      return { name: parts[parts.length - 1], module: parts.slice(0, -1).join('::'), isDef: false };
+    }
+    if (p.bare) {
+      if (CALL_KEYWORDS.has(m[1])) continue;
+      return { name: m[1], module: '', isDef: false };
+    }
+  }
+  return null;
 }
 
 function renderFuncPreviewBody(bodyEl, result) {
@@ -4211,8 +4285,13 @@ function positionFuncPreview(popover, mouseX, mouseY) {
   popover.style.top = top + 'px';
 }
 
-// Attach hover handlers to code lines that define a Perl sub or JS function.
-// Called after every diff render (loadDiff, renderFilteredDiff, in-place swaps).
+// How long (ms) the cursor must rest on a line before the preview shows, so a
+// quick pass-over doesn't flicker the popover.
+const FUNC_PREVIEW_DELAY = 400;
+
+// Attach hover handlers to code lines that define OR call a Perl sub / JS
+// function. Called after every diff render (loadDiff, renderFilteredDiff,
+// in-place swaps).
 function addFunctionPreviewHandlers() {
   if (!window.electronAPI || !window.electronAPI.getFunctionPreview) return;
   const wrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
@@ -4230,17 +4309,22 @@ function addFunctionPreviewHandlers() {
     codeLines.forEach(lineEl => {
       if (lineEl.dataset.funcPreviewBound === '1') return;
       const text = lineEl.textContent || '';
-      let matched = null;
-      for (const p of FUNC_DEF_PATTERNS) {
-        if (p.lang !== lang) continue;
-        const m = text.match(p.re);
-        if (m && m[1]) { matched = m[1]; break; }
-      }
-      if (!matched) return;
+      const target = resolvePreviewTarget(text, lang);
+      if (!target) return;
       lineEl.dataset.funcPreviewBound = '1';
       lineEl.classList.add('func-hover-target');
+      const fileNameForLine = fileName;
       lineEl.addEventListener('mousemove', (e) => {
-        showFuncPreview(fileName, matched, lang, lineEl, e.clientX, e.clientY);
+        // Restart the delay timer on every move so the popover only appears once
+        // the cursor has rested on the line briefly.
+        if (funcPreviewTimer) clearTimeout(funcPreviewTimer);
+        funcPreviewAnchor = lineEl;
+        const x = e.clientX, y = e.clientY;
+        funcPreviewTimer = setTimeout(() => {
+          if (funcPreviewAnchor === lineEl) {
+            showFuncPreview(fileNameForLine, target.name, target.module, lang, lineEl, x, y);
+          }
+        }, FUNC_PREVIEW_DELAY);
       });
       lineEl.addEventListener('mouseleave', () => {
         hideFuncPreview();
