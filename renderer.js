@@ -603,6 +603,12 @@ function loadDiff(content, filePath) {
   contentDiv.classList.add('diff-loaded');
   console.log('[loadDiff] contentDiv:', contentDiv, 'classes right after add:', contentDiv.className);
 
+  // If a diff is being loaded, the celebratory "All caught up!" screen must be
+  // hidden — it would otherwise stay on top while a PR loads (e.g. when the user
+  // presses the down arrow on the all-done screen).
+  const allDoneEl = document.getElementById('all-done-state');
+  if (allDoneEl) allDoneEl.style.display = 'none';
+
   resetButtons();
 
   // Use Diff2HtmlUI.draw() which handles hljs internally and preserves word-level del/ins tags
@@ -2288,12 +2294,15 @@ document.addEventListener('keydown', (e) => {
     }
   }
 
-  // Cmd+R — Reload current PR diff
+  // Cmd+R — Reload current PR diff. If no PR is loaded (e.g. the "All caught
+  // up!" screen), re-check for new pending pull requests instead.
   if (key === 'R' && isMeta && !e.shiftKey) {
     e.preventDefault();
     if (currentPrNumber) {
       showToast('Reloading PR…');
       loadPrByNumber(currentPrNumber, currentRepoKey);
+    } else {
+      recheckForNewPrs();
     }
     return;
   }
@@ -3166,6 +3175,30 @@ function showAllDoneState() {
   closeReviewHistoryDropdown();
   updatePrArrowStates();
 }
+
+// Re-check for new pull requests pending review, shown on the "All caught up!"
+// screen. Refreshes the pending PR list; if anything new arrives, loads the
+// first one (which hides the all-done screen). If still nothing, stays put.
+async function recheckForNewPrs() {
+  const toast = showToast('Checking for new pull requests…', 'progress', 30000);
+  try {
+    const prs = await refreshPrList();
+    if (toast && toast._dismiss) toast._dismiss();
+    if (!prs || prs.length === 0) {
+      showToast('Still all caught up — no new pull requests', 'info');
+      return;
+    }
+    showToast(`Found ${prs.length} PR${prs.length > 1 ? 's' : ''} to review`, 'success');
+    await loadPrByNumber(prs[0].number, prs[0].repo);
+  } catch (err) {
+    if (toast && toast._dismiss) toast._dismiss();
+    showSafeToast(`⚠ Failed to re-check for new PRs: ${err.message}`, 'error', 10000);
+  }
+}
+
+// Re-check button on the "All caught up!" screen
+const btnRecheckPrs = document.getElementById('btn-recheck-prs');
+if (btnRecheckPrs) btnRecheckPrs.addEventListener('click', () => { recheckForNewPrs(); });
 
 // ===== Edge arrows: next (right) / prev (left) =====
 const prevPrArrow = document.getElementById('prev-pr-arrow');

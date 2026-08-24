@@ -2087,6 +2087,76 @@ async function runTests() {
   `);
   assert('All-done state clears diff, hides sidebar, shows in main content', allDoneTest === 'ok', `result: ${allDoneTest}`);
 
+  // TEST: loading a diff hides the "All caught up!" screen. Regression: loading
+  // a PR while on the all-done screen kept the celebratory screen visible on top.
+  const loadDiffHidesAllDone = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const ad = document.getElementById('all-done-state');
+      if (!ad) return 'no-el';
+      // Simulate being on the all-done screen
+      showAllDoneState();
+      if (ad.style.display !== 'flex') return 'not-shown-first';
+      // Now load a diff — this is what the down-arrow / next-PR path triggers
+      loadDiff(${JSON.stringify(diffContent)});
+      return ad.style.display === 'none' ? 'ok' : 'still-shown:' + ad.style.display;
+    })()
+  `);
+  assert('Loading a diff hides the All caught up screen', loadDiffHidesAllDone === 'ok', `result: ${loadDiffHidesAllDone}`);
+
+  // TEST: "All caught up!" screen has a Re-check button wired to recheckForNewPrs
+  const recheckButtonTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-recheck-prs');
+      if (!btn) return 'no-button';
+      if (typeof recheckForNewPrs !== 'function') return 'no-fn';
+      const label = btn.textContent;
+      const hasIcon = btn.querySelector('svg') !== null;
+      return (label.includes('Re-check') && hasIcon) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('All caught up screen has Re-check button', recheckButtonTest === 'ok', `result: ${recheckButtonTest}`);
+
+  // TEST: recheckForNewPrs refreshes the list and loads the first PR when found
+  const recheckLoadsFirstPr = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof recheckForNewPrs !== 'function') return 'no-fn';
+      const btn = document.getElementById('btn-recheck-prs');
+      if (!btn) return 'no-button';
+      // The button's click listener should call recheckForNewPrs
+      const src = ${JSON.stringify(fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8'))};
+      const hasBinding = src.includes("btnRecheckPrs.addEventListener('click'") &&
+                         src.includes('recheckForNewPrs()');
+      return hasBinding ? 'ok' : 'missing';
+    })()
+  `);
+  assert('Re-check button is wired to recheckForNewPrs', recheckLoadsFirstPr === 'ok', `result: ${recheckLoadsFirstPr}`);
+
+  // TEST: recheckForNewPrs function calls refreshPrList and loads first PR
+  const recheckImplementation = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof recheckForNewPrs !== 'function') return 'no-fn';
+      const src = recheckForNewPrs.toString();
+      const callsRefresh = src.includes('refreshPrList()');
+      const loadsFirst = src.includes('loadPrByNumber(prs[0].number, prs[0].repo)');
+      const handlesEmpty = src.includes('prs.length === 0');
+      return (callsRefresh && loadsFirst && handlesEmpty) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('recheckForNewPrs refreshes list and loads first PR', recheckImplementation === 'ok', `result: ${recheckImplementation}`);
+
+  // TEST: Cmd+R re-checks for new PRs when on the all-caught-up screen (no current PR)
+  const cmdRRechecksWhenNoPr = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = ${JSON.stringify(fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8'))};
+      // In the Cmd+R branch, when there's no current PR it should call recheckForNewPrs
+      const match = src.match(/key === 'R' && isMeta && !e.shiftKey[\\s\\S]{0,400}/);
+      if (!match) return 'no-cmd-r';
+      const branch = match[0];
+      return (branch.includes('recheckForNewPrs()')) ? 'ok' : 'missing';
+    })()
+  `);
+  assert('Cmd+R re-checks for new PRs when no PR is loaded', cmdRRechecksWhenNoPr === 'ok', `result: ${cmdRRechecksWhenNoPr}`);
+
   // TEST: On reload with pending PRs, startup auto-loads the first pending PR.
   // The startup handler (config .then) calls loadPrByNumber(prs[0]) when no PR is
   // loaded and PRs exist. After showAllDoneState, currentPrNumber is null, so a

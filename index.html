@@ -363,8 +363,8 @@
     #pr-dropdown::-webkit-scrollbar-track { background: #161b22; }
 
     /* Main content */
-    #content { margin-top: var(--review-bar-height, 52px); padding: 20px; }
-    #content.diff-loaded {
+    #content {
+      margin-top: var(--review-bar-height, 52px); padding: 20px;
       display: flex; flex-direction: row;
       min-height: calc(100vh - var(--review-bar-height, 52px));
     }
@@ -474,6 +474,14 @@
       animation: allDoneDraw 0.4s ease 0.55s forwards;
     }
     @keyframes allDoneDraw { to { stroke-dashoffset: 0; } }
+    .all-done-recheck {
+      display: inline-flex; align-items: center; gap: 7px; margin-top: 8px;
+      padding: 8px 18px; border-radius: 9999px; cursor: pointer;
+      background: #21262d; color: #c9d1d9; border: 1px solid #30363d; font-size: 13px;
+      transition: background 0.15s;
+    }
+    .all-done-recheck:hover { background: #30363d; color: #fff; }
+    .all-done-recheck:active { background: #21262d; }
 
     /* Error screen for missing binaries */
     #error-screen {
@@ -1782,6 +1790,10 @@
       /* Empty state */
       #empty-state { color: #656d76; }
       #all-done-state { color: #656d76; }
+      #all-done-state .all-done-recheck {
+        background: #f6f8fa; color: #24292f; border: 1px solid #d0d7de;
+      }
+      #all-done-state .all-done-recheck:hover { background: #eaeef2; color: #0969da; }
       .all-done-title { color: #24292f; }
 
       /* Error screen */
@@ -1979,6 +1991,13 @@
         </svg>
         <div class="all-done-title">All caught up!</div>
         <div class="hint">No more pull requests to review. Great work.</div>
+        <button id="btn-recheck-prs" class="all-done-recheck" title="Re-check for new pull requests (Cmd+R)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+            <path d="M21 3v6h-6"/>
+          </svg>
+          Re-check for new PRs
+        </button>
       </div>
       <div id="diff-loading">
         <div class="diff-loading-inner">
