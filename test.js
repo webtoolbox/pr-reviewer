@@ -2103,6 +2103,23 @@ async function runTests() {
   `);
   assert('Loading a diff hides the All caught up screen', loadDiffHidesAllDone === 'ok', `result: ${loadDiffHidesAllDone}`);
 
+  // TEST: showDiffLoading hides empty + all-done states so the spinner isn't
+  // pushed to the bottom of the page. Regression: the loading indicator was
+  // squeezed below the visible empty-state to the bottom edge / off-screen.
+  const diffLoadingHidesStates = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const es = document.getElementById('empty-state');
+      const ad = document.getElementById('all-done-state');
+      if (!es || !ad) return 'no-el';
+      // Show the empty state (default visible) and all-done state, then load
+      es.style.display = 'flex';
+      ad.style.display = 'flex';
+      showDiffLoading('Loading…');
+      return (getComputedStyle(es).display === 'none' && getComputedStyle(ad).display === 'none') ? 'ok' : 'bad';
+    })()
+  `);
+  assert('showDiffLoading hides empty + all-done states', diffLoadingHidesStates === 'ok', `result: ${diffLoadingHidesStates}`);
+
   // TEST: "All caught up!" screen has a Re-check button wired to recheckForNewPrs
   const recheckButtonTest = await mainWindow.webContents.executeJavaScript(`
     (() => {

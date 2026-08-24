@@ -3117,6 +3117,13 @@ function showDiffLoading(text) {
   el.classList.add('show');
   const dc = document.getElementById('diff-container');
   if (dc) dc.style.display = 'none';
+  // Hide the empty and all-done states so the loading indicator is the only
+  // visible element in the main content area (otherwise they keep occupying the
+  // flex space and push the spinner to the bottom / off-screen).
+  const es = document.getElementById('empty-state');
+  if (es) es.style.display = 'none';
+  const ad = document.getElementById('all-done-state');
+  if (ad) ad.style.display = 'none';
 }
 function hideDiffLoading() {
   const el = document.getElementById('diff-loading');
