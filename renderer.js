@@ -2371,6 +2371,10 @@ function isEditableTarget(target) {
 
 let findMatchCase = false;
 let lastFindQuery = '';
+// True once a search has actually run for the current query. Typing resets it,
+// so the first Enter press starts a fresh search (from the top) and subsequent
+// Enter presses advance to the next/previous match.
+let findStarted = false;
 
 function openFindBar() {
   const bar = document.getElementById('find-bar');
@@ -2395,12 +2399,13 @@ function closeFindBar() {
   }
   if (count) { count.textContent = '0/0'; count.classList.remove('no-match'); }
   if (bar) bar.style.display = 'none';
+  findStarted = false;
   if (window.electronAPI && window.electronAPI.stopFindInPage) {
     window.electronAPI.stopFindInPage('clearSelection');
   }
 }
 
-// direction: 'restart' (typing, from top), 'next' (Enter/▼), 'prev' (Shift+Enter/▲)
+// direction: 'restart' (from top), 'next' (Enter/▼), 'prev' (Shift+Enter/▲)
 function runFind(direction) {
   const input = document.getElementById('find-input');
   if (!input || !window.electronAPI || !window.electronAPI.findInPage) return;
@@ -2409,6 +2414,7 @@ function runFind(direction) {
   const count = document.getElementById('find-count');
   if (count) count.textContent = '0/0';
   if (!text) {
+    findStarted = false;
     if (window.electronAPI.stopFindInPage) window.electronAPI.stopFindInPage('clearSelection');
     return;
   }
@@ -2423,6 +2429,7 @@ function runFind(direction) {
     options.forward = true;
     options.findNext = false;
   }
+  findStarted = true;
   // Temporarily clear the search box value so the find engine doesn't also
   // match the exact text the user just typed into the box itself. findInPage
   // snapshots the DOM at call time, so restoring synchronously keeps the box
@@ -2465,11 +2472,24 @@ function setupFindBar() {
   const caseBtn = document.getElementById('find-case');
   const closeBtn = document.getElementById('find-close');
   if (input) {
-    input.addEventListener('input', () => runFind('restart'));
+    // Search runs ONLY on Enter. While typing, just reset the counter and clear
+    // any highlights from a previous query — do not search on every keystroke.
+    input.addEventListener('input', () => {
+      findStarted = false;
+      const count = document.getElementById('find-count');
+      if (count) { count.textContent = '0/0'; count.classList.remove('no-match'); }
+      input.classList.remove('no-match');
+      if (window.electronAPI && window.electronAPI.stopFindInPage) {
+        window.electronAPI.stopFindInPage('clearSelection');
+      }
+    });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        runFind(e.shiftKey ? 'prev' : 'next');
+        // First Enter after typing starts a fresh search from the top; further
+        // Enters advance to the next/previous match.
+        if (!findStarted) runFind('restart');
+        else runFind(e.shiftKey ? 'prev' : 'next');
       } else if (e.key === 'Escape') {
         e.preventDefault();
         closeFindBar();
@@ -2480,6 +2500,7 @@ function setupFindBar() {
   if (prevBtn) prevBtn.addEventListener('click', () => runFind('prev'));
   if (caseBtn) caseBtn.addEventListener('click', () => {
     findMatchCase = !findMatchCase;
+    findStarted = false; // a different match-case is a new search from the top
     runFind('restart');
   });
   if (closeBtn) closeBtn.addEventListener('click', closeFindBar);

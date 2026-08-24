@@ -2323,7 +2323,8 @@ async function runTests() {
   `);
   assert('Cmd+F opens find bar', findBarOpened === true);
 
-  // Typing a query calls findInPage with the text
+  global.__findCalls = [];
+  // Typing must NOT trigger a search; only Enter does.
   await mainWindow.webContents.executeJavaScript(`
     (() => {
       const input = document.getElementById('find-input');
@@ -2332,9 +2333,21 @@ async function runTests() {
     })()
   `);
   await new Promise(resolve => setTimeout(resolve, 200));
-  const lastFindCall = global.__findCalls[global.__findCalls.length - 1];
-  assert('Typing calls findInPage with query', lastFindCall && lastFindCall.text === 'old', `text=${lastFindCall && lastFindCall.text}`);
-  assert('Initial search is forward/restart', lastFindCall && lastFindCall.options && lastFindCall.options.findNext === false && lastFindCall.options.forward === true);
+  assert('Typing does not trigger findInPage', global.__findCalls.length === 0, `calls=${global.__findCalls.length}`);
+  const findCountWhileTyping = await mainWindow.webContents.executeJavaScript(`document.getElementById('find-count').textContent`);
+  assert('Counter stays 0/0 while typing', findCountWhileTyping === '0/0', `count="${findCountWhileTyping}"`);
+
+  // First Enter starts a fresh search from the top (restart).
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const firstEnterCall = global.__findCalls[global.__findCalls.length - 1];
+  assert('Enter triggers findInPage with query', firstEnterCall && firstEnterCall.text === 'old', `text=${firstEnterCall && firstEnterCall.text}`);
+  assert('First Enter searches from top', firstEnterCall && firstEnterCall.options && firstEnterCall.options.findNext === false && firstEnterCall.options.forward === true);
 
   // Simulate a find result and check the counter updates
   await mainWindow.webContents.send('find-result', { activeMatchOrdinal: 2, matches: 14 });
@@ -2413,6 +2426,7 @@ async function runTests() {
       const input = document.getElementById('find-input');
       input.value = 'paddedMonth';
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     })()
   `);
   await new Promise(resolve => setTimeout(resolve, 200));
