@@ -2745,10 +2745,17 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 // `Module::sub(...)` don't match). JS pattern keeps to the common declaration
 // forms (function decl, assignment, arrow, and object/class method shorthand);
 // extractFunctionBody confirms and does the real extraction.
+//
+// IMPORTANT: git grep -E uses POSIX extended regex, which has NO `\s` or `\b`
+// shorthand and NO non-capturing `(?:...)`. Using those makes `git grep` fail
+// with "Invalid preceding regular expression" and the search silently returns
+// nothing (which breaks preview for functions added in the PR, among others).
+// So these patterns use POSIX-only constructs: `[[:space:]]` for whitespace and
+// explicit word-boundary alternatives `(^|[^[:alnum:]_])` / `([^[:alnum:]_]|$)`.
 function defGrepPattern(lang, funcName) {
   const n = escapeRegex(funcName);
-  if (lang === 'perl') return `^\\s*sub\\s+${n}\\b`;
-  return `function\\s+${n}\\b|\\b${n}\\s*[:=]\\s*(?:async\\s*)?(?:function|\\([^)]*\\)\\s*=>)|\\b${n}\\s*\\([^)]*\\)\\s*\\{`;
+  if (lang === 'perl') return `^[[:space:]]*sub[[:space:]]+${n}([^[:alnum:]_]|$)`;
+  return `function[[:space:]]+${n}([^[:alnum:]_]|$)|(^|[^[:alnum:]_])${n}[[:space:]]*[:=][[:space:]]*(async[[:space:]]*)?(function|\\([^)]*\\)[[:space:]]*=>)|(^|[^[:alnum:]_])${n}[[:space:]]*\\([^)]*\\)[[:space:]]*\\{`;
 }
 
 // Extract parent class/module names a package inherits from, by reading its
@@ -2852,11 +2859,13 @@ function extractFunctionBody(content, funcName) {
   const jsAssignMatch = new RegExp(`^(\\s*${funcName}\\s*=\\s*(?:async\\s*)?(?:function|\\())`);
   const jsArrowMatch = new RegExp(`^(\\s*(?:const|let|var)\\s+${funcName}\\s*=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>)`);
   const jsMethodMatch = new RegExp(`^(\\s*${funcName}\\s*\\([^)]*\\)\\s*\\{)`);
+  // Object-method definition: `name: function() {` / `name: async function() {`.
+  const jsObjMethodMatch = new RegExp(`^(\\s*${funcName}\\s*:\\s*(?:async\\s*)?function\\s*\\()`);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (perlMatch.test(line) || jsMatch.test(line) || jsAssignMatch.test(line) ||
-        jsArrowMatch.test(line) || jsMethodMatch.test(line)) {
+        jsArrowMatch.test(line) || jsMethodMatch.test(line) || jsObjMethodMatch.test(line)) {
       startLine = i;
       break;
     }

@@ -2423,7 +2423,17 @@ function runFind(direction) {
     options.forward = true;
     options.findNext = false;
   }
+  // Temporarily clear the search box value so the find engine doesn't also
+  // match the exact text the user just typed into the box itself. findInPage
+  // snapshots the DOM at call time, so restoring synchronously keeps the box
+  // visible to the user without it contributing spurious matches.
+  const restore = input.value;
+  const selStart = input.selectionStart;
+  const selEnd = input.selectionEnd;
+  input.value = '';
   window.electronAPI.findInPage(text, options);
+  input.value = restore;
+  input.setSelectionRange(selStart, selEnd);
 }
 
 function updateFindCount(result) {
@@ -4269,6 +4279,11 @@ const FUNC_DEF_PATTERNS = [
   { lang: 'js', re: /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/ },
   { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?function\b/ },
   { lang: 'js', re: /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/ },
+  // Object-method definition: `name: function() {` / `name: async function() {`.
+  // This must come before the generic `name(...) {` shorthand so the real
+  // method name is captured instead of the `function` keyword.
+  { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?function\b/ },
+  // Shorthand method / regular definition `name(args) {`.
   { lang: 'js', re: /\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/ }
 ];
 
@@ -4411,7 +4426,9 @@ function resolvePreviewTarget(text, lang) {
   for (const p of FUNC_DEF_PATTERNS) {
     if (p.lang !== lang) continue;
     const m = text.match(p.re);
-    if (m && m[1]) return { name: m[1], module: '', isDef: true };
+    // Skip keyword captures (e.g. the generic `name(...) {` shorthand would
+    // otherwise match `function() {` and report the literal word "function").
+    if (m && m[1] && !CALL_KEYWORDS.has(m[1])) return { name: m[1], module: '', isDef: true };
   }
   // Calls. Collect every call-like token on the line, then prefer the first one
   // that is a real function/method (not a keyword). This handles chains like

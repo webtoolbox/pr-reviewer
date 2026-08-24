@@ -2407,6 +2407,40 @@ async function runTests() {
   `);
   assert('Shortcuts dialog lists Cmd+F', shortcutHasFind === true);
 
+  // The search box text must not be left cleared by runFind (clear-restore trick).
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.value = 'paddedMonth';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const findInputValueRestored = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-input').value
+  `);
+  assert('Find input value restored after search', findInputValueRestored === 'paddedMonth', `value="${findInputValueRestored}"`);
+  // Close the find bar to leave the UI clean for later tests.
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    })()
+  `);
+
+  // Object-method definitions (`name: function() {`) must resolve as a def with
+  // the real method name (not the literal "function" keyword).
+  const objMethodDef = await mainWindow.webContents.executeJavaScript(`
+    resolvePreviewTarget('\\tisTouchOnlyDevice: function() {', 'js')
+  `);
+  assert('Object-method def resolves to real name', objMethodDef && objMethodDef.name === 'isTouchOnlyDevice' && objMethodDef.isDef === true, JSON.stringify(objMethodDef));
+
+  // A keyword-only line must not be reported as a def (e.g. "function").
+  const keywordDef = await mainWindow.webContents.executeJavaScript(`
+    resolvePreviewTarget('\\tfunction() { return 1; }', 'js')
+  `);
+  assert('Keyword not treated as function name', !keywordDef || !keywordDef.isDef || keywordDef.name !== 'function', JSON.stringify(keywordDef));
+
   // Summary
   log('');
   log('='.repeat(50));
