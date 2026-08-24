@@ -2259,9 +2259,22 @@ document.addEventListener('keydown', (e) => {
   // so we must normalize to avoid case-sensitive mismatches.
   const key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
 
-  // Escape — close comment form
+  // Escape — close comment form (or the find bar if open)
   if (e.key === 'Escape') {
+    const findBar = document.getElementById('find-bar');
+    if (findBar && findBar.style.display !== 'none') {
+      e.preventDefault();
+      closeFindBar();
+      return;
+    }
     closeCommentDialog();
+    return;
+  }
+
+  // Cmd+F — open find-in-page search bar
+  if (key === 'F' && isMeta && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    openFindBar();
     return;
   }
 
@@ -2351,6 +2364,124 @@ function isEditableTarget(target) {
   }
   return target.isContentEditable === true;
 }
+
+// ===================== FIND-IN-PAGE (Cmd+F) =====================
+// Searches across every diff currently rendered on screen using Electron's
+// built-in find engine. Highlights each match and reports back match counts.
+
+let findMatchCase = false;
+let lastFindQuery = '';
+
+function openFindBar() {
+  const bar = document.getElementById('find-bar');
+  const input = document.getElementById('find-input');
+  if (!bar || !input) return;
+  bar.style.display = 'block';
+  input.focus();
+  if (lastFindQuery) {
+    input.value = lastFindQuery;
+    input.setSelectionRange(lastFindQuery.length, lastFindQuery.length);
+    runFind('restart');
+  }
+}
+
+function closeFindBar() {
+  const bar = document.getElementById('find-bar');
+  const input = document.getElementById('find-input');
+  const count = document.getElementById('find-count');
+  if (input) {
+    lastFindQuery = input.value;
+    input.classList.remove('no-match');
+  }
+  if (count) { count.textContent = '0/0'; count.classList.remove('no-match'); }
+  if (bar) bar.style.display = 'none';
+  if (window.electronAPI && window.electronAPI.stopFindInPage) {
+    window.electronAPI.stopFindInPage('clearSelection');
+  }
+}
+
+// direction: 'restart' (typing, from top), 'next' (Enter/▼), 'prev' (Shift+Enter/▲)
+function runFind(direction) {
+  const input = document.getElementById('find-input');
+  if (!input || !window.electronAPI || !window.electronAPI.findInPage) return;
+  const text = input.value;
+  lastFindQuery = text;
+  const count = document.getElementById('find-count');
+  if (count) count.textContent = '0/0';
+  if (!text) {
+    if (window.electronAPI.stopFindInPage) window.electronAPI.stopFindInPage('clearSelection');
+    return;
+  }
+  const options = { matchCase: findMatchCase };
+  if (direction === 'next') {
+    options.forward = true;
+    options.findNext = true;
+  } else if (direction === 'prev') {
+    options.forward = false;
+    options.findNext = true;
+  } else {
+    options.forward = true;
+    options.findNext = false;
+  }
+  window.electronAPI.findInPage(text, options);
+}
+
+function updateFindCount(result) {
+  const count = document.getElementById('find-count');
+  if (!count) return;
+  const total = result.matches;
+  const active = total > 0 ? result.activeMatchOrdinal : 0;
+  count.textContent = `${active}/${total}`;
+  const noMatch = total === 0;
+  count.classList.toggle('no-match', noMatch);
+  const input = document.getElementById('find-input');
+  if (input) input.classList.toggle('no-match', noMatch);
+  const caseBtn = document.getElementById('find-case');
+  if (caseBtn) caseBtn.classList.toggle('active', findMatchCase);
+}
+
+// Re-run the current search after the diff is re-rendered so highlights stay in sync.
+function rerunActiveFind() {
+  const bar = document.getElementById('find-bar');
+  if (!bar || bar.style.display === 'none') return;
+  const input = document.getElementById('find-input');
+  if (input && input.value) runFind('restart');
+}
+
+function setupFindBar() {
+  const input = document.getElementById('find-input');
+  const nextBtn = document.getElementById('find-next');
+  const prevBtn = document.getElementById('find-prev');
+  const caseBtn = document.getElementById('find-case');
+  const closeBtn = document.getElementById('find-close');
+  if (input) {
+    input.addEventListener('input', () => runFind('restart'));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runFind(e.shiftKey ? 'prev' : 'next');
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeFindBar();
+      }
+    });
+  }
+  if (nextBtn) nextBtn.addEventListener('click', () => runFind('next'));
+  if (prevBtn) prevBtn.addEventListener('click', () => runFind('prev'));
+  if (caseBtn) caseBtn.addEventListener('click', () => {
+    findMatchCase = !findMatchCase;
+    runFind('restart');
+  });
+  if (closeBtn) closeBtn.addEventListener('click', closeFindBar);
+  if (window.electronAPI && window.electronAPI.onFindResult) {
+    window.electronAPI.onFindResult(updateFindCount);
+  }
+  if (window.electronAPI && window.electronAPI.onOpenFind) {
+    window.electronAPI.onOpenFind(openFindBar);
+  }
+}
+setupFindBar();
+
 
 // Drag and drop
 document.addEventListener('dragover', (e) => {
@@ -3893,6 +4024,8 @@ function renderFilteredDiff() {
   // All collapsed files (filtered-out + user-collapsed) appear at the end
   reorderCollapsedFilesLast();
   addFunctionPreviewHandlers();
+  // Re-run an active find so highlights stay in sync with the fresh DOM
+  rerunActiveFind();
 }
 
 /**

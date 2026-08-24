@@ -2294,6 +2294,119 @@ async function runTests() {
   );
   assert('addCopyFileNameButtons function exists', fnExists);
 
+  // ===================== FIND-IN-PAGE (Cmd+F) =====================
+  global.__findCalls = [];
+  global.__findStops = 0;
+  global.__findLastStop = null;
+
+  // Bridges exist
+  const findBridgesExist = await mainWindow.webContents.executeJavaScript(`
+    typeof window.electronAPI.findInPage === 'function' &&
+    typeof window.electronAPI.stopFindInPage === 'function' &&
+    typeof window.electronAPI.onFindResult === 'function' &&
+    typeof window.electronAPI.onOpenFind === 'function'
+  `);
+  assert('Find bridges exposed by preload', findBridgesExist === true);
+
+  // Find bar hidden by default
+  const findBarHiddenByDefault = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-bar').style.display === 'none'
+  `);
+  assert('Find bar hidden by default', findBarHiddenByDefault === true);
+
+  // Cmd+F opens the find bar
+  await mainWindow.webContents.executeJavaScript(`
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }));
+  `);
+  const findBarOpened = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-bar').style.display === 'block'
+  `);
+  assert('Cmd+F opens find bar', findBarOpened === true);
+
+  // Typing a query calls findInPage with the text
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.value = 'old';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const lastFindCall = global.__findCalls[global.__findCalls.length - 1];
+  assert('Typing calls findInPage with query', lastFindCall && lastFindCall.text === 'old', `text=${lastFindCall && lastFindCall.text}`);
+  assert('Initial search is forward/restart', lastFindCall && lastFindCall.options && lastFindCall.options.findNext === false && lastFindCall.options.forward === true);
+
+  // Simulate a find result and check the counter updates
+  await mainWindow.webContents.send('find-result', { activeMatchOrdinal: 2, matches: 14 });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const findCountText = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-count').textContent
+  `);
+  assert('Find counter shows active/total', findCountText === '2/14', `count="${findCountText}"`);
+
+  // Enter navigates to next match (findNext + forward)
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const enterCall = global.__findCalls[global.__findCalls.length - 1];
+  assert('Enter finds next match', enterCall && enterCall.options && enterCall.options.findNext === true && enterCall.options.forward === true);
+
+  // Shift+Enter navigates to previous match (findNext + backward)
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const shiftEnterCall = global.__findCalls[global.__findCalls.length - 1];
+  assert('Shift+Enter finds previous match', shiftEnterCall && shiftEnterCall.options && shiftEnterCall.options.findNext === true && shiftEnterCall.options.forward === false);
+
+  // Match-case toggle triggers a re-search with matchCase
+  await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-case').click();
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const caseCall = global.__findCalls[global.__findCalls.length - 1];
+  assert('Match-case toggle re-searches with matchCase', caseCall && caseCall.options && caseCall.options.matchCase === true);
+
+  // Zero matches shows 0/0 and no-match styling
+  await mainWindow.webContents.send('find-result', { activeMatchOrdinal: 0, matches: 0 });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const findCountZero = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-count').textContent
+  `);
+  const findNoMatchStyling = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-count').classList.contains('no-match')
+  `);
+  assert('Zero matches shows 0/0', findCountZero === '0/0', `count="${findCountZero}"`);
+  assert('Zero matches shows no-match styling', findNoMatchStyling === true);
+
+  // Esc closes the find bar and stops the search
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById('find-input');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const findBarClosed = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-bar').style.display === 'none'
+  `);
+  const findStopCalled = global.__findStops;
+  assert('Esc closes find bar', findBarClosed === true);
+  assert('Esc stops find-in-page', findStopCalled >= 1, `stops=${findStopCalled}`);
+
+  // Shortcuts dialog lists Cmd+F
+  const shortcutHasFind = await mainWindow.webContents.executeJavaScript(`
+    Array.from(document.querySelectorAll('.shortcut-row')).some(r => r.textContent.includes('Search all diffs'))
+  `);
+  assert('Shortcuts dialog lists Cmd+F', shortcutHasFind === true);
+
   // Summary
   log('');
   log('='.repeat(50));
@@ -2452,6 +2565,20 @@ This PR updates the UI.
 ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha }) => {
   // Mock: return a simple diff with expanded context
   return { content: `diff --git a/${filePath} b/${filePath}\nindex 123..456 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,5 +1,5 @@\n line1\n line2\n-old\n+new\n line4\n line5\n` };
+});
+
+// Mock find-in-page so tests can assert what the renderer sends, without a real search.
+global.__findCalls = [];
+ipcMain.handle('find-in-page', (event, { text, options }) => {
+  global.__findCalls.push({ text, options });
+  return true;
+});
+global.__findStops = 0;
+global.__findLastStop = null;
+ipcMain.handle('stop-find-in-page', (event, { action }) => {
+  global.__findStops += 1;
+  global.__findLastStop = action;
+  return true;
 });
 
 // Capture what saveAgentRules sends so tests can assert type/existingRule pass-through

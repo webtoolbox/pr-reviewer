@@ -1293,6 +1293,38 @@
       width: 720px; max-width: 90vw; max-height: 85vh;
       display: flex; flex-direction: column; overflow: hidden;
     }
+    /* Find-in-page bar */
+    #find-bar {
+      position: fixed; top: calc(var(--review-bar-height, 52px) + 10px); right: 16px;
+      z-index: 1001; background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4); padding: 6px;
+    }
+    #find-bar .find-inner { display: flex; align-items: center; gap: 4px; }
+    #find-input {
+      width: 220px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      color: #e6edf3; font-size: 13px; padding: 5px 10px; outline: none;
+    }
+    #find-input:focus { border-color: #58a6ff; }
+    #find-input.no-match { border-color: #f85149; }
+    #find-count {
+      min-width: 44px; text-align: center; color: #8b949e; font-size: 12px;
+      font-variant-numeric: tabular-nums; user-select: none;
+    }
+    #find-count.no-match { color: #f85149; }
+    .find-btn {
+      background: transparent; border: none; color: #8b949e; cursor: pointer;
+      font-size: 12px; line-height: 1; padding: 5px 7px; border-radius: 4px;
+      min-width: 26px; transition: all 0.15s;
+    }
+    .find-btn:hover { background: #21262d; color: #e6edf3; }
+    .find-btn.active { background: #21262d; color: #58a6ff; }
+    .find-close {
+      background: transparent; border: none; color: #8b949e; cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 5px 8px; border-radius: 4px;
+      margin-left: 2px; transition: all 0.15s;
+    }
+    .find-close:hover { background: #21262d; color: #e6edf3; }
+
     /* Keyboard shortcuts dialog */
     .shortcuts-dialog {
       background: #161b22; border: 1px solid #30363d; border-radius: 8px;
@@ -1608,6 +1640,19 @@
       #review-bar button:hover { background: #e9ecef; }
       #review-bar input { background: #ffffff; color: #24292f; border: 1px solid #d0d7de; }
       #review-bar input:focus { border-color: #0969da; }
+
+      /* Find-in-page bar */
+      #find-bar { background: #ffffff; border-color: #d0d7de; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+      #find-input { background: #ffffff; border-color: #d0d7de; color: #24292f; }
+      #find-input:focus { border-color: #0969da; }
+      #find-input.no-match { border-color: #f85149; }
+      #find-count { color: #656d76; }
+      #find-count.no-match { color: #f85149; }
+      .find-btn { color: #656d76; }
+      .find-btn:hover { background: #f6f8fa; color: #24292f; }
+      .find-btn.active { background: #f6f8fa; color: #0969da; }
+      .find-close { color: #656d76; }
+      .find-close:hover { background: #f6f8fa; color: #24292f; }
 
       /* Diff container */
       #diff-container { background: #ffffff; }
@@ -2114,6 +2159,18 @@
     </div>
   </div>
 
+  <!-- Find-in-page bar (hidden by default) -->
+  <div id="find-bar" style="display:none">
+    <div class="find-inner">
+      <input type="text" id="find-input" placeholder="Search diffs…" autocomplete="off" spellcheck="false" />
+      <span class="find-count" id="find-count">0/0</span>
+      <button class="find-btn" id="find-prev" title="Previous (Shift+Enter)" aria-label="Previous match">▲</button>
+      <button class="find-btn" id="find-next" title="Next (Enter)" aria-label="Next match">▼</button>
+      <button class="find-btn" id="find-case" title="Match case (Alt+C)" aria-label="Match case">Aa</button>
+      <button class="find-close" id="find-close" title="Close (Esc)" aria-label="Close find">✕</button>
+    </div>
+  </div>
+
   <!-- Keyboard shortcuts dialog (hidden by default) -->
   <div id="shortcuts-overlay" class="prefs-overlay" style="display:none">
     <div class="shortcuts-dialog">
@@ -2133,6 +2190,7 @@
         <div class="shortcuts-group">
           <div class="shortcuts-group-title">Navigation</div>
           <div class="shortcut-row"><kbd>⌘</kbd><kbd>R</kbd><span class="shortcut-desc">Reload current PR diff</span></div>
+          <div class="shortcut-row"><kbd>⌘</kbd><kbd>F</kbd><span class="shortcut-desc">Search all diffs</span></div>
           <div class="shortcut-row"><kbd>⌘</kbd><kbd>]</kbd><span class="shortcut-desc">Next comment</span></div>
           <div class="shortcut-row"><kbd>⌘</kbd><kbd>[</kbd><span class="shortcut-desc">Previous comment</span></div>
         </div>

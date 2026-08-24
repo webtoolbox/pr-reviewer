@@ -1128,6 +1128,15 @@ function createMenu() {
     {
       label: 'Edit',
       submenu: [
+        {
+          label: 'Find in Diff…',
+          accelerator: 'CmdOrCtrl+F',
+          click: () => {
+            const focused = BrowserWindow.getFocusedWindow();
+            if (focused) focused.webContents.send('open-find');
+          }
+        },
+        { type: 'separator' },
         { role: 'undo' },
         { role: 'redo' },
         { type: 'separator' },
@@ -1242,6 +1251,11 @@ function createWindow(options = {}) {
     }
   });
 
+  // Relay find-in-page match results to the renderer so it can update the counter.
+  win.webContents.on('found-in-page', (event, result) => {
+    win.webContents.send('find-result', result);
+  });
+
   win.on('closed', () => {
     windows.delete(windowId);
   });
@@ -1292,6 +1306,18 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('renderer-log', (event, level, ...args) => {
   log(level, '[renderer]', ...args);
+});
+
+// Find-in-page: search across the rendered diff using Electron's built-in
+// find engine (same one the browser uses). Results are relayed back via the
+// 'found-in-page' event wired up in createWindow().
+ipcMain.handle('find-in-page', (event, { text, options }) => {
+  event.sender.findInPage(text, options || {});
+  return true;
+});
+ipcMain.handle('stop-find-in-page', (event, { action }) => {
+  event.sender.stopFindInPage(action || 'clearSelection');
+  return true;
 });
 
 ipcMain.handle('checkout-master', async (event, { repoKey }) => {

@@ -67,5 +67,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAutoUpdate: (enabled) => ipcRenderer.invoke('set-auto-update', enabled),
   closePr: (data) => ipcRenderer.invoke('close-pr', data),
   expandDiffContext: (data) => ipcRenderer.invoke('expand-diff-context', data),
-  openExternal: (url) => ipcRenderer.invoke('open-external', url)
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  findInPage: (text, options) => ipcRenderer.invoke('find-in-page', { text, options }),
+  stopFindInPage: (action) => ipcRenderer.invoke('stop-find-in-page', { action }),
+  onFindResult: (callback) => ipcRenderer.on('find-result', (event, data) => callback(data)),
+  onOpenFind: (callback) => ipcRenderer.on('open-find', () => callback())
 });
