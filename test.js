@@ -101,6 +101,21 @@ async function runTests() {
     assert('Side panels are paired (even count)', sideDiffs % 2 === 0, `count: ${sideDiffs}`);
   }
 
+  // TEST 9b: Diff lines wrap instead of scrolling horizontally
+  const wrapStyle = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('.d2h-code-line-ctn');
+      if (!el) return 'no-ctn';
+      const cs = getComputedStyle(el);
+      return cs.whiteSpace + '|' + cs.wordBreak + '|' + cs.overflowWrap;
+    })()
+  `);
+  const wrapStyles = wrapStyle.split('|');
+  assert('Diff lines wrap (pre-wrap)',
+    wrapStyles[0] === 'pre-wrap' &&
+    (wrapStyles[1].includes('break-word') || wrapStyles[2].includes('anywhere')),
+    `computed: ${wrapStyle}`);
+
   // TEST 10: Comment buttons added to lines
   const commentBtns = await mainWindow.webContents.executeJavaScript(`
     document.querySelectorAll('.line-comment-btn').length

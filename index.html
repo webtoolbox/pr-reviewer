@@ -1188,6 +1188,27 @@
       background-color: var(--d2h-dark-ins-bg-color) !important;
     }
 
+    /* Wrap long diff lines instead of horizontal scrolling.
+       diff2html defaults to white-space: nowrap / pre, which forces
+       horizontal scrolling for long lines. These overrides make code
+       wrap to the container width in BOTH unified and split modes,
+       while preserving leading indentation (pre-wrap). */
+    .d2h-code-line-ctn {
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+      overflow-wrap: anywhere !important;
+    }
+    .d2h-file-side-diff { overflow-x: hidden !important; }
+    .d2h-file-side-diff .d2h-diff-table { table-layout: fixed !important; width: 100% !important; }
+    .d2h-file-side-diff td { max-width: 0 !important; overflow: hidden !important; }
+    .d2h-code-side-line {
+      position: relative !important;
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+      display: block !important;
+      width: 100% !important;
+    }
+
     /* File list */
     .d2h-file-list-wrapper { margin-bottom: 10px; }
     .d2h-tag, .d2h-changed-tag, .d2h-added-tag, .d2h-deleted-tag, .d2h-renamed-tag { border-radius: 8px !important; font-size: 10px !important; padding: 2px 6px !important; }
