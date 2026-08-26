@@ -3337,10 +3337,29 @@ async function loadPrByNumber(prNumber, repoKey) {
   // Show the loading indicator immediately so the previous PR's diff doesn't
   // linger while the next one loads (the title bar changes before the diff).
   showDiffLoading('Loading PR #' + prNumber + '…');
-  prInfo.innerHTML = `<strong>Loading PR #${prNumber}...</strong>`;
   const loadingToast = showToast('Loading PR…', 'progress', 30000);
 
   try {
+    // Phase 0: Show title/author/assignees instantly from the in-memory pending
+    // list (cachedPrList) when available — zero IPC, zero GitHub call. This makes
+    // the title appear the instant a PR is selected on every navigation path,
+    // even before the prefetch cache or metadata fetch resolves.
+    const pendingPr = (cachedPrList || []).find(pr => String(pr.number) === String(prNumber) && (!repoKey || (pr.repo || '') === repoKey));
+    if (pendingPr) {
+      currentPrTitle = pendingPr.title || '';
+      currentPrNumber = prNumber;
+      currentRepoKey = repoKey || null;
+      document.title = currentPrTitle ? `${currentPrTitle} — PR Reviewer` : `PR Reviewer — PR #${prNumber}`;
+      prNumberInput.value = prNumber;
+      updatePrInfoBar(prNumber, currentPrTitle, {
+        prAuthor: pendingPr.author,
+        prAssignees: (pendingPr.assignees || []).filter(a => a !== pendingPr.author),
+        filesChanged: 0,
+        reviewInfo: null
+      });
+      console.log('[loadPr] Title shown instantly from pending list for PR #' + prNumber + ':', currentPrTitle);
+    }
+
     // Phase 1: Fetch metadata first (~1-2s) — title, author, assignees
     // This shows the user key info immediately while the diff loads
     let prMeta = null;

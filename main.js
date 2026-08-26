@@ -1432,10 +1432,19 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
     const safePr = safePrNumber(prNumber);
     const cacheKey = `${safePr}:${repo || 'default'}`;
     
-    // Check prefetch cache first — instant return if already fetched
+    // Check the retained viewed cache first — instant return of the SAME diff
+    // for PRs already loaded this session (e.g. navigating back to a reviewed PR).
+    const viewed = viewedPrCache.get(cacheKey);
+    if (viewed) {
+      log('INFO', '[pr] Returning viewed-cached result for PR #' + prNumber);
+      return viewed;
+    }
+
+    // Check prefetch cache second — instant return if already fetched
     const prefetched = prefetchCache[cacheKey];
     if (prefetched && prefetched !== 'in-progress') {
       delete prefetchCache[cacheKey];
+      cacheViewedPr(cacheKey, prefetched);
       log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
       return prefetched;
     }
@@ -1453,7 +1462,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
     const prAssignees = (prData.assignees || []).filter(a => a !== prAuthor);
     const prBody = prData.body || '';
 
-    return {
+    const out = {
     content,
     fileName,
     filePath: result.diffPath,
@@ -1469,6 +1478,8 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
     headSha: result.headSha || null,
     sinceReviewRef: result.sinceReviewRef || null
     };
+    cacheViewedPr(cacheKey, out);
+    return out;
   } catch (err) {
     log('ERROR', '[pr] load failed:', err.message);
     return { error: err.message };
@@ -1484,6 +1495,22 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
   // title appears instantly alongside the diff. Do NOT consume the entry here —
   // load-pr still needs it for the diff content.
   const cacheKey = `${safePr}:${repo || 'default'}`;
+  // Serve from the retained viewed cache first (covers back-navigation to a PR
+  // whose prefetch entry was already consumed by a previous load).
+  const viewed = viewedPrCache.get(cacheKey);
+  if (viewed) {
+    log('INFO', '[get-pr-info] Returning viewed-cached metadata for PR #' + safePr);
+    return {
+      prTitle: viewed.prTitle || '',
+      prAuthor: viewed.prAuthor || '',
+      prAssignees: viewed.prAssignees || [],
+      prBody: viewed.prBody || '',
+      state: '',
+      filesChanged: viewed.filesChanged || 0,
+      headSha: viewed.headSha || '',
+      baseSha: viewed.baseSha || ''
+    };
+  }
   const prefetched = prefetchCache[cacheKey];
   if (prefetched && prefetched !== 'in-progress') {
     log('INFO', '[get-pr-info] Returning cached metadata for PR #' + safePr);
@@ -1528,6 +1555,21 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
     return { error: err.message };
   }
 });
+
+// Retained results for recently-viewed PRs. Unlike prefetchCache (which is
+// consumed once on load), this cache keeps the full diff+metadata so navigating
+// back to a PR you already reviewed returns the SAME diff instantly instead of
+// regenerating it (10-30s). Bounded to 50 entries.
+const viewedPrCache = new Map();
+const VIEWED_PR_CACHE_MAX = 50;
+function cacheViewedPr(cacheKey, result) {
+  if (!result) return;
+  viewedPrCache.set(cacheKey, result);
+  if (viewedPrCache.size > VIEWED_PR_CACHE_MAX) {
+    const oldestKey = viewedPrCache.keys().next().value;
+    viewedPrCache.delete(oldestKey);
+  }
+}
 
 // Prefetch PR diff in background — result cached for next load-pr call
 const prefetchCache = {};

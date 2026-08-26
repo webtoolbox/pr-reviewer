@@ -1185,6 +1185,29 @@ async function runTests() {
   );
   assert('loadPrByNumber sets beforeAfterPairs', pairsLoaded === 2, `pairs: ${pairsLoaded}`);
 
+  // TEST: loadPrByNumber shows the title instantly from cachedPrList (Phase 0),
+  // before any metadata IPC resolves — so the title appears the instant a PR is
+  // selected on every navigation path.
+  const instantTitle = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (typeof loadPrByNumber !== 'function') return { err: 'no-function' };
+      cachedPrList = [{ number: 9090, repo: 'webtoolbox/Website-Toolbox', title: 'Instant Title Marker PR', author: 'alice', assignees: ['bob'] }];
+      // Do NOT await before observing — Phase 0 runs synchronously before the
+      // first IPC await, so we can capture the title at call time.
+      const pending = loadPrByNumber(9090, 'webtoolbox/Website-Toolbox');
+      const titleVar = currentPrTitle;
+      const titleInBar = (document.getElementById('pr-info').textContent || '').includes('Instant Title Marker PR');
+      const authorInBar = (document.getElementById('pr-info').textContent || '').includes('alice');
+      const docTitle = document.title.includes('Instant Title Marker PR');
+      // Then await completion so this load doesn't leak into later tests.
+      await pending;
+      return { titleVar, titleInBar, authorInBar, docTitle };
+    })()
+  `);
+  assert('loadPrByNumber shows title instantly from cachedPrList (Phase 0)',
+    instantTitle && instantTitle.titleVar === 'Instant Title Marker PR' && instantTitle.titleInBar && instantTitle.authorInBar && instantTitle.docTitle,
+    JSON.stringify(instantTitle));
+
   // TEST: Compare icon appears in title line when pairs exist
   const compareIconExists = await mainWindow.webContents.executeJavaScript(
     `!!document.querySelector('.pr-compare-toggle')`

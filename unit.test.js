@@ -2922,6 +2922,35 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     // Must NOT consume the cache entry (load-pr still needs the diff)
     expect(hSrc).not.toContain('delete prefetchCache[cacheKey]');
   });
+
+  test('viewedPrCache retains recently-viewed PR results for back-navigation', () => {
+    // A retained cache (Map) separate from the one-shot prefetch cache exists.
+    expect(mainSource).toContain('const viewedPrCache = new Map();');
+    expect(mainSource).toContain('VIEWED_PR_CACHE_MAX');
+    expect(mainSource).toContain('function cacheViewedPr(cacheKey, result)');
+  });
+
+  test('load-pr checks the viewed cache first and returns the SAME diff', () => {
+    const hIdx = mainSource.indexOf("ipcMain.handle('load-pr'");
+    const hEnd = mainSource.indexOf('ipcMain.handle(\'get-pr-info\'', hIdx);
+    const hSrc = mainSource.substring(hIdx, hEnd > 0 ? hEnd : hIdx + 2000);
+    // Viewed cache checked before the prefetch cache and before network/generateDiff
+    expect(hSrc.indexOf('const viewed = viewedPrCache.get(cacheKey)')).toBeLessThan(hSrc.indexOf('const prefetched = prefetchCache[cacheKey]'));
+    expect(hSrc).toContain('if (viewed) {');
+    expect(hSrc).toContain("log('INFO', '[pr] Returning viewed-cached result");
+    // Successful loads populate the retained cache
+    expect(hSrc).toContain('cacheViewedPr(cacheKey, out);');
+    expect(hSrc).toContain('cacheViewedPr(cacheKey, prefetched);');
+  });
+
+  test('get-pr-info serves metadata from the viewed cache first', () => {
+    const hIdx = mainSource.indexOf("ipcMain.handle('get-pr-info'");
+    const hEnd = mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx);
+    const hSrc = mainSource.substring(hIdx, hEnd > 0 ? hEnd : hIdx + 1500);
+    expect(hSrc).toContain('const viewed = viewedPrCache.get(cacheKey);');
+    expect(hSrc).toContain('Returning viewed-cached metadata');
+    expect(hSrc).toContain('prTitle: viewed.prTitle ||');
+  });
 });
 
 // ── Expand context stays consistent with since-review diff ──
