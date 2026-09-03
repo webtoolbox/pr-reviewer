@@ -2334,16 +2334,16 @@ async function runTests() {
   `);
   assert('submitReview auto-advance picks PR after the reviewed one', autoAdvanceForward === 'ok', `result: ${autoAdvanceForward}`);
 
-  // TEST: submitReview no-more-PRs path stays on the last PR (not all-done)
-  const autoAdvanceStaysLast = await mainWindow.webContents.executeJavaScript(`
+  // TEST: submitReview no-more-PRs path shows the all-done screen (reversion:
+  // user wants the "All caught up!" screen after the last PR is reviewed).
+  const autoAdvanceShowsAllDone = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const src = submitReview.toString();
-      // When there are no PRs after the reviewed one, keep showing it with a
-      // toast instead of resetting to the all-done screen.
-      return src.includes("'✓ All done — no more PRs to review'") ? 'ok' : 'missing';
+      // When there are no PRs after the reviewed one, show the all-done screen.
+      return src.includes('showAllDoneState()') ? 'ok' : 'missing';
     })()
   `);
-  assert('submitReview no-more-PRs stays on last reviewed PR', autoAdvanceStaysLast === 'ok', `result: ${autoAdvanceStaysLast}`);
+  assert('submitReview no-more-PRs shows all-done screen', autoAdvanceShowsAllDone === 'ok', `result: ${autoAdvanceShowsAllDone}`);
 
   // TEST: next-arrow advances forward and stops at the last PR (no wrap)
   const nextArrowForward = await mainWindow.webContents.executeJavaScript(`

@@ -2302,7 +2302,7 @@ async function submitReview(eventType) {
             advanceNext = cachedPrList[reviewedPrIndex];
           } else if (reviewedPrIndex >= cachedPrList.length) {
             // The reviewed PR was the LAST one — there is nothing after it.
-            // Keep showing the last reviewed PR (the "last awaiting PR").
+            // Show the all-done screen.
             advanceNext = null;
           } else {
             // The reviewed PR was NOT in the pending list (chosen via a
@@ -2323,20 +2323,16 @@ async function submitReview(eventType) {
             prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
             resetButtons();
           }
-          } else {
-            // No more PRs after the one just reviewed — keep showing the last
-            // reviewed PR on screen (the "last awaiting pull request"). Do NOT
-            // show the "all done" screen and do NOT jump back to the first
-            // pending PR.
-            if (review.prNumber) {
-              console.log('[auto-advance] No more PRs after #' + review.prNumber + ' — staying on it');
-              showToast('✓ All done — no more PRs to review', 'success', 4000);
-            } else {
-              showAllDoneState();
-            }
-            // Do NOT switch repo back to master/main here — the user may still
-            // be reviewing; leave the repo on the PR branch.
+        } else {
+          // No more PRs after the one just reviewed — show the all-done screen
+          // (the celebratory "All caught up!" state).
+          if (review.prNumber) {
+            console.log('[auto-advance] No more PRs after #' + review.prNumber + ' — showing all-done screen');
           }
+          showAllDoneState();
+          // Do NOT switch repo back to master/main here — the user may still
+          // be reviewing; leave the repo on the PR branch.
+        }
       }
     }
   } catch (err) {

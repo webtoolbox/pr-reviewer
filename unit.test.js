@@ -2797,23 +2797,17 @@ describe('Auto-advance after approve', () => {
     expect(submitSrc).toContain('catch (advanceErr)');
   });
 
-  test('submitReview "no more PRs" path stays on the last reviewed PR (not all-done)', () => {
+  test('submitReview "no more PRs" path shows the all-done screen', () => {
     const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
     const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
-    // When there are no PRs after the reviewed one, keep showing the last
-    // reviewed PR with a toast — do NOT switch to the all-done screen and do
-    // NOT reset buttons/currentPrNumber (the user may still be reviewing).
+    // When there are no PRs after the reviewed one, show the "All caught up!"
+    // screen (reversion: the user wants the celebratory all-done state after
+    // the last PR is reviewed, not to stay on the last reviewed PR).
     // (The checkoutMaster call was also removed — no master checkout here.)
-    expect(submitSrc).toContain("'✓ All done — no more PRs to review'");
-    const allDoneIdx = submitSrc.indexOf('showAllDoneState()');
-    // showAllDoneState must NOT be in the auto-advance else-branch anymore
-    // (it may still exist elsewhere in the file, just not in this block)
-    if (allDoneIdx > -1) {
-      const blockBefore = submitSrc.substring(0, allDoneIdx);
-      // No checkoutMaster in the auto-advance else branch either
-      expect(blockBefore.lastIndexOf('if (review.prNumber)')).toBeGreaterThan(-1);
-    }
+    expect(submitSrc).toContain('showAllDoneState()');
+    // The old "stay on last PR" toast must be gone from the auto-advance path.
+    expect(submitSrc).not.toContain("'✓ All done — no more PRs to review'");
   });
 
   test('closePullRequest auto-advance clears reviewBody and has error handling', () => {
