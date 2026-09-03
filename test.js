@@ -2415,10 +2415,10 @@ async function runTests() {
   // TEST: Copy button click triggers showToast
   const toastTriggered = await mainWindow.webContents.executeJavaScript(`
     (async () => {
-      // Mock clipboard API
+      // Mock the copy IPC (main-process clipboard via preload)
       let copiedText = '';
-      const origWriteText = navigator.clipboard.writeText;
-      navigator.clipboard.writeText = (text) => { copiedText = text; return Promise.resolve(); };
+      const origCopyText = window.electronAPI.copyText;
+      window.electronAPI.copyText = (text) => { copiedText = text; return Promise.resolve(true); };
       // Capture showToast calls
       let toastMsg = '';
       const origShowToast = window.showToast;
@@ -2429,7 +2429,7 @@ async function runTests() {
       // Wait for promise
       await new Promise(r => setTimeout(r, 50));
       // Restore
-      navigator.clipboard.writeText = origWriteText;
+      window.electronAPI.copyText = origCopyText;
       window.showToast = origShowToast;
       return { ok: toastMsg.startsWith('Copied: '), toastMsg, copiedText };
     })()
@@ -2646,6 +2646,7 @@ async function runTests() {
 }
 
 ipcMain.handle('open-file', async () => null);
+ipcMain.handle('copy-text', async (event, text) => { return true; });
 ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', hermesProfile: 'wt', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
 ipcMain.handle('save-review', async (event, review) => {
   const outputPath = path.join(app.getPath('temp'), 'diff-review-pending.json');

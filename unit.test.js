@@ -2855,11 +2855,17 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(funcSrc).toContain('cherry-pick -n');
   });
 
-  test('resolves conflicts by taking the PR commit version (--theirs)', () => {
+  test('resolves conflicts by taking the REVIEW BASE version (--ours), not --theirs', () => {
     const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
     const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
     const funcSrc = mainSource.substring(funcStart, funcEnd);
-    expect(funcSrc).toContain('git checkout --theirs');
+    // During cherry-pick, ours = review base, theirs = replayed PR commit.
+    // --theirs would pull master's ENTIRE merged file into the net diff (e.g.
+    // PR #7359's deploy_branch.cgi showed autoAssignOnDeploy, an unrelated
+    // master feature). Taking --ours (the base version) keeps merge-borne
+    // master content out; the PR's real changes re-apply via later commits.
+    expect(funcSrc).toContain('git checkout --ours');
+    expect(funcSrc).not.toContain('git checkout --theirs');
     expect(funcSrc).toContain('git add -A');
   });
 

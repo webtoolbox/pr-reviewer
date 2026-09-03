@@ -1115,8 +1115,14 @@ function addCopyFileNameButtonForHeader(header) {
     e.stopPropagation();
     e.preventDefault();
     const filePath = fileNameEl.textContent.trim();
-    navigator.clipboard.writeText(filePath).then(() => {
-      showToast('Copied: ' + filePath, 'info', 2000);
+    // Use the main-process clipboard via IPC — navigator.clipboard in Electron
+    // renderers fails without clipboard-write permission (shows 'Failed to copy').
+    window.electronAPI.copyText(filePath).then((ok) => {
+      if (ok) {
+        showToast('Copied: ' + filePath, 'info', 2000);
+      } else {
+        showToast('Failed to copy file path', 'error', 3000);
+      }
     }).catch(err => {
       console.error('Failed to copy file path:', err);
       showToast('Failed to copy file path', 'error', 3000);

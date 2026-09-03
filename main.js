@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard } = require('electron');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -784,7 +784,14 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
       try {
         await execPromise(`git cherry-pick -n ${sha}`, { cwd: worktreePath, timeout: 30000 });
       } catch (err) {
-        // Conflict — resolve by keeping the PR commit's version of each file.
+        // Conflict — resolve by keeping the REVIEW BASE version of each file
+        // (--ours during cherry-pick = the current HEAD = the review base).
+        // NOT --theirs: --theirs is the commit being replayed, which for a
+        // file the PR inherited from master carries master's ENTIRE merged
+        // version (e.g. PR #7359's deploy_branch.cgi showed autoAssignOnDeploy,
+        // an unrelated master feature, as a PR change). Taking the base version
+        // keeps merge-borne master content out of the net diff; the PR's real
+        // changes are re-applied by its later (non-conflicting) commits.
         const conflicted = await execPromise(
           `git diff --name-only --diff-filter=U`,
           { cwd: worktreePath }
@@ -792,10 +799,10 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
         const files = conflicted.split('\n').filter(Boolean);
         if (files.length === 0) {
           // No conflicted paths reported but cherry-pick still failed (e.g.
-          // a commit that deletes a file we also have). Take the PR side.
-          await execPromise(`git checkout --theirs -- .`, { cwd: worktreePath }).catch(() => {});
+          // a commit that deletes a file we also have). Take the base side.
+          await execPromise(`git checkout --ours -- .`, { cwd: worktreePath }).catch(() => {});
         } else {
-          await execPromise(`git checkout --theirs -- ${files.map(f => JSON.stringify(f)).join(' ')}`, { cwd: worktreePath }).catch(() => {});
+          await execPromise(`git checkout --ours -- ${files.map(f => JSON.stringify(f)).join(' ')}`, { cwd: worktreePath }).catch(() => {});
         }
         await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
       }
@@ -1342,6 +1349,18 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('renderer-log', (event, level, ...args) => {
   log(level, '[renderer]', ...args);
+});
+
+// Copy text to the system clipboard from the main process. Renderer
+// navigator.clipboard fails in Electron without clipboard-write permission.
+ipcMain.handle('copy-text', (event, text) => {
+  try {
+    clipboard.writeText(String(text == null ? '' : text));
+    return true;
+  } catch (err) {
+    log('ERROR', '[copy-text] Failed to write clipboard:', err.message);
+    return false;
+  }
 });
 
 // Find-in-page: search across the rendered diff using Electron's built-in
