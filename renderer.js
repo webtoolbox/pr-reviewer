@@ -1450,6 +1450,9 @@ function renderSingleFileInPlace(fileName, fileDiff) {
     return;
   }
 
+  // Preserve an open, unposted comment draft in this file across the swap
+  const openDraft = captureOpenCommentDraft();
+
   // Render just this file to an HTML string with the same config used elsewhere
   const html = Diff2Html.html(fileDiff, {
     drawFileList: true,
@@ -1499,6 +1502,9 @@ function renderSingleFileInPlace(fileName, fileDiff) {
   addFunctionPreviewHandlers();
   // Re-insert this file's comment markers — swapping the wrapper destroyed them
   reinsertCommentsForFile(fileName);
+
+  // Restore the open unposted comment draft (text + pasted image) if there was one
+  restoreCommentDraft(openDraft);
 
   // Sidebar indices stay valid (same wrapper order), so no need to repopulate.
   // But if file order can change, keep the sidebar in sync defensively:
@@ -1676,6 +1682,79 @@ function closeCommentDialog() {
   const existing = document.getElementById('active-comment-form');
   if (existing) existing.remove();
   commentTarget = null;
+}
+
+// Capture the open (unposted) comment draft so it can survive a re-render of
+// its file. Returns null when no dialog is open. The dialog is a single
+// global one (#active-comment-form), and commentTarget holds its line/side.
+function captureOpenCommentDraft() {
+  if (!commentTarget || !commentTarget.element) return null;
+  const form = document.getElementById('active-comment-form');
+  if (!form) return null;
+  const ta = form.querySelector('#comment-text');
+  if (!ta) return null;
+  const imageEl = form.querySelector('.pasted-image');
+  return {
+    file: commentTarget.file,
+    line: commentTarget.line,
+    side: commentTarget.side,
+    level: commentTarget.level,
+    codeContext: commentTarget.codeContext,
+    text: ta.value,
+    imageDataUrl: imageEl ? imageEl.src : null
+  };
+}
+
+// Re-open the comment dialog at the same line with the captured draft text.
+// After a file wrapper swap the old line element is gone; look the line up
+// again via findDiffLineRow, then simulate the button click that normally
+// opens the editor, and restore the textarea value + attached image.
+function restoreCommentDraft(draft) {
+  if (!draft) return;
+  // The comment buttons are attached to the line-number cell (a <td> sibling
+  // of the code line); click it so openCommentDialog re-inserts the form row.
+  const row = findDiffLineRow(draft.file, draft.line, draft.side);
+  if (!row) return;
+  let lineEl = null;
+  let btn = null;
+  const numCells = row.querySelectorAll('.d2h-code-side-linenumber');
+  if (draft.side === 'RIGHT') {
+    lineEl = row.querySelector('.d2h-code-line, .d2h-code-side-line.d2h-ins, .d2h-code-side-line');
+    // The right cell in side-by-side mode is the second line-number cell.
+    btn = (numCells.length > 1 ? numCells[1] : numCells[0])?.querySelector('.line-comment-btn') || null;
+  } else {
+    lineEl = row.querySelector('.d2h-code-line, .d2h-code-side-line.d2h-del, .d2h-code-side-line');
+    btn = numCells[0]?.querySelector('.line-comment-btn') || null;
+  }
+  if (!btn) {
+    // Unified mode: the code line is .d2h-code-line and the number cell is
+    // .d2h-code-linenumber.
+    lineEl = lineEl || row.querySelector('.d2h-code-line');
+    const numCell = row.querySelector('.d2h-code-linenumber');
+    btn = numCell?.querySelector('.line-comment-btn') || null;
+  }
+  if (!lineEl || !btn) return;
+
+  openCommentDialog(lineEl, btn, draft.side === 'RIGHT', {});
+  const ta = document.getElementById('comment-text');
+  if (ta) {
+    ta.value = draft.text || '';
+    if (draft.imageDataUrl && setupImagePaste) {
+      // Re-attach the pasted image the same way submitComment reads it
+      const formCell = document.getElementById('active-comment-form');
+      if (formCell) {
+        const img = document.createElement('img');
+        img.src = draft.imageDataUrl;
+        img.className = 'pasted-image';
+        img.alt = 'pasted';
+        formCell.querySelector('.comment-form')?.appendChild(img);
+      }
+    }
+    // Keep focus in the editor if the user was typing
+    const end = ta.value.length;
+    try { ta.setSelectionRange(end, end); } catch (e) {}
+    ta.focus();
+  }
 }
 
 // ===================== SUBMIT COMMENT =====================

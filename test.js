@@ -1757,6 +1757,71 @@ async function runTests() {
   `);
   assert('Context-expand comment buttons open the comment dialog', wrapperCommentBtnTest === 'opened', `result: ${wrapperCommentBtnTest}`);
 
+  // TEST: An unposted comment draft survives renderSingleFileInPlace (context
+  // expansion re-renders the file wrapper in place). Regression for the bug
+  // where clicking "show more lines above/below" wiped the draft text.
+  const draftSurvivesExpand = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof renderSingleFileInPlace !== 'function' ||
+          typeof openCommentDialog !== 'function' ||
+          typeof captureOpenCommentDraft !== 'function' ||
+          typeof restoreCommentDraft !== 'function') return 'no-fn';
+      const wrappers = document.querySelectorAll('.d2h-file-wrapper');
+      if (!wrappers.length) return 'no-wrappers';
+      // Open a comment dialog on the first code line, type a draft
+      const wrapper = wrappers[0];
+      // Find a comment button on a row that has a real (numeric) line number
+      let btn = null, row = null;
+      const allBtns = wrapper.querySelectorAll('.line-comment-btn');
+      for (const b of allBtns) {
+        const r = b.closest('tr');
+        const numEl = r && r.querySelector('.d2h-code-sidenumber, .d2h-code-linenumber');
+        const hasNum = r && (r.querySelector('.d2h-code-side-linenumber')?.textContent.trim().match(/\\d+/) ||
+                             r.querySelector('.line-num1')?.textContent.trim().match(/\\d+/) ||
+                             r.querySelector('.line-num2')?.textContent.trim().match(/\\d+/));
+        if (r && hasNum) { btn = b; row = r; break; }
+      }
+      if (!btn) return 'no-btn-with-line';
+      const lineEl = row.querySelector('.d2h-code-line, .d2h-code-side-line.d2h-ins, .d2h-code-side-line');
+      const right = !!row.querySelector('.d2h-code-side-line.d2h-ins');
+      if (!lineEl) return 'no-lineel';
+      openCommentDialog(lineEl, btn, right, {});
+      const ta = document.getElementById('comment-text');
+      if (!ta) return 'no-textarea';
+      ta.value = 'my unsaved comment draft';
+      const fileName = wrapper.querySelector('.d2h-file-name')?.textContent.trim() || 'unknown';
+      // Capture what the re-render path would preserve
+      const draft = captureOpenCommentDraft();
+      if (!draft || draft.text !== 'my unsaved comment draft') return 'capture-fail:' + JSON.stringify(draft);
+      // Now simulate the wrapper swap: re-render the same file in place
+      // (renderSingleFileInPlace internally captures + restores the draft)
+      renderSingleFileInPlace(fileName, currentDiffContent || '');
+      const restoredTa = document.getElementById('comment-text');
+      if (!restoredTa) {
+        // Diagnose: where did restoreCommentDraft bail?
+        const row2 = findDiffLineRow(fileName, draft.line, draft.side);
+        const numCells = row2 ? row2.querySelectorAll('.d2h-code-side-linenumber').length : -1;
+        const unifiedNum = row2 ? !!row2.querySelector('.d2h-code-linenumber') : false;
+        const btn2 = row2 ? (draft.side === 'RIGHT'
+          ? (row2.querySelectorAll('.d2h-code-side-linenumber').length > 1
+              ? row2.querySelectorAll('.d2h-code-side-linenumber')[1].querySelector('.line-comment-btn')
+              : row2.querySelectorAll('.d2h-code-side-linenumber')[0]?.querySelector('.line-comment-btn'))
+          : row2?.querySelector('.d2h-code-side-linenumber')?.querySelector('.line-comment-btn')) || null : null;
+        const btn3 = btn2 || (row2 ? row2.querySelector('.d2h-code-linenumber')?.querySelector('.line-comment-btn') : null);
+        return 'no-restored-textarea|row=' + (row2 ? 'yes' : 'no') + '|numCells=' + numCells +
+          '|unifiedNum=' + unifiedNum +
+          '|sideBTN=' + (btn2 ? 'yes' : 'no') + '|unifiedBTN=' + (btn3 ? 'yes' : 'no') +
+          '|draft=' + JSON.stringify(draft);
+      }
+      const restored = restoredTa.value;
+      if (restored !== 'my unsaved comment draft') return 'draft-lost:[' + restored + ']';
+      // Clean up
+      closeCommentDialog();
+      return 'ok';
+    })()
+  `);
+  assert('Unposted comment draft survives context expand re-render', draftSurvivesExpand === 'ok', `result: ${draftSurvivesExpand}`);
+
   // TEST: A "modify" rule proposal is saved with type:"modify" and its
   // existingRule text passed through, so main.js can replace in place.
   const modifySaveTest = await mainWindow.webContents.executeJavaScript(`
