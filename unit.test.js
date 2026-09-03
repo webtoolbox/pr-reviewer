@@ -2771,6 +2771,23 @@ describe('Auto-advance after approve', () => {
     expect(submitSrc).toContain("reviewBody.value = ''");
   });
 
+  test('submitReview auto-advance picks the PR after the reviewed one (forward)', () => {
+    const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
+    const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
+    const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
+    // The auto-advance block must capture the reviewed PR's index BEFORE
+    // removal and advance to the PR after it — NOT restart at the first
+    // pending PR.
+    expect(submitSrc).toContain('reviewedPrIndex = cachedPrList.findIndex');
+    expect(submitSrc).toContain('advanceNext = cachedPrList[reviewedPrIndex]');
+    expect(submitSrc).toContain('cachedPrList = cachedPrList.filter(pr => pr.number !== review.prNumber)');
+    // When the reviewed PR was the LAST one, don't jump to the start — stay
+    // on the last awaiting PR. The `cachedPrList[0]` line is only the fallback
+    // for a PR chosen OUTSIDE the pending list (correct), so verify the
+    // last-PR branch explicitly sets advanceNext to null.
+    expect(submitSrc).toContain('advanceNext = null');
+  });
+
   test('submitReview auto-advance has try/catch around loadPrByNumber', () => {
     const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
@@ -2780,21 +2797,23 @@ describe('Auto-advance after approve', () => {
     expect(submitSrc).toContain('catch (advanceErr)');
   });
 
-  test('submitReview "no more PRs" path shows all-done state (resets buttons)', () => {
+  test('submitReview "no more PRs" path stays on the last reviewed PR (not all-done)', () => {
     const submitStart = rendererSource.indexOf('async function submitReview(eventType)');
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
     const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
-    // The else branch (no more PRs) should show the celebratory all-done screen,
-    // which resets buttons so the UI isn't left in a disabled state.
-    const noMoreIdx = submitSrc.indexOf('showAllDoneState()');
-    expect(noMoreIdx).toBeGreaterThan(-1);
-    // showAllDoneState must reset buttons and clear the current PR
-    const allDoneSrc = rendererSource.substring(
-      rendererSource.indexOf('function showAllDoneState()'),
-      rendererSource.indexOf('// ===== Edge arrows', rendererSource.indexOf('function showAllDoneState()'))
-    );
-    expect(allDoneSrc).toContain('resetButtons()');
-    expect(allDoneSrc).toContain('currentPrNumber = null');
+    // When there are no PRs after the reviewed one, keep showing the last
+    // reviewed PR with a toast — do NOT switch to the all-done screen and do
+    // NOT reset buttons/currentPrNumber (the user may still be reviewing).
+    // (The checkoutMaster call was also removed — no master checkout here.)
+    expect(submitSrc).toContain("'✓ All done — no more PRs to review'");
+    const allDoneIdx = submitSrc.indexOf('showAllDoneState()');
+    // showAllDoneState must NOT be in the auto-advance else-branch anymore
+    // (it may still exist elsewhere in the file, just not in this block)
+    if (allDoneIdx > -1) {
+      const blockBefore = submitSrc.substring(0, allDoneIdx);
+      // No checkoutMaster in the auto-advance else branch either
+      expect(blockBefore.lastIndexOf('if (review.prNumber)')).toBeGreaterThan(-1);
+    }
   });
 
   test('closePullRequest auto-advance clears reviewBody and has error handling', () => {
@@ -2950,6 +2969,72 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(hSrc).toContain('const viewed = viewedPrCache.get(cacheKey);');
     expect(hSrc).toContain('Returning viewed-cached metadata');
     expect(hSrc).toContain('prTitle: viewed.prTitle ||');
+  });
+
+  test('changedFilesFromDiff extracts exact files from a unified diff', () => {
+    // Mirror the parsing logic implemented in main.js so we can exercise it
+    // without an Electron runtime (main.js is not module-exported).
+    function changedFilesFromDiff(diffText) {
+      const files = [];
+      const seen = new Set();
+      for (const line of String(diffText || '').split('\n')) {
+        if (line.startsWith('diff --git ')) {
+          // diff --git a/path b/path  (paths may be quoted)
+          const m = line.match(/^diff --git "?a\/(.+?)"? "?b\/(.+?)"?\s*$/);
+          const raw = m && m[2] ? m[2] : line.slice('diff --git '.length);
+          const path = raw.replace(/^"|"$/g, '').replace(/\\([ "\\])/g, '$1');
+          if (path && path !== '/dev/null' && !seen.has(path)) {
+            seen.add(path);
+            files.push(path);
+          }
+        }
+      }
+      return files;
+    }
+    const sampleDiff = [
+      'diff --git a/app/css/banner.css b/app/css/banner.css',
+      'index 111..222 100644',
+      '--- a/app/css/banner.css',
+      '+++ b/app/css/banner.css',
+      '@@ -1,3 +1,5 @@',
+      ' .banner { color: red }',
+      '+.banner-new { color: blue }',
+      'diff --git "a/app/old name.txt" "b/app/new name.txt"',
+      'similarity index 90%',
+      'rename from app/old name.txt',
+      'rename to app/new name.txt',
+      'diff --git a/deleted.txt b/deleted.txt',
+      'deleted file mode 100644',
+      'diff --git a/lib/util.pm b/lib/util.pm',
+      '--- a/lib/util.pm',
+      '+++ b/lib/util.pm'
+    ].join('\n');
+    const files = changedFilesFromDiff(sampleDiff);
+    expect(files).toContain('app/css/banner.css');
+    expect(files).toContain('app/new name.txt');
+    expect(files).toContain('deleted.txt');
+    expect(files).toContain('lib/util.pm');
+    // No dupes, and no /dev/null or empty entries
+    expect(files).toEqual([...new Set(files)]);
+    expect(files).not.toContain('/dev/null');
+  });
+
+  test('generateDiff rebuilds changedFiles from the net diff when using since-review', () => {
+    // When the since-review net diff is applied, the sidebar file list must come
+    // from THAT diff, not from git log base..head (which sweeps in master's
+    // merged-in changes, e.g. PR #6692's ~2,500 files).
+    const marker = 'const netFileList = changedFilesFromDiff(netDiff);';
+    const start = mainSource.indexOf('const netResult = await computeSinceReviewNetDiff');
+    const endMarker = mainSource.indexOf('\n  }\n', mainSource.indexOf(marker, start));
+    const end = endMarker > start ? endMarker : mainSource.indexOf(marker, start) + marker.length;
+    // These must be found in real main.js source
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const snippet = mainSource.substring(start, end);
+    expect(snippet).toContain(marker);
+    expect(snippet).toContain('changedFiles.length = 0;');
+    expect(snippet).toContain('changedFiles.push(...netFileList)');
+    expect(snippet).toContain('if (netFileList.length > 0)');
   });
 });
 

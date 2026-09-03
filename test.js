@@ -2256,6 +2256,49 @@ async function runTests() {
   `);
   assert('submitReview auto-advance has try/catch error handling', autoAdvanceErrorHandling === 'ok', `result: ${autoAdvanceErrorHandling}`);
 
+  // TEST: submitReview auto-advance advances FORWARD after the reviewed PR
+  const autoAdvanceForward = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = submitReview.toString();
+      // Must capture the reviewed PR's index BEFORE removal and pick the PR
+      // that shifted into its slot — not restart at the first pending PR.
+      return (src.includes('reviewedPrIndex = cachedPrList.findIndex')
+              && src.includes('advanceNext = cachedPrList[reviewedPrIndex]'))
+        ? 'ok' : 'missing';
+    })()
+  `);
+  assert('submitReview auto-advance picks PR after the reviewed one', autoAdvanceForward === 'ok', `result: ${autoAdvanceForward}`);
+
+  // TEST: submitReview no-more-PRs path stays on the last PR (not all-done)
+  const autoAdvanceStaysLast = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = submitReview.toString();
+      // When there are no PRs after the reviewed one, keep showing it with a
+      // toast instead of resetting to the all-done screen.
+      return src.includes("'✓ All done — no more PRs to review'") ? 'ok' : 'missing';
+    })()
+  `);
+  assert('submitReview no-more-PRs stays on last reviewed PR', autoAdvanceStaysLast === 'ok', `result: ${autoAdvanceStaysLast}`);
+
+  // TEST: next-arrow advances forward and stops at the last PR (no wrap)
+  const nextArrowForward = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = gotoNextPr.toString();
+      // Must advance to idx+1 when there is one.
+      const hasForward = src.includes('cachedPrList[idx + 1]');
+      // Must stay on the last PR (no wrap-around to start): the last-PR case
+      // leaves nextPr null and returns with a toast instead of resetting to 0.
+      const staysLast = src.includes('No next PR — you are on the last one');
+      // The cachedPrList[0] line is allowed ONLY as the "not in list" fallback,
+      // not as a wrap-around. Verify it sits inside an idx<0 guard (i.e. the
+      // current PR was NOT in the pending list).
+      const zeroIdx = src.indexOf('cachedPrList[0]');
+      const zeroOk = zeroIdx === -1 || src.substring(Math.max(0, zeroIdx - 120), zeroIdx).includes('idx < 0');
+      return (hasForward && staysLast && zeroOk) ? 'ok' : 'missing';
+    })()
+  `);
+  assert('next-arrow advances forward and stops at last PR', nextArrowForward === 'ok', `result: ${nextArrowForward}`);
+
   // TEST: Comment side detection uses parent td class
   const commentSideDetection = await mainWindow.webContents.executeJavaScript(`
     (() => {

@@ -830,6 +830,31 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
   }
 }
 
+// Extract the unique file paths changed by a unified diff (diffOut). Used to
+// derive the changed-files sidebar list from the SAME since-review net diff
+// that is displayed, so the list never includes master changes the PR branch
+// absorbed via merges (git log base..head would).
+// Handles: a/ b/ prefixes, quoted paths (rename lines), and /dev/null.
+function changedFilesFromDiff(diffText) {
+  const files = [];
+  const seen = new Set();
+  const lines = String(diffText || '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('diff --git ')) {
+      // diff --git a/path b/path  (paths may be quoted)
+      const m = line.match(/^diff --git "?a\/(.+?)"? "?b\/(.+?)"?\s*$/);
+      const raw = m && m[2] ? m[2] : line.slice('diff --git '.length);
+      const path = raw.replace(/^"|"$/g, '').replace(/\\([ "\\])/g, '$1');
+      if (path && path !== '/dev/null' && !seen.has(path)) {
+        seen.add(path);
+        files.push(path);
+      }
+    }
+  }
+  return files;
+}
+
 // Generate diff for a PR — supports full diff or since-last-review
 async function generateDiff(prNumber, repoKey) {
   const safePr = safePrNumber(prNumber);
@@ -993,7 +1018,18 @@ async function generateDiff(prNumber, repoKey) {
           if (netDiff && netDiff.trim()) {
             diffOut = netDiff;
             sinceReviewRef = netResult.sinceReviewRef;
-            log('INFO', `[generateDiff] Using since-review net diff (replayed ${afterReviewShas.length} PR commits) for ${changedSinceReview.size} file(s)`);
+            // The net diff is the single source of truth for what the PR author
+            // changed since the review. Derive changedFiles from THAT diff, not
+            // from git log base..head — the latter sweeps in master changes the
+            // branch absorbed via merges (e.g. PR #6692 lists ~2,500 files from
+            // a 9-month-old merge-heavy branch). Using the same rebased diff
+            // keeps the file list consistent with what's displayed.
+            const netFileList = changedFilesFromDiff(netDiff);
+            if (netFileList.length > 0) {
+              changedFiles.length = 0;
+              changedFiles.push(...netFileList);
+            }
+            log('INFO', `[generateDiff] Using since-review net diff (replayed ${afterReviewShas.length} PR commits) for ${changedFiles.length} file(s)`);
           }
         }
       }

@@ -2145,8 +2145,11 @@ async function submitReview(eventType) {
           });
         }
 
-        // Auto-remove this PR from the cached list
+        // Auto-remove this PR from the cached list. Capture the index it was at
+        // BEFORE removal so auto-advance can pick the next PR after it.
+        let reviewedPrIndex = -1;
         if (review.prNumber && cachedPrList) {
+          reviewedPrIndex = cachedPrList.findIndex(pr => String(pr.number) === String(review.prNumber));
           cachedPrList = cachedPrList.filter(pr => pr.number !== review.prNumber);
         }
 
@@ -2204,29 +2207,50 @@ async function submitReview(eventType) {
         }
 
         // Auto-advance to next PR after successful review
+        // reviewedPrIndex is the index the reviewed PR was at BEFORE removal
+        // (captured above). After removal, the next PR is at that same index.
+        let advanceNext = null;
         if (cachedPrList && cachedPrList.length > 0) {
-            const nextPr = cachedPrList[0];
-            console.log('[auto-advance] Moving to PR #' + nextPr.number, 'repo:', nextPr.repo || 'default', 'list size:', cachedPrList.length);
-            showToast('Loading next PR #' + nextPr.number + '...', 'progress');
-            // Clear previous review state before loading next PR
-            reviewBody.value = '';
-            try {
-              await loadPrByNumber(nextPr.number, nextPr.repo);
-            } catch (advanceErr) {
-              console.error('[auto-advance] Failed to load next PR:', advanceErr);
-              prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
-              resetButtons();
-            }
+          if (reviewedPrIndex >= 0 && reviewedPrIndex < cachedPrList.length) {
+            // The reviewed PR was in the middle/start of the list — the next
+            // PR shifted into its old slot. Advance FORWARD to it.
+            advanceNext = cachedPrList[reviewedPrIndex];
+          } else if (reviewedPrIndex >= cachedPrList.length) {
+            // The reviewed PR was the LAST one — there is nothing after it.
+            // Keep showing the last reviewed PR (the "last awaiting PR").
+            advanceNext = null;
           } else {
-            // All PRs reviewed — show the celebratory "all done" screen instead of
-            // leaving the last PR's diff on screen.
-            showAllDoneState();
-            // Switch repo back to master/main when no more PRs
-            if (window.electronAPI.checkoutMaster) {
-              window.electronAPI.checkoutMaster(currentRepoKey || '').then(r => {
-                if (r.branch) showToast('Switched to ' + r.branch + ' branch', 'success');
-              });
+            // The reviewed PR was NOT in the pending list (chosen via a
+            // recent/search entry). Pick the first pending PR to keep going.
+            advanceNext = cachedPrList[0] || null;
+          }
+        }
+
+        if (advanceNext) {
+          console.log('[auto-advance] Moving to PR #' + advanceNext.number, 'repo:', advanceNext.repo || 'default', 'list size:', cachedPrList.length);
+          showToast('Loading next PR #' + advanceNext.number + '...', 'progress');
+          // Clear previous review state before loading next PR
+          reviewBody.value = '';
+          try {
+            await loadPrByNumber(advanceNext.number, advanceNext.repo);
+          } catch (advanceErr) {
+            console.error('[auto-advance] Failed to load next PR:', advanceErr);
+            prInfo.innerHTML = `<strong style="color:#f85149">Error loading next PR:</strong> ${escapeHtml(advanceErr.message)}`;
+            resetButtons();
+          }
+          } else {
+            // No more PRs after the one just reviewed — keep showing the last
+            // reviewed PR on screen (the "last awaiting pull request"). Do NOT
+            // show the "all done" screen and do NOT jump back to the first
+            // pending PR.
+            if (review.prNumber) {
+              console.log('[auto-advance] No more PRs after #' + review.prNumber + ' — staying on it');
+              showToast('✓ All done — no more PRs to review', 'success', 4000);
+            } else {
+              showAllDoneState();
             }
+            // Do NOT switch repo back to master/main here — the user may still
+            // be reviewing; leave the repo on the PR branch.
           }
       }
     }
@@ -3249,13 +3273,24 @@ function gotoNextPr() {
       });
     return;
   }
-  // Fallback: no forward history entry — try the cached pending list
+  // Fallback: no forward history entry — try the cached pending list.
+  // Advance FORWARD from the current PR: the next PR after it in the pending
+  // list. If the current PR is not in the list (e.g. chosen from a recent/
+  // search entry), take the first pending PR. When the current PR is the LAST
+  // one in the list, stay on it (do NOT wrap to the start, do NOT go to the
+  // very first pending — the user asked to advance forward, and once there are
+  // no more PRs after the current one, keep showing the last awaiting one).
   if (!cachedPrList || cachedPrList.length === 0) { showToast('No next PR', 'info'); return; }
   const idx = currentIndexInList();
   let nextPr = null;
-  if (idx >= 0 && idx < cachedPrList.length - 1) nextPr = cachedPrList[idx + 1];
-  else if (idx < 0) nextPr = cachedPrList[0]; // current PR not in list → first pending
-  if (!nextPr) { showToast('No next PR', 'info'); return; }
+  if (idx >= 0 && idx < cachedPrList.length - 1) {
+    nextPr = cachedPrList[idx + 1];
+  } else if (idx < 0) {
+    nextPr = cachedPrList[0]; // current PR not in list → first pending
+  }
+  // If we're at the last PR in the list (idx === length-1), there is no PR
+  // after it — keep the current one on screen and don't wrap around.
+  if (!nextPr) { showToast('No next PR — you are on the last one', 'info'); return; }
   showDiffLoading('Loading next PR #' + nextPr.number + '…');
   loadPrByNumber(nextPr.number, nextPr.repo)
     .catch(advanceErr => {
