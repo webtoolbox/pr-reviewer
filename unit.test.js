@@ -270,6 +270,14 @@ function formatCommentBody(body) {
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Markdown links: [text](url). The URL was escaped above, so un-escape it
+  // and re-escape the parts that matter inside an href attribute.
+  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
+    const cleanUrl = url.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    if (!/^(https?):\/\//i.test(cleanUrl)) return m; // only http(s) links
+    const safeUrl = escapeHtml(cleanUrl);
+    return `<a href="${safeUrl}" class="external-link">${text}</a>`;
+  });
   html = html.replace(/\n/g, '<br>');
   return html;
 }
@@ -1064,6 +1072,32 @@ describe('formatCommentBody', () => {
   test('does not format escaped HTML as markdown', () => {
     // The &amp; from escaping should not interfere with markdown
     expect(formatCommentBody('a & b **bold**')).toBe('a &amp; b <strong>bold</strong>');
+  });
+
+  test('converts [text](https://url) markdown to external-link anchor', () => {
+    const result = formatCommentBody('See [PR #123](https://github.com/webtoolbox/Website-Toolbox/pull/123)');
+    expect(result).toContain('<a href="https://github.com/webtoolbox/Website-Toolbox/pull/123" class="external-link">PR #123</a>');
+  });
+
+  test('allows only http(s) links; other schemes are left as plain text', () => {
+    const result = formatCommentBody('[file](file:///etc/passwd) and [js](javascript:alert(1))');
+    // Both must NOT become anchors with dangerous schemes
+    expect(result).not.toContain('class="external-link"');
+    expect(result).toContain('[file](file:///etc/passwd)');
+    expect(result).toContain('[js](javascript:alert(1))');
+  });
+
+  test('escapes the URL inside the href attribute', () => {
+    const result = formatCommentBody('[x](https://example.com/?a=1&b=2)');
+    expect(result).toContain('href="https://example.com/?a=1&amp;b=2"');
+    expect(result).toContain('class="external-link"');
+  });
+
+  test('keeps existing bold/italic/code alongside links', () => {
+    const result = formatCommentBody('**bold** [link](https://example.com) `code`');
+    expect(result).toContain('<strong>bold</strong>');
+    expect(result).toContain('<a href="https://example.com" class="external-link">link</a>');
+    expect(result).toContain('<code>code</code>');
   });
 });
 
@@ -3321,6 +3355,26 @@ describe('generateDiff — no code file extension filter', () => {
     const funcSrc = mainSource.substring(funcStart, funcEnd);
     expect(funcSrc).toContain('No files changed since last review');
     expect(funcSrc).not.toContain('No code files changed');
+  });
+
+  test('uses bounded getChangedFilesViaCommits, not unbounded git log walk', () => {
+    // Regression: PR #7605 on the app's shallow clone produced 10.9MB of output
+    // from `git log base..head --name-only`, hitting exec's maxBuffer. The
+    // changed-files lookup must prefer the commit-based walk (gh api commits +
+    // per-commit git diff-tree) so output is bounded by the PR's own commits.
+    expect(mainSource).toContain('async function getChangedFilesViaCommits(');
+    expect(mainSource).toContain('git diff-tree --no-commit-id --name-only -r');
+    // The git log fallback (if any) must carry a maxBuffer cap smaller than the
+    // default 10MB so a shallow-clone ancestry blowup still can't OOM the app.
+    const funcStart = mainSource.indexOf('async function generateDiff(');
+    const funcEnd = mainSource.indexOf('\n// Create application menu', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    const gitLogCount = (funcSrc.match(/\`git log/g) || []).length;
+    // Any git log usage in generateDiff must be a capped fallback, not the
+    // primary path (the primary path is getChangedFilesViaCommits).
+    if (gitLogCount > 0) {
+      expect(funcSrc).toContain('maxBuffer: 8 * 1024 * 1024');
+    }
   });
 });
 

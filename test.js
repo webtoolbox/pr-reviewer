@@ -2688,6 +2688,37 @@ async function runTests() {
   `);
   assert('Keyword not treated as function name', !keywordDef || !keywordDef.isDef || keywordDef.name !== 'function', JSON.stringify(keywordDef));
 
+  // ===================== EXTERNAL LINKS OPEN IN SYSTEM BROWSER =====================
+  // Regression: clicking any http(s) <a> in the app must call the open-external
+  // IPC (shell.openExternal → default browser), NOT navigate the Electron
+  // window away from the app. Covers PR description, review comments with
+  // markdown links ([text](url)), AI chat, and toasts.
+  global.__openedExternalUrls = [];
+  const linkClickResult = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      // formatCommentBody must produce a clickable external-link anchor
+      const bodyHtml = formatCommentBody('See [the PR](https://github.com/webtoolbox/Website-Toolbox/pull/1234)');
+      const host = document.createElement('div');
+      host.innerHTML = bodyHtml;
+      const a = host.querySelector('a.external-link');
+      if (!a) return { ok: false, error: 'no external-link anchor rendered' };
+      // Must be attached to the document for the event to bubble to the
+      // document-level handler (like a real rendered comment/description).
+      document.body.appendChild(host);
+      const evt = new MouseEvent('click', { bubbles: true, cancelable: true, button: 1 });
+      a.dispatchEvent(evt);
+      return { ok: true, href: a.getAttribute('href'), prevented: evt.defaultPrevented };
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert('Markdown link rendered as external-link anchor', linkClickResult && linkClickResult.ok === true, JSON.stringify(linkClickResult));
+  assert('Click on external link calls open-external IPC (system browser)',
+    global.__openedExternalUrls.length === 1 && global.__openedExternalUrls[0] === 'https://github.com/webtoolbox/Website-Toolbox/pull/1234',
+    JSON.stringify(global.__openedExternalUrls));
+  assert('Link click prevented default navigation (app window stays put)',
+    !!(linkClickResult && linkClickResult.prevented),
+    JSON.stringify(linkClickResult));
+
   // Summary
   log('');
   log('='.repeat(50));
@@ -2870,6 +2901,14 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
   return { results: rules.map(r => ({ file: r.file, success: true })) };
 });
 ipcMain.handle('get-saved-agent-rules', async () => global.__savedAgentRules || []);
+
+// Mock open-external so integration tests can verify renderer link clicks
+// route to the system browser instead of navigating the Electron window.
+global.__openedExternalUrls = [];
+ipcMain.handle('open-external', async (event, url) => {
+  global.__openedExternalUrls.push(url);
+  return { success: true };
+});
 ipcMain.handle('delete-pr-files', async () => ({ success: true }));
 
 app.whenReady().then(async () => {

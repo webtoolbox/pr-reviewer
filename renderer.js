@@ -947,6 +947,14 @@ function formatCommentBody(body) {
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Markdown links: [text](url). The URL was escaped above, so un-escape it
+  // and re-escape the parts that matter inside an href attribute.
+  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
+    const cleanUrl = url.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    if (!/^(https?):\/\//i.test(cleanUrl)) return m; // only http(s) links
+    const safeUrl = escapeHtml(cleanUrl);
+    return `<a href="${safeUrl}" class="external-link">${text}</a>`;
+  });
   html = html.replace(/\n/g, '<br>');
   return html;
 }
@@ -5381,12 +5389,16 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Open PR URL in browser
+// Open external links (http/https) in the system default browser instead of
+// navigating the Electron window away from the app. Covers every <a> in the
+// UI — PR description, review comments, AI chat, toasts, PR URL links.
 document.addEventListener('click', (e) => {
-  const link = e.target.closest('.pr-url-link');
-  if (link) {
+  const link = e.target.closest('a[href]');
+  if (!link) return;
+  const href = link.getAttribute('href') || '';
+  if (/^https?:\/\//i.test(href)) {
     e.preventDefault();
-    window.electronAPI.openExternal(link.href);
+    window.electronAPI.openExternal(href);
   }
 });
 

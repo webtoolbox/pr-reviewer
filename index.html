@@ -744,6 +744,13 @@
     }
     .pr-url-link:hover { background: #1c2128; text-decoration: underline; }
 
+    /* External links (PR description, review comments, AI chat, toasts) —
+       open in the system browser via the global external-link click handler */
+    .external-link {
+      color: #58a6ff; text-decoration: none;
+    }
+    .external-link:hover { text-decoration: underline; }
+
     /* Commits panel */
     #commits-panel {
       display: none; position: fixed; z-index: 1001;
@@ -1699,6 +1706,7 @@
       /* PR info */
       #review-bar #pr-info { background: #f6f8fa; border-bottom: 1px solid #d0d7de; color: #24292f; }
       #review-bar #pr-info a { color: #0969da; }
+      .pr-url-link, .external-link { color: #0969da; }
       .pr-title-line .pr-desc-toggle,
       .pr-title-line .pr-new-window-inline,
       .pr-title-line .pr-compare-toggle { color: #656d76; }
