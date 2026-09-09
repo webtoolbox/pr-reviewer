@@ -862,6 +862,34 @@ function changedFilesFromDiff(diffText) {
   return files;
 }
 
+// Changed files for a PR, computed WITHOUT the unbounded `git log base..head`
+// --name-only walk. On the app's shallow clone (depth-1 master), an old review
+// base sits BELOW the shallow boundary, so that walk lists the PR branch's
+// ENTIRE ancestry (hundreds of commits / thousands of files, e.g. PR #7605
+// produced 10.9MB of output — "stdout maxBuffer length exceeded"). Instead we
+// take the PR's own commit list from the GitHub API and run per-commit
+// `git diff-tree --name-only`, which is bounded by the PR's commit count and
+// never touches the ancestry.
+async function getChangedFilesViaCommits(owner, repo, prNumber, repoPath) {
+  const commits = await execPromise(
+    `gh api --paginate "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`,
+    { timeout: 60000 }
+  );
+  const allCommits = JSON.parse(commits || '[]');
+  const changed = new Set();
+  await mapLimit(allCommits, 4, async (c) => {
+    if (!c || !c.sha) return;
+    try {
+      const out = await execPromise(
+        `git diff-tree --no-commit-id --name-only -r ${c.sha}`,
+        { cwd: repoPath }
+      );
+      out.split('\n').filter(Boolean).forEach(f => changed.add(f));
+    } catch {}
+  });
+  return { commits: allCommits, files: [...changed] };
+}
+
 // Generate diff for a PR — supports full diff or since-last-review
 async function generateDiff(prNumber, repoKey) {
   const safePr = safePrNumber(prNumber);
@@ -949,27 +977,58 @@ async function generateDiff(prNumber, repoKey) {
     }
   }
 
-  // Get files changed by non-merge commits since the review
+  // Get files changed by non-merge commits since the review. Prefer the
+  // bounded commit-based walk (gh api commits + per-commit git diff-tree): the
+  // `git log base..head --name-only` walk overflows on the app's shallow clone
+  // when the review base sits below the shallow boundary (PR #7605 produced
+  // 10.9MB of output → "stdout maxBuffer length exceeded"). git log is kept
+  // only as a capped fallback for when the API call fails (e.g. rate limit).
   let files = '';
+  let allCommits = [];
   try {
-    files = await execPromise(
-      `git log pr-${prNumber} --no-merges --diff-filter=ACMRT --name-only --pretty=format:"" ${baseSha}..${headSha}`,
-      { cwd: repoPath }
-    );
-  } catch {
-    // Fallback: try without pr- branch name
-    files = await execPromise(
-      `git log --no-merges --diff-filter=ACMRT --name-only --pretty=format:"" ${baseSha}..${headSha}`,
-      { cwd: repoPath }
-    );
+    const viaCommits = await getChangedFilesViaCommits(owner, repo, prNumber, repoPath);
+    allCommits = viaCommits.commits || [];
+    if (viaCommits.files.length > 0) files = viaCommits.files.join('\n');
+  } catch (err) {
+    log('WARN', '[generateDiff] commit-based changed-files lookup failed, falling back to git log:', err.message);
   }
 
   // Get all changed files (no extension filter — user controls visibility via sidebar filter)
-  const changedFiles = files
+  let changedFiles = files
     .split('\n')
     .map(f => f.trim())
     .filter(f => f)
     .filter((f, i, arr) => arr.indexOf(f) === i); // unique
+
+  if (changedFiles.length === 0) {
+    // Fallback: git log --name-only with a hard output cap. The cap bounds the
+    // shallow-clone ancestry blowup above; if even that exceeds it, fall back
+    // to deriving the file list from the gh pr diff already fetched.
+    try {
+      files = await execPromise(
+        `git log pr-${prNumber} --no-merges --diff-filter=ACMRT --name-only --pretty=format:"" ${baseSha}..${headSha}`,
+        { cwd: repoPath, maxBuffer: 8 * 1024 * 1024 }
+      );
+    } catch {
+      try {
+        files = await execPromise(
+          `git log --no-merges --diff-filter=ACMRT --name-only --pretty=format:"" ${baseSha}..${headSha}`,
+          { cwd: repoPath, maxBuffer: 8 * 1024 * 1024 }
+        );
+      } catch { files = ''; }
+    }
+    changedFiles = files
+      .split('\n')
+      .map(f => f.trim())
+      .filter(f => f)
+      .filter((f, i, arr) => arr.indexOf(f) === i); // unique
+  }
+
+  if (changedFiles.length === 0 && diffOut) {
+    // Last resort: derive from the gh pr diff (already fetched in parallel).
+    changedFiles = changedFilesFromDiff(diffOut);
+    log('INFO', `[generateDiff] Derived changed files from gh pr diff: ${changedFiles.length} file(s)`);
+  }
 
   if (changedFiles.length === 0) {
     throw new Error('No files changed since last review');
@@ -982,15 +1041,11 @@ async function generateDiff(prNumber, repoKey) {
   if (reviewInfo && baseSha && headSha) {
     try {
       // Get files changed by PR commits after the review (non-merge commits only).
-      // Use --paginate so we fetch ALL commits (the endpoint defaults to the first
-      // 100, oldest-first — for long PRs the newest commits after the review would
-      // otherwise be missed, making afterReview empty and falling back to the full
-      // PR diff, e.g. PR #6460 showed 141 files instead of the 1 since-review file).
-      const reviewCommits = await execPromise(
-        `gh api --paginate "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100"`,
-        { timeout: 60000 }
-      );
-      const allCommits = JSON.parse(reviewCommits || '[]');
+      // allCommits was already fetched by getChangedFilesViaCommits (with
+      // --paginate so we get ALL commits, not just the first 100 — for long PRs
+      // the newest commits after the review would otherwise be missed, making
+      // afterReview empty and falling back to the full PR diff, e.g. PR #6460
+      // showed 141 files instead of the 1 since-review file).
       const reviewDate = reviewInfo.date;
       const afterReview = allCommits.filter(c => c.commit.committer.date > reviewDate && c.parents && c.parents.length < 2);
 
