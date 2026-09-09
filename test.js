@@ -2653,7 +2653,9 @@ async function runTests() {
   `);
   assert('Shortcuts dialog lists Cmd+F', shortcutHasFind === true);
 
-  // The search box text must not be left cleared by runFind (clear-restore trick).
+  // The search box text must not be left cleared by runFind — the query is
+  // cleared only briefly (before the async findInPage) and restored when the
+  // find-result event comes back, so the box keeps showing the query text.
   await mainWindow.webContents.executeJavaScript(`
     (() => {
       const input = document.getElementById('find-input');
@@ -2667,12 +2669,61 @@ async function runTests() {
     document.getElementById('find-input').value
   `);
   assert('Find input value restored after search', findInputValueRestored === 'paddedMonth', `value="${findInputValueRestored}"`);
-  // Close the find bar to leave the UI clean for later tests.
+  // Bug 1 regression: the find box's own text must not be counted as a match.
+  // Verify runFind clears the input value BEFORE findInPage runs (so the async
+  // search engine never sees the query text sitting in the box). Static order
+  // assertion on renderer.js: the clear must precede the findInPage call.
+  const bug1SourceOrder = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const src = runFind.toString();
+      const clearIdx = src.indexOf("input.value = ''");
+      const callIdx = src.indexOf('findInPage(');
+      return (clearIdx !== -1 && callIdx !== -1 && clearIdx < callIdx) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('Find box text cleared before findInPage (no self-match)', bug1SourceOrder === 'ok', `order=${bug1SourceOrder}`);
+  // Type a fresh query and press Enter to exercise the full runFind path.
   await mainWindow.webContents.executeJavaScript(`
     (() => {
       const input = document.getElementById('find-input');
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      document.getElementById('find-bar').style.display = 'block';
+      input.value = 'Checkbox';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return true;
     })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  // The value must be restored after the async result comes back.
+  const selfMatchRestored = await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-input').value
+  `);
+  assert('Find box text restored after async result', selfMatchRestored === 'Checkbox', `value="${selfMatchRestored}"`);
+  // Close find bar to restore clean state for later tests.
+  await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  `);
+
+  // Bug 2 regression: opening the find bar twice (menu accelerator + keydown
+  // both fire on macOS) must not clear the input or steal the caret. The second
+  // open is a no-op while the bar is already visible.
+  await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }));
+      const input = document.getElementById('find-input');
+      input.value = 'uncommitted';
+      input.setSelectionRange(5, 5);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Second Cmd+F fires while typing (menu accelerator race)
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }));
+      return input.value;
+    })()
+  `);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const doubleOpenKeptText = await mainWindow.webContents.executeJavaScript(`document.getElementById('find-input').value`);
+  assert('Double Cmd+F does not clear typed text', doubleOpenKeptText === 'uncommitted', `value="${doubleOpenKeptText}"`);
+  await mainWindow.webContents.executeJavaScript(`
+    document.getElementById('find-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   `);
 
   // Object-method definitions (`name: function() {`) must resolve as a def with
@@ -2881,9 +2932,16 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
 });
 
 // Mock find-in-page so tests can assert what the renderer sends, without a real search.
+// Sends a find-result back (as Electron does) so the renderer's pending-restore
+// path is exercised end to end.
 global.__findCalls = [];
 ipcMain.handle('find-in-page', (event, { text, options }) => {
   global.__findCalls.push({ text, options });
+  if (mainWindow) {
+    setImmediate(() => {
+      mainWindow.webContents.send('find-result', { activeMatchOrdinal: 0, matches: 0 });
+    });
+  }
   return true;
 });
 global.__findStops = 0;

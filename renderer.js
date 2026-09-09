@@ -2502,7 +2502,15 @@ function openFindBar() {
   const bar = document.getElementById('find-bar');
   const input = document.getElementById('find-input');
   if (!bar || !input) return;
+  const wasHidden = bar.style.display === 'none';
   bar.style.display = 'block';
+  if (!wasHidden) {
+    // The bar is already open — this is a second Cmd+F (on macOS the menu
+    // accelerator AND the page keydown handler can both fire). Do NOT refocus,
+    // clear, or re-run the search: doing so resets the caret and swallows what
+    // the user is typing. Let the existing open state stand.
+    return;
+  }
   input.focus();
   if (lastFindQuery) {
     input.value = lastFindQuery;
@@ -2528,6 +2536,12 @@ function closeFindBar() {
 }
 
 // direction: 'restart' (from top), 'next' (Enter/▼), 'prev' (Shift+Enter/▲)
+// While a search is in flight, the input value is cleared so Electron's async
+// find engine never counts the query text sitting in the box itself as a match.
+// The value is restored when the 'find-result' event arrives (or after a short
+// safety timeout), so the user always sees their query in the box.
+let pendingFindRestore = null;
+
 function runFind(direction) {
   const input = document.getElementById('find-input');
   if (!input || !window.electronAPI || !window.electronAPI.findInPage) return;
@@ -2537,6 +2551,7 @@ function runFind(direction) {
   if (count) count.textContent = '0/0';
   if (!text) {
     findStarted = false;
+    pendingFindRestore = null;
     if (window.electronAPI.stopFindInPage) window.electronAPI.stopFindInPage('clearSelection');
     return;
   }
@@ -2552,20 +2567,42 @@ function runFind(direction) {
     options.findNext = false;
   }
   findStarted = true;
-  // Temporarily clear the search box value so the find engine doesn't also
-  // match the exact text the user just typed into the box itself. findInPage
-  // snapshots the DOM at call time, so restoring synchronously keeps the box
-  // visible to the user without it contributing spurious matches.
-  const restore = input.value;
+  // Clear the box value before the (async) findInPage call so the search
+  // engine does not match the query text sitting in the box itself. The value
+  // is restored when the match-count event comes back, not synchronously —
+  // Chromium's findInPage snapshots the DOM asynchronously, so restoring here
+  // would put the text back before the search actually ran.
   const selStart = input.selectionStart;
   const selEnd = input.selectionEnd;
+  pendingFindRestore = { value: text, selStart, selEnd };
   input.value = '';
   window.electronAPI.findInPage(text, options);
-  input.value = restore;
-  input.setSelectionRange(selStart, selEnd);
+  // Safety net: if the find-result event never arrives (IPC hiccup), restore
+  // the query text after a short delay so the box isn't left empty.
+  setTimeout(() => { restorePendingFind(); }, 1500);
+}
+
+// Restore the query into the find box once the (async) search has run. Called
+// from the find-result handler, or as a fallback shortly after a search starts.
+function restorePendingFind() {
+  if (!pendingFindRestore) return;
+  const input = document.getElementById('find-input');
+  if (!input) return;
+  const { value, selStart, selEnd } = pendingFindRestore;
+  pendingFindRestore = null;
+  // If the user typed something while the search was in flight, keep their
+  // text. Only restore into an empty box — and only when the box is still
+  // part of the same search (lastFindQuery matches the value we cleared).
+  if (input.value !== '') return;
+  if (lastFindQuery !== value) return;
+  input.value = value;
+  try { input.setSelectionRange(selStart, selEnd); } catch {}
 }
 
 function updateFindCount(result) {
+  // The async search has completed and produced a match count — restore the
+  // query text we cleared out of the box before the search ran.
+  restorePendingFind();
   const count = document.getElementById('find-count');
   if (!count) return;
   const total = result.matches;
@@ -2598,6 +2635,9 @@ function setupFindBar() {
     // any highlights from a previous query — do not search on every keystroke.
     input.addEventListener('input', () => {
       findStarted = false;
+      // If a search was in flight and the user started typing, let the new
+      // text stand — drop the pending restore so we don't clobber it.
+      if (pendingFindRestore && input.value !== '') pendingFindRestore = null;
       const count = document.getElementById('find-count');
       if (count) { count.textContent = '0/0'; count.classList.remove('no-match'); }
       input.classList.remove('no-match');
@@ -6577,6 +6617,15 @@ async function sendAiChat() {
       live.textContent = data.text || '(no response)';
       aiChatHistory.push({ role: 'user', content: text });
       if (data.text) aiChatHistory.push({ role: 'assistant', content: data.text });
+    } else if (data.status && !data.text) {
+      // Agent is still working (loading skills, running tools) before the
+      // answer box opens — show a live status hint instead of dead silence.
+      live.innerHTML = '';
+      const hint = document.createElement('span');
+      hint.className = 'ai-chat-status';
+      hint.textContent = data.status;
+      live.appendChild(hint);
+      if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
     } else if (data.text) {
       live.textContent = data.text;
       // Keep the panel scrolled so the growing reply stays in view.

@@ -3805,6 +3805,67 @@ describe('AI Chat and Hermes profile', () => {
     expect(mainSource).toContain("ipcMain.handle('ai-chat'");
   });
 
+  test('ai-chat uses -t hermes-cli toolset and 300s timeout', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf("ipcMain.handle('ai-chat'"),
+      mainSource.indexOf('function extractHermesStatus')
+    );
+    expect(fn).toContain("'-t', 'hermes-cli'");
+    expect(fn).toContain('timeout: 300000');
+    expect(fn).toContain("signal === 'SIGTERM'");
+    expect(fn).toContain('Timed out after 300s');
+  });
+
+  test('extractHermesStatus surfaces agent activity before the box opens', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('function extractHermesStatus'),
+      mainSource.indexOf('function cleanHermesStreaming')
+    );
+    expect(fn).toContain("if (text.includes('╭')) return '';");
+    // Captures short progress lines (tool calls, skill loads)
+    expect(fn).toContain('statuses.push(t)');
+    // Ignores CLI chrome / prompts
+    expect(fn).toContain('/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|─|╭|╰)/i');
+  });
+
+  test('buildChatPrompt instructs the agent to prefer fd/rg', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('function buildChatPrompt'),
+      mainSource.indexOf('function cleanHermesResponse')
+    );
+    expect(fn).toContain('prefer');
+    expect(fn).toContain('`fd` over `find`');
+    expect(fn).toContain('`rg` over `grep`');
+  });
+
+  test('auto-fix prompt includes fd/rg preference', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('ipcMain.handle(\'auto-fix-with-ai\''),
+      mainSource.indexOf('ipcMain.handle(\'propose-rules\'')
+    );
+    expect(fn).toContain('\\`fd\\` over \\`find\\`');
+    expect(fn).toContain('\\`rg\\` over \\`grep\\`');
+  });
+
+  test('propose-rules prompt includes fd/rg preference', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('ipcMain.handle(\'propose-rules\''),
+      mainSource.indexOf('// Save proposed rules to files')
+    );
+    expect(fn).toContain('\\`fd\\` over \\`find\\`');
+    expect(fn).toContain('\\`rg\\` over \\`grep\\`');
+  });
+
+  test('renderer surfaces agent status before answer streams', () => {
+    expect(rendererSource).toContain("data.status && !data.text");
+    expect(rendererSource).toContain("className = 'ai-chat-status'");
+    expect(rendererSource).toContain('pendingFindRestore');
+  });
+
+  test('index.html styles the ai-chat status hint', () => {
+    expect(indexHtml).toContain('.ai-chat-status');
+  });
+
   test('cleanHermesResponse strips warnings, box UI, and session footer', () => {
     const raw = `Warning: Unknown toolsets: messaging\nQuery: prompt echo\nUser: hi\nAssistant:\nInitializing agent...\n\n╭─ Hermes ─╮\nThe answer is here.\n╰──────────╯\n\nResume this session with:\n  hermes --resume 123 -p wt\n\nSession: 123\nDuration: 5s\nMessages: 2`;
     // Execute the function's logic by extracting it from source is brittle; instead

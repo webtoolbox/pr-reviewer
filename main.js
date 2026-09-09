@@ -206,7 +206,8 @@ async function getPrChatContext(prNumber, repoKey) {
 function buildChatPrompt(context, history, message) {
   const lines = [
     'You are an AI coding assistant helping review a pull request in the PR Reviewer desktop app.',
-    "Answer the user's questions about the code, the branch, or the pull request concisely and helpfully."
+    "Answer the user's questions about the code, the branch, or the pull request concisely and helpfully.",
+    'When you need to search or locate files/code, ALWAYS prefer `fd` over `find` and `rg` over `grep` — they are installed and far faster.'
   ];
   if (context) lines.push('Current pull request context: ' + context);
   lines.push('');
@@ -267,11 +268,18 @@ function cleanHermesResponse(stdout) {
 // 'ai-chat-stream' channel, and a final 'done' event carries the cleaned reply.
 ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history }) => {
   const prompt = buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '');
-  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-q', prompt];
+  // NOTE: `-q` (boxed streaming) is REQUIRED here — `-Q` suppresses the box and
+  // would break the live "thinking" bubble stream. `-t hermes-cli` slims the
+  // toolset so the agent spends far less time loading tools before first token.
+  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-t', 'hermes-cli', '-q', prompt];
   log('INFO', `[ai-chat] Sending (first 100): ${prompt.substring(0, 100)}`);
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
-    const child = spawn(appConfig.aiCommand, args, { timeout: 120000 });
+    // 300s matches the auto-fix feature's timeout. The app log showed every
+    // chat call hitting the old 120s cap mid-answer (~126s total), which is
+    // what produced the "dead silence" — the process was killed before the
+    // model finished, so cleanHermesStreaming never saw a complete answer.
+    const child = spawn(appConfig.aiCommand, args, { timeout: 300000 });
     const sender = event.sender;
     let stdout = '';
     let lastEmit = 0;
@@ -281,10 +289,13 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
       const now = Date.now();
       if (!force && now - lastEmit < 80) return;
       lastEmit = now;
+      // Always send an update (status or partial text) so the UI bubble is
+      // never silent while the agent is working.
+      const status = extractHermesStatus(stdout);
       const partial = cleanHermesStreaming(stdout);
-      if (partial) {
-        try { sender.send('ai-chat-stream', { text: partial, done: false }); } catch {}
-      }
+      try {
+        sender.send('ai-chat-stream', { text: partial, status, done: false });
+      } catch {}
     };
 
     child.stdout.on('data', (chunk) => {
@@ -298,7 +309,17 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
       resolve({ error: err.message });
     });
 
-    child.on('close', () => {
+    child.on('close', (code, signal) => {
+      // A SIGTERM close means the spawn timeout fired — the agent was still
+      // working. Report that clearly instead of silently returning nothing.
+      if (signal === 'SIGTERM' || (code === null && !stdout)) {
+        log('WARN', '[ai-chat] Hermes process timed out (300s) — answering was cut short.');
+        const partial = cleanHermesResponse(stdout);
+        const msg = 'Timed out after 300s (the agent was still working). Try a more specific question, or re-send to continue.';
+        try { sender.send('ai-chat-stream', { text: partial || '', status: '', error: msg, timedOut: true, done: true }); } catch {}
+        resolve({ error: msg, response: partial });
+        return;
+      }
       const clean = cleanHermesResponse(stdout);
       log('INFO', `[ai-chat] Response received: ${clean.length} chars`);
       try { sender.send('ai-chat-stream', { text: clean, done: true }); } catch {}
@@ -306,6 +327,28 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
     });
   });
 });
+
+// Pull a human-readable status line from hermes's pre-box activity (tool calls,
+// skill loading, thinking). Everything between the ╭ box open is the real answer;
+// everything before it is the agent "doing stuff" we can surface so the chat
+// bubble shows progress instead of a static "Thinking…".
+function extractHermesStatus(text) {
+  if (!text) return '';
+  // Once the answer box has opened, no status is needed — the answer streams.
+  if (text.includes('╭')) return '';
+  const lines = text.split('\n');
+  const statuses = [];
+  for (const raw of lines) {
+    const t = raw.trim();
+    if (!t) continue;
+    // Strip hermes CLI chrome: prompts, warnings, separators, non-status lines.
+    if (/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|─|╭|╰)/i.test(t)) continue;
+    // Capture only short actionable progress lines (tool invocation, file notes).
+    if (t.length <= 120 && /[a-z]/i.test(t)) statuses.push(t);
+  }
+  // Return the most recent status as a live "agent is doing X" hint.
+  return statuses.length > 0 ? statuses[statuses.length - 1] : '';
+}
 
 // Lightweight chrome-stripper for PARTIAL (in-flight) hermes output. It only
 // returns lines INSIDE the final answer box (between the ╭…╮ top border and the
@@ -2434,13 +2477,14 @@ ${commentSummary}${bodySummary}
 2. Create a worktree for your changes: \`git worktree add ../auto-fix/pr-${prNumber} origin/${headBranch}\`
 3. Change into the worktree: \`cd ../auto-fix/pr-${prNumber}\`
 4. Read each file mentioned in the review comments and make the necessary code changes to address each comment
-5. If an AGENTS.md file exists in the repo, follow its guidelines for code changes
-6. Commit your changes with a clear message like "fix: address review comments for PR #${prNumber}"
-7. Push the branch: \`git push origin HEAD:auto-fix/pr-${prNumber}\`
-8. Create a PR targeting the original branch: \`gh pr create --base ${headBranch} --title "Auto-fix: Review comments for PR #${prNumber}" --body "Addresses review comments from PR #${prNumber}.\\n\\nReview comments addressed:\\n${commentSummary.replace(/"/g, '\\"')}"\`
-9. Add reviewers and assignees: \`gh pr edit --add-reviewer ${participants.join(',')} --add-assignee ${participants.join(',')}\`
-10. After creating the PR, add a comment on the original PR #${prNumber} mentioning the fix PR: \`gh pr comment ${prNumber} --body "🤖 I've created an auto-fix PR addressing the review comments: <link to new PR>"\`
-11. Clean up the worktree when done: \`cd <repo-path> && git worktree remove ../auto-fix/pr-${prNumber}\`
+5. When searching or locating files/code, ALWAYS prefer \`fd\` over \`find\` and \`rg\` over \`grep\` — they are installed and far faster.
+6. If an AGENTS.md file exists in the repo, follow its guidelines for code changes
+7. Commit your changes with a clear message like "fix: address review comments for PR #${prNumber}"
+8. Push the branch: \`git push origin HEAD:auto-fix/pr-${prNumber}\`
+9. Create a PR targeting the original branch: \`gh pr create --base ${headBranch} --title "Auto-fix: Review comments for PR #${prNumber}" --body "Addresses review comments from PR #${prNumber}.\\\\n\\\\nReview comments addressed:\\\\n${commentSummary.replace(/\"/g, '\\\\\"')}"\`
+10. Add reviewers and assignees: \`gh pr edit --add-reviewer ${participants.join(',')} --add-assignee ${participants.join(',')}\`
+11. After creating the PR, add a comment on the original PR #${prNumber} mentioning the fix PR: \`gh pr comment ${prNumber} --body "🤖 I've created an auto-fix PR addressing the review comments: <link to new PR>"\`
+12. Clean up the worktree when done: \`cd <repo-path> && git worktree remove ../auto-fix/pr-${prNumber}\`
 
 IMPORTANT: Return ONLY the new PR URL as the last line of your output, in the format: PR_URL: https://github.com/${owner}/${repo}/pull/<number>`;
 
@@ -3566,6 +3610,8 @@ ipcMain.handle('propose-rules', async (event, { feedback, agentsMd, referencedFi
   }
 
   const prompt = `You are analyzing code review feedback to propose new agent rules for the ${owner}/${repo} repository.
+
+When you search or locate files/code as part of this analysis, ALWAYS prefer \`fd\` over \`find\` and \`rg\` over \`grep\` — they are installed and far faster.
 
 AGENTS.md content:
 ${agentsMd}
