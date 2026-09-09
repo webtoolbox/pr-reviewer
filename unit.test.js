@@ -3808,7 +3808,7 @@ describe('AI Chat and Hermes profile', () => {
   test('ai-chat uses -t hermes-cli toolset and 300s timeout', () => {
     const fn = mainSource.substring(
       mainSource.indexOf("ipcMain.handle('ai-chat'"),
-      mainSource.indexOf('function extractHermesStatus')
+      mainSource.indexOf('function extractHermesSteps')
     );
     expect(fn).toContain("'-t', 'hermes-cli'");
     expect(fn).toContain('timeout: 300000');
@@ -3816,16 +3816,16 @@ describe('AI Chat and Hermes profile', () => {
     expect(fn).toContain('Timed out after 300s');
   });
 
-  test('extractHermesStatus surfaces agent activity before the box opens', () => {
+  test('extractHermesSteps surfaces agent activity before the box opens', () => {
     const fn = mainSource.substring(
-      mainSource.indexOf('function extractHermesStatus'),
+      mainSource.indexOf('function extractHermesSteps'),
       mainSource.indexOf('function cleanHermesStreaming')
     );
-    expect(fn).toContain("if (text.includes('╭')) return '';");
-    // Captures short progress lines (tool calls, skill loads)
-    expect(fn).toContain('statuses.push(t)');
+    // Captures "┊" spinner lines (tool prep + runs)
+    expect(fn).toContain("t.startsWith('┊')");
+    expect(fn).toContain('steps.push(step)');
     // Ignores CLI chrome / prompts
-    expect(fn).toContain('/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|─|╭|╰)/i');
+    expect(fn).toContain('/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|Title:)/i');
   });
 
   test('buildChatPrompt instructs the agent to prefer fd/rg', () => {
@@ -3856,14 +3856,16 @@ describe('AI Chat and Hermes profile', () => {
     expect(fn).toContain('\\`rg\\` over \\`grep\\`');
   });
 
-  test('renderer surfaces agent status before answer streams', () => {
-    expect(rendererSource).toContain("data.status && !data.text");
-    expect(rendererSource).toContain("className = 'ai-chat-status'");
-    expect(rendererSource).toContain('pendingFindRestore');
+  test('renderer surfaces agent steps before answer streams', () => {
+    expect(rendererSource).toContain("data.steps && data.steps.length > 0");
+    expect(rendererSource).toContain("className = 'ai-chat-step'");
+    expect(rendererSource).toContain("className = 'ai-chat-answer'");
+    expect(rendererSource).toContain('renderSteps(live)');
   });
 
-  test('index.html styles the ai-chat status hint', () => {
-    expect(indexHtml).toContain('.ai-chat-status');
+  test('index.html styles the ai-chat step feed and answer', () => {
+    expect(indexHtml).toContain('.ai-chat-step');
+    expect(indexHtml).toContain('.ai-chat-answer');
   });
 
   test('cleanHermesResponse strips warnings, box UI, and session footer', () => {

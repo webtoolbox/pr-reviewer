@@ -6551,6 +6551,20 @@ let aiChatHistory = [];
 let aiChatBusy = false;
 let aiChatEpoch = 0; // bumped on clear; lets stale in-flight stream events be ignored
 
+// Live activity feed for the CURRENT in-flight assistant message. Holds the
+// agent's steps (skill loading, tool runs) and renders them above the answer.
+let seenSteps = [];
+function renderSteps(targetEl) {
+  if (!targetEl || !seenSteps || seenSteps.length === 0) return;
+  targetEl.innerHTML = '';
+  for (const s of seenSteps) {
+    const row = document.createElement('div');
+    row.className = 'ai-chat-step';
+    row.textContent = s;
+    targetEl.appendChild(row);
+  }
+}
+
 // Clear the AI chat conversation (history + messages panel). Called when a new
 // PR loads or auto-advance moves to the next PR, so stale PR context doesn't linger.
 function clearAiChat() {
@@ -6610,24 +6624,55 @@ async function sendAiChat() {
       aiChatHistory.push({ role: 'user', content: text });
       return;
     }
+    if (data.steps && data.steps.length > 0 && !data.text) {
+      // Agent is still working before the answer box opens — render the full
+      // activity feed (skill loading, tool runs) so every step is visible.
+      if (JSON.stringify(data.steps) !== JSON.stringify(seenSteps)) {
+        seenSteps = data.steps;
+        renderSteps(live);
+      }
+      if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+      return;
+    }
     if (data.done) {
       // Final reply — stop streaming, keep the full cleaned text. Because the
       // text streams in live, the user reads it as it appears; no need to jump
       // to the top. Just push it into history so follow-ups have context.
-      live.textContent = data.text || '(no response)';
+      // If steps were shown, keep them above the final answer for context.
+      if (seenSteps && seenSteps.length > 0) {
+        if (!live.querySelector('.ai-chat-answer')) {
+          const answer = document.createElement('div');
+          answer.className = 'ai-chat-answer';
+          answer.textContent = data.text || '(no response)';
+          live.appendChild(answer);
+        } else {
+          live.querySelector('.ai-chat-answer').textContent = data.text || '(no response)';
+        }
+      } else {
+        live.textContent = data.text || '(no response)';
+      }
       aiChatHistory.push({ role: 'user', content: text });
       if (data.text) aiChatHistory.push({ role: 'assistant', content: data.text });
-    } else if (data.status && !data.text) {
-      // Agent is still working (loading skills, running tools) before the
-      // answer box opens — show a live status hint instead of dead silence.
-      live.innerHTML = '';
-      const hint = document.createElement('span');
-      hint.className = 'ai-chat-status';
-      hint.textContent = data.status;
-      live.appendChild(hint);
-      if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
     } else if (data.text) {
-      live.textContent = data.text;
+      // The answer box has opened — show the streamed reply. If activity steps
+      // are still arriving, keep them above the answer as context.
+      if (data.steps && data.steps.length > 0) {
+        // Only rebuild the step DOM when the feed actually changed, to avoid
+        // churning nodes every 80ms tick.
+        const stepsChanged = JSON.stringify(data.steps) !== JSON.stringify(seenSteps);
+        seenSteps = data.steps;
+        if (stepsChanged) renderSteps(live);
+        if (!live.querySelector('.ai-chat-answer')) {
+          const answer = document.createElement('div');
+          answer.className = 'ai-chat-answer';
+          answer.textContent = data.text;
+          live.appendChild(answer);
+        } else {
+          live.querySelector('.ai-chat-answer').textContent = data.text;
+        }
+      } else {
+        live.textContent = data.text;
+      }
       // Keep the panel scrolled so the growing reply stays in view.
       if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
     }

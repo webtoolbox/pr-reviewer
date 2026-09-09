@@ -813,11 +813,17 @@
     .ai-chat-msg.assistant { background: #21262d; color: #c9d1d9; align-self: flex-start; max-width: 90%; }
     .ai-chat-msg.error { background: #3d1d1d; color: #f85149; align-self: flex-start; max-width: 90%; }
     .ai-chat-msg.typing { color: #8b949e; font-style: italic; }
-    .ai-chat-status {
-      display: inline-block; color: #8b949e; font-size: 11px; font-style: italic;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    .ai-chat-step {
+      display: block; color: #8b949e; font-size: 11px; font-style: italic;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      padding: 1px 6px; border-left: 2px solid #30363d;
     }
-    .ai-chat-status::before { content: ''; }
+    .ai-chat-step::before { content: '· '; color: #58a6ff; }
+    .ai-chat-answer {
+      display: block; font-size: 13px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word; padding: 6px 12px;
+    }
     #ai-chat-panel .ai-chat-input-row {
       display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid #21262d; flex-shrink: 0;
     }

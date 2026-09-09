@@ -282,6 +282,7 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
     const child = spawn(appConfig.aiCommand, args, { timeout: 300000 });
     const sender = event.sender;
     let stdout = '';
+    let stderrText = '';
     let lastEmit = 0;
 
     const emitStream = (force) => {
@@ -289,17 +290,24 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
       const now = Date.now();
       if (!force && now - lastEmit < 80) return;
       lastEmit = now;
-      // Always send an update (status or partial text) so the UI bubble is
-      // never silent while the agent is working.
-      const status = extractHermesStatus(stdout);
+      // Send the accumulated activity feed (steps) plus any partial answer,
+      // so the dialog always shows what the agent is doing right now.
+      const steps = extractHermesSteps(stdout + stderrText);
       const partial = cleanHermesStreaming(stdout);
       try {
-        sender.send('ai-chat-stream', { text: partial, status, done: false });
+        sender.send('ai-chat-stream', { text: partial, steps, done: false });
       } catch {}
     };
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
+      emitStream(false);
+    });
+
+    // Capture stderr too so warnings/config issues can appear in the activity
+    // feed instead of being silently lost.
+    child.stderr.on('data', (chunk) => {
+      stderrText += chunk.toString();
       emitStream(false);
     });
 
@@ -328,26 +336,38 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
   });
 });
 
-// Pull a human-readable status line from hermes's pre-box activity (tool calls,
-// skill loading, thinking). Everything between the ╭ box open is the real answer;
-// everything before it is the agent "doing stuff" we can surface so the chat
-// bubble shows progress instead of a static "Thinking…".
-function extractHermesStatus(text) {
-  if (!text) return '';
-  // Once the answer box has opened, no status is needed — the answer streams.
-  if (text.includes('╭')) return '';
+// Pull the agent's activity feed from hermes's pre-box output (skill loading,
+// tool preparation, tool runs with timing). Every "┊" line hermes prints
+// before/around the answer box is surfaced so the dialog shows what the agent
+// is doing right now — instead of a static "Thinking…".
+function extractHermesSteps(text) {
+  if (!text) return [];
   const lines = text.split('\n');
-  const statuses = [];
+  const steps = [];
   for (const raw of lines) {
     const t = raw.trim();
     if (!t) continue;
-    // Strip hermes CLI chrome: prompts, warnings, separators, non-status lines.
-    if (/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|─|╭|╰)/i.test(t)) continue;
-    // Capture only short actionable progress lines (tool invocation, file notes).
-    if (t.length <= 120 && /[a-z]/i.test(t)) statuses.push(t);
+    // Skip CLI chrome and the box itself; keep only real activity lines.
+    if (/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|Title:)/i.test(t)) continue;
+    if (/^[─╭╰│]+$/.test(t)) continue;
+    // Tool lines come with a "┊" spinner pipe and an icon like 🔎, 🛠, 📖.
+    if (t.startsWith('┊')) {
+      const step = t.replace(/^┊\s*/, '').replace(/\s+$/, '').replace(/\s{2,}/g, ' ');
+      if (step && step.length <= 140) steps.push(step);
+      continue;
+    }
+    // Ansi/plain status like "preparing search_files…" without the pipe.
+    if (/^(preparing|running|loading)\s/i.test(t) && t.length <= 140) {
+      steps.push(t.replace(/\s{2,}/g, ' '));
+    }
   }
-  // Return the most recent status as a live "agent is doing X" hint.
-  return statuses.length > 0 ? statuses[statuses.length - 1] : '';
+  // De-duplicate consecutive repeats (hermes reprints "preparing X…" per run).
+  const seen = new Set();
+  const unique = [];
+  for (const s of steps) {
+    if (!seen.has(s)) { seen.add(s); unique.push(s); }
+  }
+  return unique;
 }
 
 // Lightweight chrome-stripper for PARTIAL (in-flight) hermes output. It only

@@ -1985,6 +1985,33 @@ async function runTests() {
   `);
   assert('sendAiChat streams live reply + cleans up listener', aiChatStreaming === 'ok', `result: ${aiChatStreaming}`);
 
+  // TEST: AI chat activity feed — a steps payload renders step rows in the live message
+  const aiChatStepsFeed = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (!document.getElementById('ai-chat-messages')) return 'no-panel';
+      // Simulate what sendAiChat does: create a live bubble, then a steps event.
+      const live = document.createElement('div');
+      live.className = 'ai-chat-msg assistant';
+      live.textContent = 'Thinking…';
+      document.getElementById('ai-chat-messages').appendChild(live);
+      seenSteps = ['preparing search_files…', 'grep loadPrByNumber 1.8s', 'skill_view: electron-pr-reviewer'];
+      renderSteps(live);
+      const stepCount = live.querySelectorAll('.ai-chat-step').length;
+      const stepText = live.querySelector('.ai-chat-step') ? live.querySelector('.ai-chat-step').textContent : '';
+      // Now simulate an answer arriving on top of the steps.
+      const answer = document.createElement('div');
+      answer.className = 'ai-chat-answer';
+      answer.textContent = 'Here is the answer.';
+      live.appendChild(answer);
+      const answerText = live.querySelector('.ai-chat-answer').textContent;
+      const answerCount = live.querySelectorAll('.ai-chat-answer').length;
+      // Clean up
+      live.remove();
+      return (stepCount === 3 && stepText === 'preparing search_files…' && answerText === 'Here is the answer.' && answerCount === 1) ? 'ok' : 'bad';
+    })()
+  `);
+  assert('AI chat renders activity steps + answer', aiChatStepsFeed === 'ok', `result: ${aiChatStepsFeed}`);
+
   // TEST: Keyboard shortcuts dialog toggles on Shift+?
   const shortcutsDialog = await mainWindow.webContents.executeJavaScript(`
     (() => {
