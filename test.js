@@ -1525,27 +1525,30 @@ async function runTests() {
   `);
   assert('Startup auto-load: first PR has required fields', autoLoadFirstPr === 'ok', `result: ${autoLoadFirstPr}`);
 
-  // TEST: Keyboard shortcut Cmd+R reloads current PR
+  // TEST: Keyboard shortcut Cmd+R reloads current PR with BOTH a toast AND a
+  // force flag — the force flag is what bypasses the viewed-PR cache, so a
+  // reload must always pass force=true to loadPrByNumber.
   const shortcutReload = await mainWindow.webContents.executeJavaScript(`
     (() => {
       let loadCalled = false;
+      let loadForce = null;
       let toastMsg = null;
       // Set up the globals the shortcut handler needs
       window.currentPrNumber = 42;
       window.currentRepoKey = 'test/repo';
       const origLoad = window.loadPrByNumber;
       const origToast = window.showToast;
-      window.loadPrByNumber = (pr, repo) => { loadCalled = true; return Promise.resolve(); };
+      window.loadPrByNumber = (pr, repo, force) => { loadCalled = true; loadForce = force; return Promise.resolve(); };
       window.showToast = (msg) => { toastMsg = msg; };
       document.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'r', code: 'KeyR', metaKey: true, shiftKey: false, bubbles: true
       }));
       window.loadPrByNumber = origLoad;
       window.showToast = origToast;
-      return loadCalled && toastMsg === 'Reloading PR…' ? 'ok' : JSON.stringify({loadCalled, toastMsg});
+      return (loadCalled && loadForce === true && toastMsg === 'Reloading PR…') ? 'ok' : JSON.stringify({loadCalled, loadForce, toastMsg});
     })()
   `);
-  assert('Cmd+R reloads current PR with toast', shortcutReload === 'ok', `result: ${shortcutReload}`);
+  assert('Cmd+R reloads current PR with toast + force flag', shortcutReload === 'ok', `result: ${shortcutReload}`);
 
   // TEST: Keyboard shortcut Cmd+Shift+A triggers approve (uppercase key - Windows/Linux)
   const shortcutApprove = await mainWindow.webContents.executeJavaScript(`

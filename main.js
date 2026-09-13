@@ -1600,26 +1600,31 @@ ipcMain.handle('open-pr-new-window', async (event, prNumber) => {
   }
 });
 
-ipcMain.handle('load-pr', async (event, { prNumber, repo } = {}) => {
+ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
   try {
     const safePr = safePrNumber(prNumber);
     const cacheKey = `${safePr}:${repo || 'default'}`;
-    
-    // Check the retained viewed cache first — instant return of the SAME diff
-    // for PRs already loaded this session (e.g. navigating back to a reviewed PR).
-    const viewed = viewedPrCache.get(cacheKey);
-    if (viewed) {
-      log('INFO', '[pr] Returning viewed-cached result for PR #' + prNumber);
-      return viewed;
-    }
 
-    // Check prefetch cache second — instant return if already fetched
-    const prefetched = prefetchCache[cacheKey];
-    if (prefetched && prefetched !== 'in-progress') {
-      delete prefetchCache[cacheKey];
-      cacheViewedPr(cacheKey, prefetched);
-      log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
-      return prefetched;
+    // Cmd+R (force reload) must skip both caches and regenerate the diff
+    // fresh from GitHub — otherwise the viewed-cache returns the diff as it
+    // was when the PR was first opened, hiding commits pushed since.
+    if (!force) {
+      // Check the retained viewed cache first — instant return of the SAME diff
+      // for PRs already loaded this session (e.g. navigating back to a reviewed PR).
+      const viewed = viewedPrCache.get(cacheKey);
+      if (viewed) {
+        log('INFO', '[pr] Returning viewed-cached result for PR #' + prNumber);
+        return viewed;
+      }
+
+      // Check prefetch cache second — instant return if already fetched
+      const prefetched = prefetchCache[cacheKey];
+      if (prefetched && prefetched !== 'in-progress') {
+        delete prefetchCache[cacheKey];
+        cacheViewedPr(cacheKey, prefetched);
+        log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
+        return prefetched;
+      }
     }
     
     log('INFO', '[pr] Loading PR', prNumber, 'repo:', repo || 'default');

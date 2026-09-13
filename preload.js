@@ -24,7 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   savePreferences: (prefs) => ipcRenderer.invoke('save-preferences', prefs),
   exportMarkdown: (data) => ipcRenderer.invoke('export-markdown', data),
   saveImage: (data) => ipcRenderer.invoke('save-image', data),
-  loadPr: (prNumber) => ipcRenderer.invoke('load-pr', prNumber),
+  loadPr: (data) => ipcRenderer.invoke('load-pr', data),
   getPrInfo: (data) => ipcRenderer.invoke('get-pr-info', data),
   prefetchPr: (data) => ipcRenderer.invoke('prefetch-pr', data),
   getPrefetchedPr: (data) => ipcRenderer.invoke('get-prefetched-pr', data),

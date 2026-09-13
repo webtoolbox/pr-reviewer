@@ -2409,11 +2409,13 @@ document.addEventListener('keydown', (e) => {
 
   // Cmd+R — Reload current PR diff. If no PR is loaded (e.g. the "All caught
   // up!" screen), re-check for new pending pull requests instead.
+  // force:true bypasses the session viewed-PR cache so the diff is regenerated
+  // fresh — new commits pushed to the PR appear even if it was loaded before.
   if (key === 'R' && isMeta && !e.shiftKey) {
     e.preventDefault();
     if (currentPrNumber) {
       showToast('Reloading PR…');
-      loadPrByNumber(currentPrNumber, currentRepoKey);
+      loadPrByNumber(currentPrNumber, currentRepoKey, true);
     } else {
       recheckForNewPrs();
     }
@@ -3495,7 +3497,7 @@ prNumberInput.addEventListener('keydown', async (e) => {
   }
 });
 
-async function loadPrByNumber(prNumber, repoKey) {
+async function loadPrByNumber(prNumber, repoKey, force = false) {
   console.log('[loadPr] Loading PR #' + prNumber, 'repo:', repoKey || 'default');
   clearAiChat(); // Reset AI chat for the new PR — stale branch/PR context shouldn't linger
   // Show the loading indicator immediately so the previous PR's diff doesn't
@@ -3559,8 +3561,9 @@ async function loadPrByNumber(prNumber, repoKey) {
       }
     }
 
-    // Phase 2: Load the diff (may be instant from prefetch cache, or 10-30s)
-    const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey });
+    // Phase 2: Load the diff (may be instant from prefetch cache, or 10-30s).
+    // force reloads must bypass the viewed-PR cache so Cmd+R shows fresh diffs.
+    const result = await window.electronAPI.loadPr({ prNumber, repo: repoKey, force });
     if (result.error) {
       showBodyError(result.error);
       if (loadingToast && loadingToast._dismiss) loadingToast._dismiss();

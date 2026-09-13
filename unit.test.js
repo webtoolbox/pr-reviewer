@@ -2770,7 +2770,7 @@ describe('Auto-advance after approve', () => {
   });
 
   test('loadPrByNumber routes IPC errors to showBodyError (not the title bar)', () => {
-    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey)');
+    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey, force = false)');
     // Find the result.error block — use a broader search for the block
     const errorIdx = rendererSource.indexOf('if (result.error)', loadPrStart);
     expect(errorIdx).toBeGreaterThan(-1);
@@ -2781,7 +2781,7 @@ describe('Auto-advance after approve', () => {
   });
 
   test('loadPrByNumber calls resetButtons() in catch block', () => {
-    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey)');
+    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey, force = false)');
     // Find the function's own catch block — it's the outermost one after all the logic.
     // Look for the prefetchNextPr call (last action before catch) to find the right catch block.
     const prefetchIdx = rendererSource.indexOf('prefetchNextPr(prNumber, repoKey)', loadPrStart);
