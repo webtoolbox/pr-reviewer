@@ -4890,6 +4890,8 @@ if (btnCommits) btnCommits.addEventListener('click', (e) => {
   if (commitsPanelOpen) {
     closeCommitsPanel();
   } else {
+    // Mutual exclusion: opening commits closes comments panel
+    if (commentsPanelOpen && typeof closeCommentsPanel === 'function') closeCommentsPanel();
     openCommitsPanel();
   }
 });
@@ -4912,6 +4914,158 @@ function openCommitsPanel() {
     renderCommitsList();
   }
 }
+
+// ===================== ALL-COMMENTS PANEL =====================
+// Shows every comment on the PR: GitHub-submitted inline review comments
+// (fetched via get-review-comments) plus the user's own LOCAL pending comments
+// (the `comments` array — NOT yet submitted to GitHub). Pending comments get a
+// "pending" badge so the reviewer can see what will be sent on submit.
+
+const btnComments = document.getElementById('btn-comments');
+const commentsPanel = document.getElementById('comments-panel');
+let commentsPanelOpen = false;
+
+if (btnComments) btnComments.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (commentsPanelOpen) {
+    closeCommentsPanel();
+  } else {
+    // Mutual exclusion: opening comments closes commits panel
+    if (commitsPanelOpen && typeof closeCommitsPanel === 'function') closeCommitsPanel();
+    openCommentsPanel();
+  }
+});
+
+function closeCommentsPanel() {
+  if (commentsPanel) commentsPanel.classList.remove('open');
+  commentsPanelOpen = false;
+}
+
+function openCommentsPanel() {
+  if (!btnComments || !commentsPanel) return;
+  const btnRect = btnComments.getBoundingClientRect();
+  commentsPanel.style.top = (btnRect.bottom + 4) + 'px';
+  commentsPanel.style.right = (window.innerWidth - btnRect.right) + 'px';
+  commentsPanel.style.left = 'auto';
+
+  commentsPanel.classList.add('open');
+  commentsPanelOpen = true;
+  renderCommentsList();
+}
+
+// Build the combined list: submitted (inlineReviewComments) + pending (comments).
+function getCombinedCommentList() {
+  const items = [];
+
+  // Submitted GitHub inline review comments
+  for (const c of inlineReviewComments || []) {
+    items.push({
+      kind: 'submitted',
+      author: c.author || 'unknown',
+      location: c.path ? `${c.path}${c.line ? ':' + c.line : ''}` : '',
+      text: c.body || '',
+      target: { file: c.path, line: c.line || c.originalLine || null, side: c.side || 'RIGHT' }
+    });
+  }
+
+  // Local pending comments (not yet submitted)
+  for (const c of comments || []) {
+    const isAi = !!c.isAiTagged;
+    items.push({
+      kind: isAi ? 'ai' : 'pending',
+      author: isAi ? 'AI' : 'me',
+      location: c.file ? `${c.file}${c.line ? ':' + c.line : ''}` : (c.level === 'file' ? 'file-level' : ''),
+      text: stripAiTag(c.text || ''),
+      uid: c._uid || null,
+      target: { file: c.file, line: c.line || null, side: c.side || 'RIGHT', level: c.level }
+    });
+  }
+
+  return items;
+}
+
+function renderCommentsList() {
+  if (!commentsPanel) return;
+  const items = getCombinedCommentList();
+  const countText = `${items.length} comment${items.length !== 1 ? 's' : ''}`;
+
+  if (items.length === 0) {
+    commentsPanel.innerHTML = `<div class="comments-panel-header"><span>All Comments</span><span style="font-size:11px;color:#8b949e">${countText}</span></div><div class="comments-empty">No comments yet.</div>`;
+    return;
+  }
+
+  let html = `<div class="comments-panel-header"><span>All Comments</span><span style="font-size:11px;color:#8b949e">${countText}</span></div>`;
+  for (const item of items) {
+    const badge = item.kind === 'pending' ? '<span class="c-badge pending">pending</span>'
+      : item.kind === 'ai' ? '<span class="c-badge pending ai">AI</span>'
+      : '';
+    const loc = item.location ? `<span class="c-location">${escapeHtml(item.location)}</span>` : '';
+    html += `
+      <div class="comment-list-item" data-comment-loc="${escapeHtml(item.location || '')}" data-comment-uid="${item.uid !== null && item.uid !== undefined ? item.uid : ''}">
+        <span class="c-author">${escapeHtml(item.author)}</span>${loc}${badge}
+        <div class="c-text">${escapeHtml(item.text)}</div>
+      </div>`;
+  }
+  commentsPanel.innerHTML = html;
+
+  // Click a comment to scroll to its line in the diff
+  commentsPanel.querySelectorAll('.comment-list-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const loc = el.dataset.commentLoc || '';
+      // Find the matching marker (pending local comment marker or inline comment)
+      const filePart = loc.split(':')[0];
+      const linePart = loc.includes(':') ? parseInt(loc.split(':')[1], 10) : null;
+      const uidRaw = el.dataset.commentUid || '';
+      const uid = uidRaw !== '' ? parseInt(uidRaw, 10) : null;
+      scrollToCommentLocation(filePart, linePart, uid);
+    });
+  });
+}
+
+function scrollToCommentLocation(filePath, lineNum, commentUid) {
+  if (!filePath) return;
+  // If we have a local comment uid, jump straight to its marker in the diff.
+  if (commentUid !== undefined && commentUid !== null) {
+    const markers = document.querySelectorAll('[data-comment-uid]');
+    for (const m of markers) {
+      if (parseInt(m.dataset.commentUid, 10) === commentUid) {
+        m.scrollIntoView({ behavior: 'instant', block: 'center' });
+        m.style.outline = '2px solid #58a6ff';
+        setTimeout(() => { m.style.outline = ''; }, 1500);
+        return;
+      }
+    }
+  }
+  // Fallback: scroll to the file's diff header
+  const wrapper = findFileWrapper(filePath);
+  if (wrapper) {
+    const hdr = wrapper.querySelector('.d2h-file-header') || wrapper;
+    const toolbarHeight = 52;
+    const rect = hdr.getBoundingClientRect();
+    window.scrollTo({ top: window.pageYOffset + rect.top - toolbarHeight - 8, behavior: 'smooth' });
+    wrapper.style.outline = '2px solid #58a6ff';
+    setTimeout(() => { wrapper.style.outline = ''; }, 1500);
+  }
+}
+
+function findFileWrapper(filePath) {
+  if (!filePath) return null;
+  const wrappers = diffContainer ? diffContainer.querySelectorAll('.d2h-file-wrapper') : [];
+  for (const w of wrappers) {
+    const nameEl = w.querySelector('.d2h-file-name');
+    if (nameEl && (nameEl.textContent.trim() === filePath || nameEl.textContent.trim().endsWith('/' + filePath))) {
+      return w;
+    }
+  }
+  return null;
+}
+
+// Close comments panel on outside click
+document.addEventListener('click', (e) => {
+  if (commentsPanelOpen && commentsPanel && !commentsPanel.contains(e.target) && e.target !== btnComments) {
+    closeCommentsPanel();
+  }
+});
 
 function renderCommitsList() {
   commitsCount.textContent = `${prCommits.length} commit${prCommits.length !== 1 ? 's' : ''}`;
@@ -4972,6 +5126,7 @@ async function loadPrCommits(prNumber) {
 
     // Show commits button and new window button
     btnCommits.style.display = 'flex';
+    if (btnComments) btnComments.style.display = 'flex';
     const newWindowInline = document.querySelector('.pr-new-window-inline');
     if (newWindowInline) newWindowInline.style.display = 'inline-flex';
 
@@ -4993,10 +5148,16 @@ function updatePrInfoBar(prNumber, prTitle, result) {
     }
     html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
   }
-  // Second line: author + assignees
+  // Second line: author (+ contributing authors when the PR author is a bot) + assignees
   if (result) {
     const parts = [];
     if (result.prAuthor) parts.push(`by <strong>${escapeHtml(result.prAuthor)}</strong>`);
+    if (result.prOtherAuthors && result.prOtherAuthors.length > 0) {
+      const filtered = result.prOtherAuthors.filter(a => a && a !== result.prAuthor);
+      if (filtered.length > 0) {
+        parts.push(`· ${filtered.map(a => `<strong>${escapeHtml(a)}</strong>`).join(', ')}`);
+      }
+    }
     if (result.prAssignees && result.prAssignees.length > 0) {
       parts.push(`→ ${result.prAssignees.map(a => escapeHtml(a)).join(', ')}`);
     }

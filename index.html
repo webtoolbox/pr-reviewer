@@ -785,6 +785,47 @@
       padding: 20px; text-align: center; color: #8b949e; font-size: 13px;
     }
 
+    /* All-comments panel */
+    #comments-panel {
+      display: none; position: fixed; z-index: 1001;
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      max-height: 480px; min-width: 420px; max-width: 560px; overflow-y: auto;
+      padding: 0;
+    }
+    #comments-panel.open { display: block; }
+    #comments-panel .comments-panel-header {
+      padding: 10px 14px; font-size: 13px; color: #c9d1d9; font-weight: 600;
+      border-bottom: 1px solid #21262d; position: sticky; top: 0;
+      background: #161b22; display: flex; justify-content: space-between; align-items: center;
+    }
+    #comments-panel .comment-list-item {
+      padding: 8px 14px; border-bottom: 1px solid #21262d;
+      transition: background 0.1s; cursor: pointer;
+    }
+    #comments-panel .comment-list-item:hover { background: #1c2128; }
+    #comments-panel .comment-list-item:last-child { border-bottom: none; }
+    #comments-panel .comment-list-item .c-author {
+      color: #58a6ff; font-size: 12px; font-weight: 600;
+    }
+    #comments-panel .comment-list-item .c-location {
+      color: #8b949e; font-size: 11px; margin-left: 6px;
+    }
+    #comments-panel .comment-list-item .c-badge {
+      display: inline-block; font-size: 10px; font-weight: 600;
+      padding: 1px 6px; border-radius: 9999px; margin-left: 6px; vertical-align: middle;
+    }
+    #comments-panel .comment-list-item .c-badge.pending { background: #3a2d10; color: #e3b341; border: 1px solid #9e6a03; }
+    #comments-panel .comment-list-item .c-badge.ai { background: #1f1b3a; color: #a5b4fc; border: 1px solid #3730a3; }
+    #comments-panel .comment-list-item .c-badge.file { background: #0f2e1d; color: #3fb950; border: 1px solid #238636; }
+    #comments-panel .comment-list-item .c-text {
+      color: #c9d1d9; font-size: 13px; margin-top: 3px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #comments-panel .comments-empty {
+      padding: 20px; text-align: center; color: #8b949e; font-size: 13px;
+    }
+
     /* AI chat panel */
     #ai-chat-panel {
       display: none; position: fixed; z-index: 1001;
@@ -1804,6 +1845,17 @@
       #commits-panel .commit-item:hover { background: #ffffff; }
       #commits-panel .commit-sha { color: #0969da; }
       #commits-panel .commit-message { color: #24292f; }
+      #comments-panel { background: #ffffff; border: 1px solid #d0d7de; }
+      #comments-panel .comments-panel-header { background: #ffffff; color: #24292f; border-bottom: 1px solid #d0d7de; }
+      #comments-panel .comment-list-item { border-bottom: 1px solid #d0d7de; }
+      #comments-panel .comment-list-item:hover { background: #f6f8fa; }
+      #comments-panel .comment-list-item .c-author { color: #0969da; }
+      #comments-panel .comment-list-item .c-location { color: #656d76; }
+      #comments-panel .comment-list-item .c-text { color: #24292f; }
+      #comments-panel .comment-list-item .c-badge.pending { background: #fff8c5; color: #7a5b00; border-color: #d4a72c; }
+      #comments-panel .comment-list-item .c-badge.ai { background: #e5e6ff; color: #3730a3; border-color: #818cf8; }
+      #comments-panel .comment-list-item .c-badge.file { background: #dafbe1; color: #0a6629; border-color: #238636; }
+      #comments-panel .comments-empty { color: #656d76; }
       #commits-panel .commit-author { color: #656d76; }
 
       /* AI chat panel */
@@ -1878,6 +1930,12 @@
           <circle cx="12" cy="12" r="4"/>
           <line x1="1.05" y1="12" x2="7" y2="12"/>
           <line x1="17.01" y1="12" x2="22.96" y2="12"/>
+        </svg>
+      </button>
+      <button id="btn-comments" title="View all comments (submitted + pending)" style="display:none" aria-label="View all comments">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+          <path d="M8 9h8"/><path d="M8 13h5"/>
         </svg>
       </button>
     </div>
@@ -1986,6 +2044,14 @@
       <span id="commits-count" style="font-size:11px;color:#8b949e"></span>
     </div>
     <div class="commits-loading">Loading commits...</div>
+  </div>
+
+  <div id="comments-panel">
+    <div class="comments-panel-header">
+      <span>All Comments</span>
+      <span id="comments-count" style="font-size:11px;color:#8b949e"></span>
+    </div>
+    <div class="comments-empty">No comments yet.</div>
   </div>
 
   <div id="error-screen">

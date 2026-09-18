@@ -2963,14 +2963,15 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
 
   test('get-pr-info serves cached metadata from prefetch cache', () => {
     const hIdx = mainSource.indexOf("ipcMain.handle('get-pr-info'");
-    const hSrc = mainSource.substring(hIdx, mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) > 0 ? mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) : hIdx + 1500);
+    const hSrc = mainSource.substring(hIdx, mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) > 0 ? mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) : hIdx + 3000);
     // Reads prefetch cache before hitting the network
     expect(hSrc).toContain('prefetchCache[cacheKey]');
     expect(hSrc).toContain("if (prefetched && prefetched !== 'in-progress')");
-    // Returns cached title/author/assignees/body
+    // Returns cached title/author/assignees/body (+ contributing authors for bots)
     expect(hSrc).toContain('prTitle: prefetched.prTitle ||');
     expect(hSrc).toContain('prAuthor: prefetched.prAuthor ||');
     expect(hSrc).toContain('prAssignees: prefetched.prAssignees ||');
+    expect(hSrc).toContain('prOtherAuthors: prefetched.prOtherAuthors ||');
     expect(hSrc).toContain('prBody: prefetched.prBody ||');
     // Must NOT consume the cache entry (load-pr still needs the diff)
     expect(hSrc).not.toContain('delete prefetchCache[cacheKey]');

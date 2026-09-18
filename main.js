@@ -953,6 +953,37 @@ async function getChangedFilesViaCommits(owner, repo, prNumber, repoPath) {
   return { commits: allCommits, files: [...changed] };
 }
 
+// Distinct HUMAN authors of a PR's commits. The PR's `author` field can be a
+// bot ("app/wt-builderbot" — the deployment bot opens PRs), which hides the
+// real contributors. GitHub does not expose "contributors" on the PR object,
+// so we derive them from the commits API (paginated, deduped, bots filtered).
+// Returns a list of logins (or names when login is absent, e.g. commits
+// authored by an email-only identity like "Irfan Ahmad").
+async function fetchPrCommitAuthors(owner, repo, prNumber) {
+  let authors = new Map(); // key -> {login, name}
+  let page = 1;
+  while (true) {
+    const stdout = await execPromise(
+      `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100&page=${page}" --jq '[.[] | {login: (.author.login // ""), name: (.commit.author.name // "")}]'`,
+      { timeout: 30000 }
+    );
+    let batch = [];
+    try { batch = JSON.parse(stdout || '[]'); } catch { break; }
+    for (const c of batch) {
+      if (!c || (!c.login && !c.name)) continue;
+      const key = c.login || c.name;
+      if (authors.has(key)) continue;
+      authors.set(key, { login: c.login || '', name: c.name || '' });
+    }
+    if (batch.length < 100) break;
+    page++;
+  }
+  const isBot = (a) => /\[bot\]/.test(a.login || a.name) || (a.login || '').startsWith('app/') || (a.name || '').startsWith('bot');
+  const humans = [...authors.values()].filter(a => !isBot(a));
+  // Prefer login; fall back to name when login is empty (email-only identity)
+  return humans.map(a => a.login || a.name);
+}
+
 // Generate diff for a PR — supports full diff or since-last-review
 async function generateDiff(prNumber, repoKey) {
   const safePr = safePrNumber(prNumber);
@@ -968,10 +999,12 @@ async function generateDiff(prNumber, repoKey) {
   }
   const diffMode = (appConfig.diff || {}).mode || 'since-review';
 
-  // Run the three independent API calls in parallel:
+  // Run the independent API calls in parallel:
   //  - gh pr view   (HEAD SHA + PR metadata)
   //  - gh pr diff   (full unified diff — used for reverted-file filtering + fallback)
   //  - resolveBaseSha (review lookup → base SHA)
+  //  - PR commit authors (distinct humans) — shown when the PR author is a
+  //    bot (e.g. "app/wt-builderbot") so reviewers see who actually worked on it.
   const prViewPromise = execPromise(
     `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,title,author,assignees,body --jq '{headRefOid: .headRefOid, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
   );
@@ -986,16 +1019,22 @@ async function generateDiff(prNumber, repoKey) {
     return '';
   });
   const basePromise = resolveBaseSha(owner, repo, prNumber, diffMode);
+  const commitAuthorsPromise = fetchPrCommitAuthors(owner, repo, prNumber).catch((err) => {
+    log('WARN', `[generateDiff] Failed to fetch PR commit authors: ${err.message}`);
+    return [];
+  });
 
-  const results = await Promise.all([prViewPromise, prDiffPromise, basePromise]);
+  const results = await Promise.all([prViewPromise, prDiffPromise, basePromise, commitAuthorsPromise]);
   const prJson = results[0];
   let diffOut = results[1];
   const baseResult = results[2];
+  let prOtherAuthors = results[3] || [];
   // Set when a since-review net diff is produced; lets per-file operations
   // (context expansion) diff against the same rebased base as the display.
   let sinceReviewRef = null;
 
   const prData = JSON.parse(prJson || '{}');
+  prData.otherAuthors = prOtherAuthors;
   const headSha = prData.headRefOid;
 
   if (!headSha) {
@@ -1013,10 +1052,13 @@ async function generateDiff(prNumber, repoKey) {
 
   // Fetch the PR branch and master in parallel (both independent network calls).
   // On a shallow clone, fetching the PR branch brings in both headSha and baseSha.
+  // master is fetched fresh EVERY load (depth-1) so diffs are computed against
+  // current upstream master — a stale local master (app left open for days) made
+  // base..head look empty because the base commit had already been absorbed.
   log('INFO', `[generateDiff] Fetching PR ${prNumber} branch + master from origin`);
   const [prFetch, masterFetch] = await Promise.allSettled([
     execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 60000 }),
-    execPromise('git fetch origin master --depth=1', { cwd: repoPath, timeout: 30000 })
+    execPromise('git fetch origin master:refs/remotes/origin/master --depth=1 --force', { cwd: repoPath, timeout: 30000 })
   ]);
   if (prFetch.status === 'fulfilled') log('INFO', '[generateDiff] Fetched PR branch successfully');
   else log('ERROR', '[generateDiff] PR branch fetch failed:', prFetch.reason && prFetch.reason.message);
@@ -1094,7 +1136,18 @@ async function generateDiff(prNumber, repoKey) {
   }
 
   if (changedFiles.length === 0) {
-    throw new Error('No files changed since last review');
+    // 'No files changed' + empty diff shares the same stale-master root cause
+    // as the empty-diff path. Instead of hard-throwing here, the final empty
+    // diffOut check (below) will force a fresh master fetch and retry the
+    // local diff. If we throw now, the retry never runs. So only throw when
+    // there is genuinely nothing to show AND no diff to fall back on.
+    if (!diffOut || !diffOut.trim()) {
+      // Defer to the empty-diff retry below by skipping this hard failure.
+      // (The retry block will re-fetch master and try again.)
+      log('WARN', '[generateDiff] No changed files found — deferring to empty-diff retry');
+    } else {
+      throw new Error('No files changed since last review');
+    }
   }
 
   // If reviewing since last review, build the net diff from ONLY the PR's own
@@ -1165,7 +1218,48 @@ async function generateDiff(prNumber, repoKey) {
   }
 
   if (!diffOut || !diffOut.trim()) {
-    throw new Error('Diff is empty — no changes detected between base and head commits');
+    // Empty diff. Root cause seen in the wild: the app's clone is depth-1
+    // shallow and the local `master` ref can be days old (the app was left
+    // open; PRs kept loading against a stale master). A since-review diff
+    // computed against an ancient base then looks empty because the review
+    // base commit was already absorbed into master. Cmd+R "fixed" it only
+    // because a fresh PR load happened to refetch master. Fix here: force a
+    // fresh `git fetch` of master + the PR branch, then retry the local diff
+    // once before giving up.
+    log('WARN', '[generateDiff] Diff empty — forcing a fresh fetch of master + PR branch and retrying once');
+    await Promise.allSettled([
+      execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber} --force`, { cwd: repoPath, timeout: 60000 }),
+      execPromise('git fetch origin master:refs/remotes/origin/master --depth=1 --force', { cwd: repoPath, timeout: 30000 })
+    ]);
+    for (const sha of [headSha, baseSha]) {
+      if (!(await shaExists(sha))) {
+        try { await execPromise(`git fetch origin ${sha}`, { cwd: repoPath, timeout: 60000 }); }
+        catch { /* best-effort */ }
+      }
+    }
+    try {
+      diffOut = await execPromise(
+        `git diff ${baseSha}...${headSha} --no-color`,
+        { cwd: repoPath, maxBuffer: 20 * 1024 * 1024 }
+      ).catch(() => execPromise(
+        `git diff ${baseSha}..${headSha} --no-color`,
+        { cwd: repoPath, maxBuffer: 20 * 1024 * 1024 }
+      ));
+      // Re-derive the changed-file list from the retried diff so the sidebar
+      // matches what's displayed.
+      if (diffOut && diffOut.trim()) {
+        const fromRetry = changedFilesFromDiff(diffOut);
+        if (fromRetry.length > 0) {
+          changedFiles.length = 0;
+          changedFiles.push(...fromRetry);
+        }
+      }
+    } catch (retryErr) {
+      log('ERROR', '[generateDiff] Retry diff failed:', retryErr.message);
+    }
+    if (!diffOut || !diffOut.trim()) {
+      throw new Error('Diff is empty — no changes detected between base and head commits');
+    }
   }
 
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);
@@ -1638,6 +1732,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     const prTitle = prData.title || '';
     const prAuthor = prData.author || '';
     const prAssignees = (prData.assignees || []).filter(a => a !== prAuthor);
+    const prOtherAuthors = (prData.otherAuthors || []).filter(a => a !== prAuthor);
     const prBody = prData.body || '';
 
     const out = {
@@ -1648,6 +1743,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     prTitle,
     prAuthor,
     prAssignees,
+    prOtherAuthors,
     prBody,
     reviewInfo: result.reviewInfo,
     filesChanged: result.filesChanged,
@@ -1682,6 +1778,7 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
       prTitle: viewed.prTitle || '',
       prAuthor: viewed.prAuthor || '',
       prAssignees: viewed.prAssignees || [],
+      prOtherAuthors: viewed.prOtherAuthors || [],
       prBody: viewed.prBody || '',
       state: '',
       filesChanged: viewed.filesChanged || 0,
@@ -1696,6 +1793,7 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
       prTitle: prefetched.prTitle || '',
       prAuthor: prefetched.prAuthor || '',
       prAssignees: prefetched.prAssignees || [],
+      prOtherAuthors: prefetched.prOtherAuthors || [],
       prBody: prefetched.prBody || '',
       state: prefetched.state || '',
       filesChanged: prefetched.filesChanged || 0,
@@ -1774,6 +1872,7 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       prTitle: prData.title || '',
       prAuthor: prData.author || '',
       prAssignees: (prData.assignees || []).filter(a => a !== prData.author),
+      prOtherAuthors: (prData.otherAuthors || []).filter(a => a !== prData.author),
       prBody: prData.body || '',
       reviewInfo: result.reviewInfo,
       filesChanged: result.filesChanged,
