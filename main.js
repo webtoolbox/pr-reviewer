@@ -275,21 +275,50 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
   log('INFO', `[ai-chat] Sending (first 100): ${prompt.substring(0, 100)}`);
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
-    // 300s matches the auto-fix feature's timeout. The app log showed every
-    // chat call hitting the old 120s cap mid-answer (~126s total), which is
-    // what produced the "dead silence" — the process was killed before the
-    // model finished, so cleanHermesStreaming never saw a complete answer.
-    const child = spawn(appConfig.aiCommand, args, { timeout: 300000 });
+    // IMPORTANT: No wall-clock kill timeout. The old spawn call passed a hard
+    // 300-second kill timeout — SIGTERM mid-answer — that killed the agent while
+    // it was still producing output (verified: hermes converts that SIGTERM into
+    // a KeyboardInterrupt internally and exits with signal=SIGINT, so the old
+    // SIGTERM-only check never fired and truncated answers were silently shipped
+    // as complete). Hermes itself has no
+    // such cap: its `agent.gateway_timeout` (default 1800s) only fires when the
+    // agent is completely idle, and `agent.run_budget_seconds` (default off) is
+    // unset. We rely on Hermes to finish on its own; a liveness heartbeat below
+    // keeps the UI honest about long runs instead of killing them.
+    const child = spawn(appConfig.aiCommand, args);
     const sender = event.sender;
     let stdout = '';
     let stderrText = '';
     let lastEmit = 0;
+    let lastChunkAt = Date.now();
+    let heartbeatSent = false;
+    let closed = false; // guards resolve() from firing twice
+
+    // Liveness heartbeat: if the agent goes quiet for >120s but is still alive,
+    // nudge the UI ("still working…") — purely informational, never a kill.
+    const heartbeat = setInterval(() => {
+      if (closed) { clearInterval(heartbeat); return; }
+      const quietFor = Date.now() - lastChunkAt;
+      if (quietFor > 120000 && !heartbeatSent) {
+        heartbeatSent = true;
+        log('INFO', `[ai-chat] No output for ${Math.round(quietFor / 1000)}s — heartbeat to keep UI honest (agent still alive).`);
+        try { sender.send('ai-chat-stream', { text: '', steps: [], heartbeat: true, done: false }); } catch {}
+      }
+    }, 30000);
+
+    const finish = (result) => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      resolve(result);
+    };
 
     const emitStream = (force) => {
       // Throttle emits to ~80ms so we don't spam IPC on fast token streams.
       const now = Date.now();
       if (!force && now - lastEmit < 80) return;
       lastEmit = now;
+      lastChunkAt = now;
       // Send the accumulated activity feed (steps) plus any partial answer,
       // so the dialog always shows what the agent is doing right now.
       const steps = extractHermesSteps(stdout + stderrText);
@@ -313,25 +342,30 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
 
     child.on('error', (err) => {
       log('ERROR', '[ai-chat] spawn error:', err.message);
-      try { sender.send('ai-chat-stream', { text: '', error: err.message, done: true }); } catch {}
-      resolve({ error: err.message });
+      finish({ error: err.message });
     });
 
     child.on('close', (code, signal) => {
-      // A SIGTERM close means the spawn timeout fired — the agent was still
-      // working. Report that clearly instead of silently returning nothing.
-      if (signal === 'SIGTERM' || (code === null && !stdout)) {
-        log('WARN', '[ai-chat] Hermes process timed out (300s) — answering was cut short.');
-        const partial = cleanHermesResponse(stdout);
-        const msg = 'Timed out after 300s (the agent was still working). Try a more specific question, or re-send to continue.';
-        try { sender.send('ai-chat-stream', { text: partial || '', status: '', error: msg, timedOut: true, done: true }); } catch {}
-        resolve({ error: msg, response: partial });
+      // A process that ended with a nonzero exit code, a signal, or without
+      // producing any output is NOT a clean completion — surface it honestly.
+      // (hermes converts SIGTERM into SIGINT internally, so checking both is
+      // required; previously only SIGTERM was checked and truncated answers
+      // were silently shipped as complete.)
+      const clean = cleanHermesResponse(stdout);
+      const truncated = code !== 0 || signal || clean.length === 0;
+      if (truncated) {
+        const why = signal
+          ? `process ended by ${signal}`
+          : (code !== 0 ? `process exited with code ${code}` : 'no output produced');
+        log('WARN', `[ai-chat] Hermes result may be INCOMPLETE (${why}) — ${clean.length} chars.`);
+        const msg = `Answer may be incomplete (${why}). Here's what was produced so far; re-send to continue.`;
+        try { sender.send('ai-chat-stream', { text: clean, status: '', error: msg, timedOut: true, done: true }); } catch {}
+        finish({ error: msg, response: clean });
         return;
       }
-      const clean = cleanHermesResponse(stdout);
       log('INFO', `[ai-chat] Response received: ${clean.length} chars`);
       try { sender.send('ai-chat-stream', { text: clean, done: true }); } catch {}
-      resolve({ response: clean });
+      finish({ response: clean });
     });
   });
 });

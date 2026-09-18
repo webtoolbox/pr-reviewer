@@ -3806,15 +3806,22 @@ describe('AI Chat and Hermes profile', () => {
     expect(mainSource).toContain("ipcMain.handle('ai-chat'");
   });
 
-  test('ai-chat uses -t hermes-cli toolset and 300s timeout', () => {
+  test('ai-chat uses -t hermes-cli toolset and NO killing wall-clock timeout', () => {
     const fn = mainSource.substring(
       mainSource.indexOf("ipcMain.handle('ai-chat'"),
       mainSource.indexOf('function extractHermesSteps')
     );
     expect(fn).toContain("'-t', 'hermes-cli'");
-    expect(fn).toContain('timeout: 300000');
-    expect(fn).toContain("signal === 'SIGTERM'");
-    expect(fn).toContain('Timed out after 300s');
+    // The app must NOT kill the agent on a wall-clock timer (that was the bug:
+    // SIGTERM mid-answer was silently shipped as a complete response).
+    expect(fn).toContain("spawn(appConfig.aiCommand, args);");
+    expect(fn).not.toContain('timeout: 300000');
+    expect(fn).not.toContain("signal === 'SIGTERM'");
+    // Hermes is trusted to finish; incomplete results are detected by exit
+    // status/signal instead of by wall-clock.
+    expect(fn).toContain('const truncated = code !== 0 || signal || clean.length === 0;');
+    // Liveness heartbeat keeps the UI honest about long runs.
+    expect(fn).toContain('heartbeat');
   });
 
   test('extractHermesSteps surfaces agent activity before the box opens', () => {

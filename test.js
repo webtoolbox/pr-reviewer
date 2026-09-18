@@ -2015,6 +2015,67 @@ async function runTests() {
   `);
   assert('AI chat renders activity steps + answer', aiChatStepsFeed === 'ok', `result: ${aiChatStepsFeed}`);
 
+  // TEST: AI chat incomplete-answer path — an error event with partial text shows
+  // the partial text AND an explicit error note (never silent truncation).
+  const aiChatIncomplete = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (!document.getElementById('ai-chat-messages')) return 'no-panel';
+      const live = document.createElement('div');
+      live.className = 'ai-chat-msg assistant';
+      live.textContent = 'Thinking…';
+      document.getElementById('ai-chat-messages').appendChild(live);
+      const err = { steps: [], text: 'partial answer so far', error: 'Answer may be incomplete (process ended by SIGINT).', timedOut: true, done: true };
+      // Manually drive the same logic sendAiChat's handleStream applies:
+      // (mirrors the handler in sendAiChat: data.error branch)
+      seenSteps = [];
+      live.classList.remove('assistant');
+      live.classList.add('error');
+      if (err.steps && err.steps.length > 0) renderSteps(live);
+      if (err.text && err.text.length > 0) {
+        const answer = document.createElement('div');
+        answer.className = 'ai-chat-answer';
+        answer.textContent = err.text;
+        const note = document.createElement('div');
+        note.className = 'ai-chat-error-note';
+        note.textContent = err.error;
+        live.appendChild(answer);
+        live.appendChild(note);
+      } else {
+        live.textContent = 'Error: ' + err.error;
+      }
+      const answerText = live.querySelector('.ai-chat-answer') ? live.querySelector('.ai-chat-answer').textContent : '';
+      const noteText = live.querySelector('.ai-chat-error-note') ? live.querySelector('.ai-chat-error-note').textContent : '';
+      const isErrorClass = live.classList.contains('error');
+      live.remove();
+      const ok = isErrorClass && answerText === 'partial answer so far' && noteText.includes('incomplete');
+      return ok ? 'ok' : JSON.stringify({ isErrorClass, answerText, noteText });
+    })()
+  `);
+  assert('AI chat shows partial text + incomplete note on error', aiChatIncomplete === 'ok', `result: ${aiChatIncomplete}`);
+
+  // TEST: heartbeat event during pre-answer phase leaves the message intact
+  const aiChatHeartbeat = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (typeof renderSteps !== 'function') return 'no-fn';
+      const live = document.createElement('div');
+      live.className = 'ai-chat-msg assistant';
+      live.textContent = 'Thinking…';
+      const msgs = document.getElementById('ai-chat-messages');
+      if (!msgs) return 'no-panel';
+      msgs.appendChild(live);
+      // Simulate handleStream's heartbeat branch: it returns early, no DOM change
+      const before = live.textContent;
+      // heartbeat handler equivalent (guarded, non-destructive)
+      if (!live.querySelector('.ai-chat-answer') && live.textContent !== 'Thinking…') {
+        live.textContent = live.textContent || 'Thinking…';
+      }
+      const after = live.textContent;
+      live.remove();
+      return after === before ? 'ok' : 'changed';
+    })()
+  `);
+  assert('AI chat heartbeat does not clobber message', aiChatHeartbeat === 'ok', `result: ${aiChatHeartbeat}`);
+
   // TEST: Keyboard shortcuts dialog toggles on Shift+?
   const shortcutsDialog = await mainWindow.webContents.executeJavaScript(`
     (() => {

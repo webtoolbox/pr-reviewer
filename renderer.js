@@ -6781,11 +6781,36 @@ async function sendAiChat() {
     // If the chat was cleared mid-flight (e.g. auto-advanced to a new PR), drop
     // this stale stream — the message element is gone and history was reset.
     if (myEpoch !== aiChatEpoch) return;
+    if (data.heartbeat) {
+      // Agent is alive but quiet (main's liveness heartbeat). Keep the live
+      // bubble honest without interrupting it. Only show the note if the
+      // stream is still in its pre-answer phase (no answer box yet) — once
+      // text is flowing normally this is noise.
+      if (!live.querySelector('.ai-chat-answer') && live.textContent !== 'Thinking…') {
+        live.textContent = live.textContent || 'Thinking…';
+      }
+      return;
+    }
     if (data.error) {
+      // Surface the error AND the partial text produced before interruption,
+      // so a truncated answer is never silently presented as complete.
       live.classList.remove('assistant');
       live.classList.add('error');
-      live.textContent = 'Error: ' + data.error;
+      if (data.steps && data.steps.length > 0) renderSteps(live);
+      if (data.text && data.text.length > 0) {
+        const answer = document.createElement('div');
+        answer.className = 'ai-chat-answer';
+        answer.textContent = data.text;
+        const note = document.createElement('div');
+        note.className = 'ai-chat-error-note';
+        note.textContent = data.error;
+        live.appendChild(answer);
+        live.appendChild(note);
+      } else {
+        live.textContent = 'Error: ' + data.error;
+      }
       aiChatHistory.push({ role: 'user', content: text });
+      if (data.text) aiChatHistory.push({ role: 'assistant', content: data.text });
       return;
     }
     if (data.steps && data.steps.length > 0 && !data.text) {
