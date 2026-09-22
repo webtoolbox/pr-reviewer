@@ -6942,6 +6942,8 @@ function positionPrCommentPanel() {
 }
 
 if (btnPrComment && prCommentPanel) {
+  // Enable @mention dropdown in the header PR comment box (same as line/file comments)
+  if (reviewBody) setupMentionHandling(reviewBody);
   btnPrComment.addEventListener('click', (e) => {
     e.stopPropagation();
     const isOpen = prCommentPanel.classList.contains('open');
@@ -6952,8 +6954,9 @@ if (btnPrComment && prCommentPanel) {
     prCommentPanel.classList.toggle('open');
   });
   document.addEventListener('click', (e) => {
+    const inMentionDropdown = mentionState.dropdown && mentionState.dropdown.contains(e.target);
     if (prCommentPanel.classList.contains('open') &&
-        !prCommentPanel.contains(e.target) && e.target !== btnPrComment) {
+        !prCommentPanel.contains(e.target) && e.target !== btnPrComment && !inMentionDropdown) {
       prCommentPanel.classList.remove('open');
     }
   });
