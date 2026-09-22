@@ -81,6 +81,7 @@ function loadConfig() {
     repoPath: '',
     editorCommand: 'code',
     contextLines: 5,
+    cache: { viewedTtlMinutes: 15, prefetchTtlMinutes: 5 },
     imageUpload: {
       enabled: false,
       provider: 's3',
@@ -104,6 +105,7 @@ function loadConfig() {
     if (parsed.imageUpload) config.imageUpload = { ...config.imageUpload, ...parsed.imageUpload };
     if (parsed.prFilter) config.prFilter = { ...config.prFilter, ...parsed.prFilter };
     if (parsed.autoFix) config.autoFix = { ...config.autoFix, ...parsed.autoFix };
+    if (parsed.cache) config.cache = { ...config.cache, ...parsed.cache };
   } catch (err) {
     console.error('[loadConfig] Public config not loaded:', err.message);
   }
@@ -115,6 +117,7 @@ function loadConfig() {
     if (parsed.imageUpload) config.imageUpload = { ...config.imageUpload, ...parsed.imageUpload };
     if (parsed.prFilter) config.prFilter = { ...config.prFilter, ...parsed.prFilter };
     if (parsed.autoFix) config.autoFix = { ...config.autoFix, ...parsed.autoFix };
+    if (parsed.cache) config.cache = { ...config.cache, ...parsed.cache };
   } catch (err) {
     console.error('[loadConfig] Private config not loaded:', err.message);
   }
@@ -1738,21 +1741,28 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     // was when the PR was first opened, hiding commits pushed since.
     if (!force) {
       // Check the retained viewed cache first — instant return of the SAME diff
-      // for PRs already loaded this session (e.g. navigating back to a reviewed PR).
-      const viewed = viewedPrCache.get(cacheKey);
+      // for PRs already loaded this session (e.g. navigating back to a reviewed
+      // PR). getViewedPr() drops entries older than cache.viewedTtlMinutes, so a
+      // PR that got new commits and was re-sent for review regenerates fresh.
+      const viewed = getViewedPr(cacheKey);
       if (viewed) {
         log('INFO', '[pr] Returning viewed-cached result for PR #' + prNumber);
         return viewed;
       }
 
-      // Check prefetch cache second — instant return if already fetched
-      const prefetched = prefetchCache[cacheKey];
-      if (prefetched && prefetched !== 'in-progress') {
+      // Check prefetch cache second — instant return if already fetched and
+      // still within cache.prefetchTtlMinutes (older entries are dropped).
+      const prefetched = getPrefetchEntry(cacheKey);
+      if (prefetched) {
         delete prefetchCache[cacheKey];
         cacheViewedPr(cacheKey, prefetched);
         log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
         return prefetched;
       }
+    } else {
+      // Force reload: drop this PR's cached results outright so a stale copy
+      // can't be served to a later non-forced load.
+      invalidatePrCache(cacheKey);
     }
     
     log('INFO', '[pr] Loading PR', prNumber, 'repo:', repo || 'default');
@@ -1804,8 +1814,9 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
   // load-pr still needs it for the diff content.
   const cacheKey = `${safePr}:${repo || 'default'}`;
   // Serve from the retained viewed cache first (covers back-navigation to a PR
-  // whose prefetch entry was already consumed by a previous load).
-  const viewed = viewedPrCache.get(cacheKey);
+  // whose prefetch entry was already consumed by a previous load). getViewedPr()
+  // returns null once the entry is older than cache.viewedTtlMinutes.
+  const viewed = getViewedPr(cacheKey);
   if (viewed) {
     log('INFO', '[get-pr-info] Returning viewed-cached metadata for PR #' + safePr);
     return {
@@ -1820,8 +1831,8 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
       baseSha: viewed.baseSha || ''
     };
   }
-  const prefetched = prefetchCache[cacheKey];
-  if (prefetched && prefetched !== 'in-progress') {
+  const prefetched = getPrefetchEntry(cacheKey);
+  if (prefetched) {
     log('INFO', '[get-pr-info] Returning cached metadata for PR #' + safePr);
     return {
       prTitle: prefetched.prTitle || '',
@@ -1866,33 +1877,102 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
   }
 });
 
+// ── PR result caches ─────────────────────────────────────────────────────────
+// Both caches stamp every entry with the time it was stored and expire it, so
+// an app left open for days never serves a diff that has gone stale (e.g. a PR
+// that was reviewed, then received new commits and was re-sent for review).
+// TTLs are configurable in config.json under "cache" (minutes).
+const VIEWED_PR_CACHE_TTL_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.viewedTtlMinutes, 15);
+const PREFETCH_TTL_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.prefetchTtlMinutes, 5);
+// An in-progress prefetch that never resolved (crashed gh call, etc.) must not
+// block future prefetches of the same PR forever.
+const PREFETCH_STUCK_MS = 2 * 60 * 1000;
+
+function ttlMinutesToMs(value, fallbackMinutes) {
+  const n = Number(value);
+  if (!isFinite(n) || n < 0) return fallbackMinutes * 60000;
+  return n * 60000;
+}
+
 // Retained results for recently-viewed PRs. Unlike prefetchCache (which is
 // consumed once on load), this cache keeps the full diff+metadata so navigating
 // back to a PR you already reviewed returns the SAME diff instantly instead of
-// regenerating it (10-30s). Bounded to 50 entries.
-const viewedPrCache = new Map();
+// regenerating it (10-30s). Bounded to 50 entries and VIEWED_PR_CACHE_TTL_MS.
+const viewedPrCache = new Map(); // cacheKey -> { result, cachedAt }
 const VIEWED_PR_CACHE_MAX = 50;
 function cacheViewedPr(cacheKey, result) {
   if (!result) return;
-  viewedPrCache.set(cacheKey, result);
+  viewedPrCache.set(cacheKey, { result, cachedAt: Date.now() });
   if (viewedPrCache.size > VIEWED_PR_CACHE_MAX) {
     const oldestKey = viewedPrCache.keys().next().value;
     viewedPrCache.delete(oldestKey);
   }
 }
 
+// Returns the cached result, or null when missing or expired. Expired entries
+// are deleted here so the caller regenerates the diff fresh from GitHub.
+function getViewedPr(cacheKey) {
+  const entry = viewedPrCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > VIEWED_PR_CACHE_TTL_MS) {
+    viewedPrCache.delete(cacheKey);
+    log('INFO', '[cache] Viewed entry expired for ' + cacheKey + ' — regenerating fresh');
+    return null;
+  }
+  return entry.result;
+}
+
 // Prefetch PR diff in background — result cached for next load-pr call
-const prefetchCache = {};
+const prefetchCache = {}; // cacheKey -> { inProgress, startedAt } or { ...result, cachedAt }
+
+// Returns a fresh prefetched result, or null when missing, still in progress,
+// or expired. Stale entries are deleted here so they can never be served later.
+function getPrefetchEntry(cacheKey) {
+  const entry = prefetchCache[cacheKey];
+  if (!entry) return null;
+  if (entry.inProgress) {
+    if (Date.now() - entry.startedAt > PREFETCH_STUCK_MS) {
+      delete prefetchCache[cacheKey];
+      log('WARN', '[cache] Dropping stuck prefetch for ' + cacheKey);
+    }
+    return null;
+  }
+  if (Date.now() - entry.cachedAt > PREFETCH_TTL_MS) {
+    delete prefetchCache[cacheKey];
+    log('INFO', '[cache] Prefetch entry expired for ' + cacheKey + ' — regenerating fresh');
+    return null;
+  }
+  return entry;
+}
+
+// Drop every cached result for a PR. Used after a review is submitted (a
+// processed PR must be re-fetched — new commits may already be pushed) and on
+// force reload.
+function invalidatePrCache(cacheKey) {
+  const hadViewed = viewedPrCache.delete(cacheKey);
+  const hadPrefetch = !!prefetchCache[cacheKey];
+  delete prefetchCache[cacheKey];
+  if (hadViewed || hadPrefetch) {
+    log('INFO', '[cache] Invalidated cached results for ' + cacheKey);
+  }
+}
+
 ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
   const safePr = safePrNumber(prNumber);
   if (!safePr) return { error: 'Invalid PR number' };
   const cacheKey = `${safePr}:${repo || 'default'}`;
-  // Don't re-prefetch if already in progress or cached
-  if (prefetchCache[cacheKey]) {
-    log('INFO', '[prefetch-pr] PR #' + safePr + ' already prefetched/in-progress');
+  // Don't re-prefetch if already cached or running. Expired entries were just
+  // dropped by getPrefetchEntry, so a stale PR restarts its fetch cleanly.
+  if (getPrefetchEntry(cacheKey)) {
+    log('INFO', '[prefetch-pr] PR #' + safePr + ' already prefetched');
     return { status: 'cached' };
   }
-  prefetchCache[cacheKey] = 'in-progress';
+  const existing = prefetchCache[cacheKey];
+  if (existing && existing.inProgress) {
+    log('INFO', '[prefetch-pr] PR #' + safePr + ' fetch already in progress');
+    return { status: 'cached' };
+  }
+  prefetchCache[cacheKey] = { inProgress: true, startedAt: Date.now() };
   log('INFO', '[prefetch-pr] Starting background fetch for PR #' + safePr);
   try {
     const result = await generateDiff(safePr, repo);
@@ -1913,7 +1993,8 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       repoPath: getLocalRepoPath(repo),
       baseSha: result.baseSha || null,
       headSha: result.headSha || null,
-      sinceReviewRef: result.sinceReviewRef || null
+      sinceReviewRef: result.sinceReviewRef || null,
+      cachedAt: Date.now()
     };
     log('INFO', '[prefetch-pr] Cached PR #' + safePr + ':', content.length, 'chars');
     return { status: 'done' };
@@ -1929,8 +2010,8 @@ ipcMain.handle('get-prefetched-pr', (event, { prNumber, repo } = {}) => {
   const safePr = safePrNumber(prNumber);
   if (!safePr) return null;
   const cacheKey = `${safePr}:${repo || 'default'}`;
-  const cached = prefetchCache[cacheKey];
-  if (cached && cached !== 'in-progress') {
+  const cached = getPrefetchEntry(cacheKey);
+  if (cached) {
     delete prefetchCache[cacheKey]; // Consume once
     log('INFO', '[get-prefetched-pr] Returning cached result for PR #' + safePr);
     return cached;
@@ -1938,15 +2019,22 @@ ipcMain.handle('get-prefetched-pr', (event, { prNumber, repo } = {}) => {
   return null;
 });
 
-// Clear stale prefetch entries (older than 5 minutes)
+// Periodic sweep: drop expired prefetch entries, stuck in-progress fetches and
+// expired viewed entries so a long-running app doesn't hoard stale diffs.
 setInterval(() => {
-  // Simple cleanup — in-progress entries that never resolved
+  const now = Date.now();
   for (const key of Object.keys(prefetchCache)) {
-    if (prefetchCache[key] === 'in-progress') {
-      // Leave in-progress alone — they might still be running
+    const entry = prefetchCache[key];
+    if (entry.inProgress) {
+      if (now - entry.startedAt > PREFETCH_STUCK_MS) delete prefetchCache[key];
+    } else if (now - entry.cachedAt > PREFETCH_TTL_MS) {
+      delete prefetchCache[key];
     }
   }
-}, 300000);
+  for (const [key, entry] of viewedPrCache) {
+    if (now - entry.cachedAt > VIEWED_PR_CACHE_TTL_MS) viewedPrCache.delete(key);
+  }
+}, 60000);
 
 // Prune stale since-review refs on a schedule so refs don't accumulate while
 // the app stays open across many reviewed PRs. 24h retention is far beyond how
@@ -2542,6 +2630,9 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     );
     const result = JSON.parse(stdout || '{}');
     log('INFO', '[github-review] submitted successfully:', result.id);
+    // The PR is now processed: drop its cached diff/metadata so a later load
+    // (e.g. after new commits push it back for review) regenerates fresh.
+    invalidatePrCache(`${prNumber}:${repoKey || 'default'}`);
     const response = { success: true, reviewId: result.id, htmlUrl: result.html_url };
     if (skippedCommentsInfo.length > 0) {
       response.skippedComments = skippedCommentsInfo;

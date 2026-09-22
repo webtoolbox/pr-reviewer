@@ -18,6 +18,10 @@
   "repoPath": "",
   "editorCommand": "code",
   "contextLines": 5,
+  "cache": {
+    "viewedTtlMinutes": 15,
+    "prefetchTtlMinutes": 5
+  },
   "diff": {
     "mode": "since-review",
     "excludeMerges": true,

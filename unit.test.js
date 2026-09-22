@@ -2965,8 +2965,8 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     const hIdx = mainSource.indexOf("ipcMain.handle('get-pr-info'");
     const hSrc = mainSource.substring(hIdx, mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) > 0 ? mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx) : hIdx + 3000);
     // Reads prefetch cache before hitting the network
-    expect(hSrc).toContain('prefetchCache[cacheKey]');
-    expect(hSrc).toContain("if (prefetched && prefetched !== 'in-progress')");
+    expect(hSrc).toContain('getPrefetchEntry(cacheKey)');
+    expect(hSrc).toContain('if (prefetched) {');
     // Returns cached title/author/assignees/body (+ contributing authors for bots)
     expect(hSrc).toContain('prTitle: prefetched.prTitle ||');
     expect(hSrc).toContain('prAuthor: prefetched.prAuthor ||');
@@ -2989,7 +2989,7 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     const hEnd = mainSource.indexOf('ipcMain.handle(\'get-pr-info\'', hIdx);
     const hSrc = mainSource.substring(hIdx, hEnd > 0 ? hEnd : hIdx + 2000);
     // Viewed cache checked before the prefetch cache and before network/generateDiff
-    expect(hSrc.indexOf('const viewed = viewedPrCache.get(cacheKey)')).toBeLessThan(hSrc.indexOf('const prefetched = prefetchCache[cacheKey]'));
+    expect(hSrc.indexOf('const viewed = getViewedPr(cacheKey)')).toBeLessThan(hSrc.indexOf('const prefetched = getPrefetchEntry(cacheKey)'));
     expect(hSrc).toContain('if (viewed) {');
     expect(hSrc).toContain("log('INFO', '[pr] Returning viewed-cached result");
     // Successful loads populate the retained cache
@@ -3001,9 +3001,50 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     const hIdx = mainSource.indexOf("ipcMain.handle('get-pr-info'");
     const hEnd = mainSource.indexOf('ipcMain.handle(\'load-pr\'', hIdx);
     const hSrc = mainSource.substring(hIdx, hEnd > 0 ? hEnd : hIdx + 1500);
-    expect(hSrc).toContain('const viewed = viewedPrCache.get(cacheKey);');
+    expect(hSrc).toContain('const viewed = getViewedPr(cacheKey);');
     expect(hSrc).toContain('Returning viewed-cached metadata');
     expect(hSrc).toContain('prTitle: viewed.prTitle ||');
+  });
+
+  test('viewed and prefetch caches expire after their TTL', () => {
+    // TTLs are configurable (config.json "cache") and stamped at cache time
+    expect(mainSource).toContain('VIEWED_PR_CACHE_TTL_MS');
+    expect(mainSource).toContain('PREFETCH_TTL_MS');
+    expect(mainSource).toContain('viewedTtlMinutes');
+    expect(mainSource).toContain('prefetchTtlMinutes');
+    expect(mainSource).toMatch(/viewedPrCache\.set\(cacheKey, \{ result, cachedAt: Date\.now\(\) \}\)/);
+    expect(mainSource).toMatch(/prefetchCache\[cacheKey\] = \{ inProgress: true, startedAt: Date\.now\(\) \}/);
+    expect(mainSource).toContain('sinceReviewRef: result.sinceReviewRef || null,\n      cachedAt: Date.now()');
+    // Expired entries are dropped on read so load-pr/get-pr-info regenerate fresh
+    expect(mainSource).toContain('function getViewedPr(cacheKey)');
+    expect(mainSource).toMatch(/Date\.now\(\) - entry\.cachedAt > VIEWED_PR_CACHE_TTL_MS/);
+    expect(mainSource).toContain('function getPrefetchEntry(cacheKey)');
+    expect(mainSource).toMatch(/Date\.now\(\) - entry\.cachedAt > PREFETCH_TTL_MS/);
+    // A stuck in-progress prefetch can't block re-prefetching the PR forever
+    expect(mainSource).toContain('PREFETCH_STUCK_MS');
+    expect(mainSource).toMatch(/now - entry\.startedAt > PREFETCH_STUCK_MS/);
+    // Periodic sweep keeps a long-running app from hoarding stale diffs
+    expect(mainSource).toMatch(/setInterval\(\(\) => \{[\s\S]{0,800}viewedPrCache\.delete\(key\)/);
+    // Force reload drops both caches for the PR instead of only bypassing reads
+    expect(mainSource).toMatch(/} else \{\s*\n\s*\/\/ Force reload[\s\S]{0,200}invalidatePrCache\(cacheKey\);/);
+  });
+
+  test('config.json exposes cache TTL settings', () => {
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+    expect(cfg.cache.viewedTtlMinutes).toBe(15);
+    expect(cfg.cache.prefetchTtlMinutes).toBe(5);
+    // loadConfig defaults + private-config merge keep the settings overridable
+    expect(mainSource).toContain('cache: { viewedTtlMinutes: 15, prefetchTtlMinutes: 5 },');
+    expect(mainSource).toContain('if (parsed.cache) config.cache = { ...config.cache, ...parsed.cache };');
+  });
+
+  test('submit-github-review invalidates the processed PR cache', () => {
+    const sIdx = mainSource.indexOf("ipcMain.handle('submit-github-review'");
+    expect(sIdx).toBeGreaterThan(-1);
+    const sEnd = mainSource.indexOf("ipcMain.handle('auto-fix-with-ai'", sIdx);
+    const sSrc = mainSource.substring(sIdx, sEnd > 0 ? sEnd : sIdx + 12000);
+    expect(sSrc).toContain('invalidatePrCache(');
+    expect(sSrc).toMatch(/invalidatePrCache\(`\$\{prNumber\}:\$\{repoKey \|\| 'default'\}`\)/);
   });
 
   test('changedFilesFromDiff extracts exact files from a unified diff', () => {
