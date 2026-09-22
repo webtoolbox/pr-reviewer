@@ -5797,8 +5797,12 @@ btnRulesSave.addEventListener('click', async () => {
     } else if (result && result.results) {
       const ok = result.results.filter(r => r.success);
       const failed = result.results.filter(r => !r.success);
+      const skipped = result.results.reduce((n, r) => n + ((r.failures || []).length), 0);
       if (failed.length > 0) {
         showToast(`⚠ Saved ${ok.length} file(s), ${failed.length} failed: ${escapeHtml(failed.map(f => f.error).join('; '))}`, 'error', 12000);
+      } else if (skipped > 0) {
+        const names = result.results.flatMap(r => (r.failures || []).map(f => f.file));
+        showToast(`⚠ Saved ${ok.reduce((n, r) => n + (r.count || 0), 0)} rule(s), but skipped ${skipped}: the existing rule text to modify was not found in ${escapeHtml([...new Set(names)].join(', '))}. Nothing was appended.`, 'error', 14000);
       } else {
         showToast(`✓ Saved ${ok.reduce((n, r) => n + (r.count || 0), 0)} rule(s) to ${ok.map(r => r.file).join(', ')}`, 'success', 8000);
       }

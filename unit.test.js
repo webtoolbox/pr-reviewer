@@ -3864,6 +3864,99 @@ describe('AI Chat and Hermes profile', () => {
     expect(fn).toContain('\\`rg\\` over \\`grep\\`');
   });
 
+  // ── save-agent-rules: a "modify" proposal must REPLACE its target ─────────
+  // Regression guard: the old code silently appended when the existing rule
+  // text wasn't found, so a Modify suggestion created a duplicate rule.
+  describe('applyRulesToContent', () => {
+    // mainSource is loaded in beforeAll, so extract the helpers lazily.
+    const loadHelpers = () => {
+      const helpersSrc = mainSource.substring(
+        mainSource.indexOf('function normalizeRuleText'),
+        mainSource.indexOf('// Save proposed rules to files')
+      );
+      return new Function(
+        `${helpersSrc}; return { normalizeRuleText, findExistingRuleRange, buildRuleInsertion, applyRulesToContent };`
+      )();
+    };
+
+    test('modify replaces the existing rule in place and keeps the bullet', () => {
+      const content = '- First rule\n- Old rule text here\n- Third rule\n';
+      const { updated, applied, failures } = loadHelpers().applyRulesToContent(content, [
+        { type: 'modify', rule: 'New generalized rule', existingRule: 'Old rule text here', file: 'AGENTS.md' }
+      ]);
+      expect(failures).toEqual([]);
+      expect(applied).toBe(1);
+      expect(updated).toBe('- First rule\n- New generalized rule\n- Third rule\n');
+    });
+
+    test('modify matches despite missing bullet, wrapping and spacing', () => {
+      const content = '- Old rule text here\n- Keep me\n';
+      const { updated, failures } = loadHelpers().applyRulesToContent(content, [
+        { type: 'modify', rule: 'New rule', existingRule: 'Old rule\n     text    here', file: 'AGENTS.md' }
+      ]);
+      expect(failures).toEqual([]);
+      expect(updated).toBe('- New rule\n- Keep me\n');
+    });
+
+    test('modify target not found FAILS instead of appending a duplicate', () => {
+      const content = '- Some other rule\n';
+      const { updated, applied, failures } = loadHelpers().applyRulesToContent(content, [
+        { type: 'modify', rule: 'Sneaky duplicate', existingRule: 'Text that only exists in a stale local copy', file: 'AGENTS.md' }
+      ]);
+      expect(applied).toBe(0);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].error).toMatch(/not found/);
+      expect(failures[0].existingRule).toContain('stale local copy');
+      expect(updated).toBe(content);
+      expect(updated).not.toContain('Sneaky duplicate');
+    });
+
+    test('new rules are still appended with a bullet', () => {
+      const { updated, applied, failures } = loadHelpers().applyRulesToContent('- A rule', [
+        { type: 'new', rule: 'Brand new rule', file: 'AGENTS.md' }
+      ]);
+      expect(failures).toEqual([]);
+      expect(applied).toBe(1);
+      expect(updated).toBe('- A rule\n- Brand new rule\n');
+    });
+
+    test('modification never produces a doubled bullet', () => {
+      const content = '- Old rule\n';
+      // Replacement arrives with its own bullet while the file's bullet is
+      // outside the matched text.
+      const { updated, failures } = loadHelpers().applyRulesToContent(content, [
+        { type: 'modify', rule: '- New rule with bullet', existingRule: 'Old rule', file: 'AGENTS.md' }
+      ]);
+      expect(failures).toEqual([]);
+      expect(updated).toBe('- New rule with bullet\n');
+    });
+  });
+
+  test('save-agent-rules reports a missing modify target instead of appending', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('// Save proposed rules to files'),
+      mainSource.indexOf("ipcMain.handle('delete-pr-files'")
+    );
+    expect(fn).not.toContain('fall back to appending');
+    expect(fn).toContain('applyRulesToContent(current, newRules)');
+    expect(fn).toContain('modify target NOT found');
+    expect(fn).toContain('failures,');
+    // All rules failed → nothing is pushed to GitHub
+    expect(fn).toContain('if (applied === 0)');
+  });
+
+  test('get-agent-rules reads rules files from GitHub first, local only as fallback', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf("ipcMain.handle('get-agent-rules'"),
+      mainSource.indexOf('// Analyze review feedback')
+    );
+    expect(fn).toContain('`gh api repos/${owner}/${repo}/contents/${file} --jq .content | base64 -d`');
+    expect(fn).toContain("let agentsMd = await fetchGitHub('AGENTS.md')");
+    expect(fn).toContain('if (agentsMd === null) agentsMd = readLocal');
+    // The stale local clone must no longer be the primary source
+    expect(fn).not.toContain("fs.readFileSync(agentsPath, 'utf8')");
+  });
+
   test('renderer surfaces agent steps before answer streams', () => {
     expect(rendererSource).toContain("data.steps && data.steps.length > 0");
     expect(rendererSource).toContain("className = 'ai-chat-step'");

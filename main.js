@@ -3695,37 +3695,53 @@ ipcMain.handle('get-agent-rules', async () => {
   if (!repoPath) return { error: 'No local repo path found' };
 
   try {
-    // Read AGENTS.md from local repo
-    const agentsPath = path.join(repoPath, 'AGENTS.md');
-    let agentsMd = '';
-    try {
-      agentsMd = fs.readFileSync(agentsPath, 'utf8');
-    } catch (err) {
-      log('WARN', '[get-agents-md] AGENTS.md not found locally:', agentsPath);
-      // Fallback to gh api
+    // Read the rules files from GitHub — the SAME source save-agent-rules
+    // writes to. The app's local repo copy can be stale or carry uncommitted
+    // edits, and rule text that only exists locally made the AI propose
+    // "modify" targets that don't exist upstream (the save then had nothing
+    // to replace and used to append a duplicate instead). Local files are
+    // only a fallback when GitHub is unreachable.
+    const fetchGitHub = async (file) => {
       try {
-        agentsMd = await execPromise(
-          `gh api repos/${owner}/${repo}/contents/AGENTS.md --jq .content | base64 -d`
+        return await execPromise(
+          `gh api repos/${owner}/${repo}/contents/${file} --jq .content | base64 -d`
         );
-      } catch { /* not found */ }
-    }
+      } catch (err) {
+        log('WARN', `[get-agent-rules] ${file} unreadable from GitHub:`, err.message);
+        return null;
+      }
+    };
+    const readLocal = (file) => {
+      try { return fs.readFileSync(path.join(repoPath, file), 'utf8'); } catch { return null; }
+    };
+
+    let agentsMd = await fetchGitHub('AGENTS.md');
+    if (agentsMd === null) agentsMd = readLocal('AGENTS.md');
+    if (!agentsMd) log('WARN', '[get-agent-rules] AGENTS.md not found on GitHub or locally');
 
     // Find and read referenced rules files (.github/instructions/*.md, etc.)
     const referencedFiles = [];
-    const instructionsDir = path.join(repoPath, '.github', 'instructions');
+    let instructionNames = [];
     try {
-      const files = fs.readdirSync(instructionsDir);
-      for (const file of files) {
-        if (file.endsWith('.md') || file.endsWith('.instructions.md')) {
-          try {
-            const content = fs.readFileSync(path.join(instructionsDir, file), 'utf8');
-            referencedFiles.push({ path: `.github/instructions/${file}`, content });
-          } catch {}
-        }
+      const listing = await execPromise(
+        `gh api repos/${owner}/${repo}/contents/.github/instructions --jq '.[].name'`
+      );
+      instructionNames = listing.split('\n').map(s => s.trim()).filter(Boolean);
+      log('INFO', `[get-agent-rules] Found ${instructionNames.length} instruction files on GitHub`);
+    } catch (err) {
+      log('WARN', `[get-agent-rules] Could not list .github/instructions on GitHub: ${err.message}`);
+      try {
+        instructionNames = fs.readdirSync(path.join(repoPath, '.github', 'instructions'));
+        log('INFO', `[get-agent-rules] Fell back to local copy: ${instructionNames.length} files`);
+      } catch {
+        log('INFO', '[get-agent-rules] No .github/instructions/ directory available');
       }
-      log('INFO', `[get-agents-md] Found ${referencedFiles.length} instruction files in .github/instructions/`);
-    } catch {
-      log('INFO', '[get-agents-md] No .github/instructions/ directory found');
+    }
+    for (const name of instructionNames) {
+      if (!name.endsWith('.md')) continue;
+      const file = `.github/instructions/${name}`;
+      const content = (await fetchGitHub(file)) ?? readLocal(file);
+      if (content !== null && content !== undefined) referencedFiles.push({ path: file, content });
     }
 
     // Also check AGENTS.md for explicit references to other files
@@ -3733,10 +3749,8 @@ ipcMain.handle('get-agent-rules', async () => {
     const uniqueRefs = [...new Set(fileRefs)];
     for (const ref of uniqueRefs) {
       if (referencedFiles.some(f => f.path === ref)) continue; // Already loaded
-      try {
-        const content = fs.readFileSync(path.join(repoPath, ref), 'utf8');
-        referencedFiles.push({ path: ref, content });
-      } catch {}
+      const content = (await fetchGitHub(ref)) ?? readLocal(ref);
+      if (content) referencedFiles.push({ path: ref, content });
     }
 
     return { agentsMd, referencedFiles };
@@ -3841,6 +3855,92 @@ Keep rules concise — one sentence each when possible.`;
   });
 });
 
+// ── Rule application helpers ──────────────────────────────────────────────────
+// Normalize a rule's text so a copy taken with different wrapping, spacing, or
+// a missing "- " bullet still matches the text on disk.
+function normalizeRuleText(text) {
+  return String(text || '').replace(/\s+/g, ' ').replace(/^\s*[-*+]\s+/, '').trim();
+}
+
+// Locate an existing rule inside rules-file content: exact text first, then a
+// normalized, bullet- and wrapping-tolerant search over consecutive lines.
+// Returns { start, end } offsets into content, or null when not found.
+function findExistingRuleRange(content, existingRule) {
+  const exact = content.indexOf(existingRule);
+  if (exact !== -1) return { start: exact, end: exact + existingRule.length };
+
+  const target = normalizeRuleText(existingRule);
+  if (!target) return null;
+
+  const lines = content.split('\n');
+  const offsets = [];
+  let offset = 0;
+  for (const line of lines) { offsets.push(offset); offset += line.length + 1; }
+
+  for (let i = 0; i < lines.length; i++) {
+    let acc = '';
+    for (let j = i; j < lines.length; j++) {
+      acc = normalizeRuleText(acc ? `${acc} ${lines[j]}` : lines[j]);
+      if (acc === target) return { start: offsets[i], end: offsets[j] + lines[j].length };
+      if (acc.length >= target.length) break;
+    }
+  }
+  return null;
+}
+
+// Build the text that replaces content[start..end] so the original line's
+// indentation and bullet survive, and the replacement never ends up doubled
+// (e.g. "- - new rule") when either side carries its own bullet.
+function buildRuleInsertion(content, start, replacement) {
+  const text = String(replacement || '');
+  const lineStart = content.lastIndexOf('\n', start - 1) + 1;
+  const before = content.slice(lineStart, start);
+  const structural = before.match(/^(\s*)([-*+]\s+)?$/);
+  if (!structural) return text; // matched mid-line: keep surrounding context as-is
+  if (structural[2]) return text.replace(/^\s*[-*+]\s+/, ''); // bullet sits before the match
+  const bulletInside = content.slice(start).match(/^([-*+]\s+)/);
+  if (bulletInside) return bulletInside[1] + text.replace(/^\s*[-*+]\s+/, ''); // bullet is inside the matched region
+  return text;
+}
+
+// Apply proposed rules to rules-file content.
+// Returns { updated, applied, failures }. A "modify" proposal is NEVER
+// silently appended: if its target text can't be found in the file, it comes
+// back in failures so the caller can report it instead of duplicating a rule.
+function applyRulesToContent(content, rules) {
+  let updated = content;
+  const additions = [];
+  const failures = [];
+  let applied = 0;
+
+  for (const r of rules) {
+    if (r.type === 'modify' && r.existingRule) {
+      const range = findExistingRuleRange(updated, r.existingRule);
+      if (!range) {
+        failures.push({
+          rule: r.rule,
+          file: r.file,
+          existingRule: r.existingRule,
+          error: 'existing rule text not found'
+        });
+        continue;
+      }
+      const insertion = buildRuleInsertion(updated, range.start, r.rule);
+      updated = updated.slice(0, range.start) + insertion + updated.slice(range.end);
+      applied++;
+    } else {
+      additions.push(r.rule);
+    }
+  }
+
+  if (additions.length > 0) {
+    const sep = updated.length && !updated.endsWith('\n') ? '\n' : '';
+    updated = updated.trimEnd() + sep + additions.map(a => `- ${a}`).join('\n') + '\n';
+    applied += additions.length;
+  }
+  return { updated, applied, failures };
+}
+
 // Save proposed rules to files
 ipcMain.handle('save-agent-rules', async (event, { rules }) => {
   const owner = appConfig.repoOwner;
@@ -3865,25 +3965,25 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
         );
       } catch (err) { console.warn(`[propose-rules] Existing rules file ${file} not found or unreadable:`, err.message); }
       
-      // Apply each rule: "modify" replaces existingRule text in place; "new" appends
-      let updated = current;
-      const additions = [];
-      for (const r of newRules) {
-        if (r.type === 'modify' && r.existingRule) {
-          const idx = updated.indexOf(r.existingRule);
-          if (idx !== -1) {
-            updated = updated.slice(0, idx) + r.rule + updated.slice(idx + r.existingRule.length);
-          } else {
-            // existingRule text not found — fall back to appending
-            additions.push(r.rule);
-          }
-        } else {
-          additions.push(r.rule);
-        }
+      // Apply rules: "modify" replaces its target in place; "new" appends.
+      // A modify whose target text can't be found is reported as a failure —
+      // it is never silently appended (that's how a "Modify" suggestion used
+      // to duplicate a rule instead of changing it).
+      const { updated, applied, failures } = applyRulesToContent(current, newRules);
+      for (const f of failures) {
+        log('WARN', `[propose-rules] ${file}: modify target NOT found, rule skipped. existingRule="${String(f.existingRule || '').slice(0, 300)}" rule="${String(f.rule || '').slice(0, 300)}"`);
       }
-      if (additions.length > 0) {
-        const sep = updated.length && !updated.endsWith('\n') ? '\n' : '';
-        updated = updated.trimEnd() + sep + additions.map(a => `- ${a}`).join('\n') + '\n';
+      if (applied === 0) {
+        results.push({
+          file,
+          success: false,
+          count: 0,
+          failures,
+          error: failures.length
+            ? `existing rule text not found in ${file} (${failures.length} rule(s) skipped, nothing appended)`
+            : 'no rules to save'
+        });
+        continue;
       }
       
       // Get SHA for update
@@ -3941,7 +4041,7 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
         log('WARN', '[propose-rules] Local file sync failed:', localErr.message);
       }
 
-      results.push({ file, success: true, count: newRules.length });
+      results.push({ file, success: true, count: applied, failures });
     } catch (err) {
       results.push({ file, success: false, error: err.message });
     }
