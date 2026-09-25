@@ -3025,6 +3025,22 @@ async function runTests() {
     })()
   `);
   assert('Comments button exists in toolbar', commentsPanelTest && commentsPanelTest.ok !== undefined, JSON.stringify(commentsPanelTest));
+
+  // The comments icon must read as two speech bubbles. It used to be two plain
+  // circles plus a hook, which looked like "duplicate"/link, not a discussion.
+  const commentsIcon = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const svg = document.querySelector('#btn-comments svg');
+      if (!svg) return { ok: false };
+      return { ok: true,
+               paths: svg.querySelectorAll('path').length,
+               circles: svg.querySelectorAll('circle').length,
+               viewBox: svg.getAttribute('viewBox') };
+    })()
+  `);
+  assert('Comments icon is drawn as two speech bubbles',
+    !!commentsIcon.ok && commentsIcon.paths >= 2 && commentsIcon.circles === 0,
+    JSON.stringify(commentsIcon));
   assert('Comments panel shows submitted + pending + AI comments (4 items)',
     commentsPanelTest && commentsPanelTest.itemCount === 4,
     `count: ${commentsPanelTest && commentsPanelTest.itemCount}, texts: ${JSON.stringify(commentsPanelTest && commentsPanelTest.texts)}`);

@@ -4345,3 +4345,57 @@ describe('Function preview popover', () => {
     expect(body).toContain('return x * 2;');
   });
 });
+
+
+// ── Since-review net diff (PR #7377 showed master's merge content) ──
+
+describe('Since-review net diff', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  test('isMasterImportCommit flags single-parent master merges only', () => {
+    const src = extractFunctionBody(mainSource, 'isMasterImportCommit');
+    expect(src).toBeTruthy();
+    // eslint-disable-next-line no-eval
+    const fn = eval('(' + src + ')');
+    // PR #7377's leak: "Merge branch 'master' into 2fa" with ONE parent slips
+    // past the parents.length < 2 filter and replays master as PR work.
+    expect(fn({ commit: { message: "Merge branch 'master' into 2fa" } })).toBe(true);
+    expect(fn({ commit: { message: 'Merge master into 2fa via mergeWithMaster button by Nitin' } })).toBe(true);
+    expect(fn({ commit: { message: 'Merge remote-tracking branch origin/master into HEAD' } })).toBe(true);
+    // real author work must never be dropped
+    expect(fn({ commit: { message: 'Merge conflict fix' } })).toBe(false);
+    expect(fn({ commit: { message: 'Merge branch feature/x into y' } })).toBe(false);
+    expect(fn({ commit: { message: 'Fixed mantis 31149' } })).toBe(false);
+    expect(fn({ commit: { message: 'feat: add twoFA scripts\n\nbody' } })).toBe(false);
+    expect(fn({ commit: {} })).toBe(false);
+    expect(fn(null)).toBe(false);
+  });
+
+  test('the after-review commit filter excludes master imports', () => {
+    expect(mainSource).toContain('function isMasterImportCommit');
+    expect(mainSource).toContain('!isMasterImportCommit(c)');
+    expect(mainSource).toMatch(/c\.parents && c\.parents\.length < 2/);
+    expect(mainSource).toMatch(/c\.commit\.committer\.date > reviewDate/);
+  });
+
+  test('since-review ref reads HEAD with rev-parse, not git commit banner', () => {
+    // git prints an ABBREVIATED sha in "[detached HEAD 40bdc8822b8]", so the
+    // old \w{40} regex never matched: sinceReviewRef stayed null and context
+    // expansion fell back to base..head (all of master's merges).
+    expect(mainSource).toContain("execPromise('git rev-parse HEAD'");
+    expect(mainSource).not.toContain('(\\w{40})');
+    expect(mainSource).toContain('git update-ref ${sinceReviewRef} ${commitSha}');
+  });
+
+  test('context expansion prefers the since-review ref over base..head', () => {
+    const idx = mainSource.indexOf("ipcMain.handle('expand-diff-context'");
+    expect(idx).toBeGreaterThan(-1);
+    const handler = mainSource.slice(idx, idx + 2500);
+    expect(handler).toContain('git diff ${baseSha} ${sinceReviewRef}');
+    expect(handler).toContain('sinceReviewRef && baseSha');
+  });
+});

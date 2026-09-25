@@ -862,6 +862,19 @@ async function mapLimit(items, limit, fn) {
 // persistent ref (`sinceReviewRef`) so later per-file operations (context
 // expansion) can diff against the exact same base — keeping them consistent
 // with what's displayed. The worktree itself is removed in a finally.
+// A branch can absorb master as a SINGLE-PARENT commit (a manual
+// "Merge branch 'master' into X" committed as an ordinary commit). GitHub
+// reports it with one parent, so a parents.length < 2 filter alone lets it
+// through, and replaying it dumps master's whole changeset into the
+// since-review diff as if the PR author had written it (PR #7377: 29 master
+// files — domain, import, statistics, S3, bot — in a real 51-file diff).
+// Match "Merge ... master ..." so a legitimate commit like "Merge conflict
+// fix" is not dropped.
+function isMasterImportCommit(commit) {
+  const msg = String((commit && commit.commit && commit.commit.message) || '').split('\n')[0].trim();
+  return /^merge\b/i.test(msg) && /\bmaster\b/i.test(msg);
+}
+
 async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
   if (!repoPath || !baseSha || !afterReviewShas || afterReviewShas.length === 0) {
     return { diff: '', sinceReviewRef: null };
@@ -915,11 +928,18 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
     // and can be referenced later (context expansion). Write it to the ref
     // from the main repo so the object is shared.
     await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
-    const rebasedCommit = await execPromise(
+    await execPromise(
       `git -c user.name="PR Reviewer" -c user.email="pr-reviewer@local" commit -m "tmp since-review rebase"`,
       { cwd: worktreePath }
     ).catch(() => '');
-    const commitSha = (rebasedCommit.match(/\[[^\]]*\]\s*(\w{40})/) || [])[1];
+    // Ask git for the new HEAD instead of parsing its commit banner. The
+    // banner prints an ABBREVIATED sha ([detached HEAD 40bdc8822b8]), so the
+    // old \w{40} regex never matched, sinceReviewRef was always null, and
+    // context expansion silently fell back to `base..head` — every master
+    // merge the branch had absorbed (PR #7377 showed master's domain/import/
+    // statistics changes when expanding a line).
+    const revHead = await execPromise('git rev-parse HEAD', { cwd: worktreePath }).catch(() => '');
+    const commitSha = String(revHead || '').trim() || null;
     if (commitSha) {
       await execPromise(`git update-ref ${sinceReviewRef} ${commitSha}`, { cwd: repoPath }).catch((e) => log('WARN', '[generateDiff] failed to write since-review ref:', e.message));
     }
@@ -1200,7 +1220,13 @@ async function generateDiff(prNumber, repoKey) {
       // afterReview empty and falling back to the full PR diff, e.g. PR #6460
       // showed 141 files instead of the 1 since-review file).
       const reviewDate = reviewInfo.date;
-      const afterReview = allCommits.filter(c => c.commit.committer.date > reviewDate && c.parents && c.parents.length < 2);
+      // parents.length < 2 drops real merge commits; isMasterImportCommit also
+      // drops single-parent "Merge ... master ..." commits, which would
+      // otherwise replay master's changes as PR work (PR #7377).
+      const afterReview = allCommits.filter(c =>
+        c.commit.committer.date > reviewDate &&
+        c.parents && c.parents.length < 2 &&
+        !isMasterImportCommit(c));
 
       if (afterReview.length > 0 && afterReview.length < allCommits.length) {
         const changedSinceReview = new Set();
