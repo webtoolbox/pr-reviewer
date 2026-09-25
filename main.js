@@ -1014,14 +1014,19 @@ async function getChangedFilesViaCommits(owner, repo, prNumber, repoPath) {
 // bot ("app/wt-builderbot" — the deployment bot opens PRs), which hides the
 // real contributors. GitHub does not expose "contributors" on the PR object,
 // so we derive them from the commits API (paginated, deduped, bots filtered).
-// Returns a list of logins (or names when login is absent, e.g. commits
-// authored by an email-only identity like "Irfan Ahmad").
+// Returns { authors, commits }:
+//   authors — logins (or names when login is absent, e.g. commits authored by
+//             an email-only identity like "Irfan Ahmad")
+//   commits — [{sha, key, subject, parents}] for every commit walked, so the
+//             caller can tell real contributors from users who only merged
+//             master in, without a second API round-trip.
 async function fetchPrCommitAuthors(owner, repo, prNumber) {
   let authors = new Map(); // key -> {login, name}
+  const commits = [];
   let page = 1;
   while (true) {
     const stdout = await execPromise(
-      `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100&page=${page}" --jq '[.[] | {login: (.author.login // ""), name: (.commit.author.name // "")}]'`,
+      `gh api "repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100&page=${page}" --jq '[.[] | {sha: (.sha // ""), login: (.author.login // ""), name: (.commit.author.name // ""), subject: ((.commit.message // "") | split("\\n")[0]), parents: [.parents[]?.sha]}]'`,
       { timeout: 30000 }
     );
     let batch = [];
@@ -1029,8 +1034,8 @@ async function fetchPrCommitAuthors(owner, repo, prNumber) {
     for (const c of batch) {
       if (!c || (!c.login && !c.name)) continue;
       const key = c.login || c.name;
-      if (authors.has(key)) continue;
-      authors.set(key, { login: c.login || '', name: c.name || '' });
+      if (!authors.has(key)) authors.set(key, { login: c.login || '', name: c.name || '' });
+      commits.push({ sha: c.sha || '', key, subject: c.subject || '', parents: c.parents || [] });
     }
     if (batch.length < 100) break;
     page++;
@@ -1038,7 +1043,89 @@ async function fetchPrCommitAuthors(owner, repo, prNumber) {
   const isBot = (a) => /\[bot\]/.test(a.login || a.name) || (a.login || '').startsWith('app/') || (a.name || '').startsWith('bot');
   const humans = [...authors.values()].filter(a => !isBot(a));
   // Prefer login; fall back to name when login is empty (email-only identity)
-  return humans.map(a => a.login || a.name);
+  return { authors: humans.map(a => a.login || a.name), commits };
+}
+
+// Did this commit add anything of its own, or did it only drag master onto the
+// branch? A merge commit (2+ parents) carries other people's work, and a
+// single-parent "Merge ... master ..." commit is master's changeset replayed
+// as if the PR author had written it (the PR #7377 case).
+function isMergeOnlyCommit(commit) {
+  if (!commit) return false;
+  if (Array.isArray(commit.parents) && commit.parents.length >= 2) return true;
+  return isMasterImportCommit({ commit: { message: commit.subject || '' } });
+}
+
+// Split PR contributors into people who actually committed something and
+// people whose every commit on the PR was a master merge.
+// Returns { kept, dropped } — both are author keys (login or name).
+function dropMergeOnlyAuthors(authors, commits) {
+  const list = Array.isArray(authors) ? authors : [];
+  const all = Array.isArray(commits) ? commits : [];
+  if (list.length === 0) return { kept: [], dropped: [] };
+  // No commit metadata (API hiccup) — never hide everyone on a guess.
+  if (all.length === 0) return { kept: list, dropped: [] };
+  const contributed = new Set();
+  for (const c of all) {
+    if (c && c.key && !isMergeOnlyCommit(c)) contributed.add(c.key);
+  }
+  const kept = [];
+  const dropped = [];
+  for (const a of list) (contributed.has(a) ? kept : dropped).push(a);
+  // Nobody survived: the metadata was incomplete rather than everyone being a
+  // merger, so show the full list instead of an empty line.
+  if (kept.length === 0) return { kept: list, dropped: [] };
+  return { kept, dropped };
+}
+
+// Stage 2 check, run detached from the fast metadata response: confirm against
+// the local clone that each remaining contributor's commits actually changed
+// files (an empty commit contributes nothing). Commits that are not in the
+// local clone yet count as contributing, so a slow fetch can never hide a real
+// author. Returns the refined author list.
+async function refinePrAuthors(repoPath, authors, commits) {
+  const list = Array.isArray(authors) ? authors : [];
+  const all = Array.isArray(commits) ? commits : [];
+  if (list.length === 0) return list;
+  const { kept } = dropMergeOnlyAuthors(list, all);
+  const real = all.filter(c => c && !isMergeOnlyCommit(c) && /^[0-9a-f]{7,40}$/.test(c.sha || ''));
+  if (!repoPath || real.length === 0) return kept;
+  const withChanges = new Set();
+  await mapLimit(real, 4, async (c) => {
+    try {
+      const out = await execPromise(
+        `git diff-tree --no-commit-id --name-only -r ${c.sha}`,
+        { cwd: repoPath, timeout: 15000 }
+      );
+      if (out.trim()) withChanges.add(c.key);
+    } catch {
+      // Commit not fetched locally yet — keep the author rather than hide them.
+      withChanges.add(c.key);
+    }
+  });
+  const refined = list.filter(a => withChanges.has(a));
+  return refined.length > 0 ? refined : kept;
+}
+
+// Kick off stage 2 without blocking the caller: the full contributor list has
+// already gone to the renderer, so the header can paint while these per-commit
+// checks run. The reduced list is pushed back over the same channel.
+function schedulePrAuthorsRefinement(sender, prNumber, repoKey, fullAuthors, authorInfo) {
+  const commits = (authorInfo && authorInfo.commits) || [];
+  if (!sender || typeof sender.send !== 'function') return;
+  if (!Array.isArray(fullAuthors) || fullAuthors.length === 0) return;
+  if (commits.length === 0) return;
+  const repoPath = getLocalRepoPath(repoKey);
+  setImmediate(() => {
+    refinePrAuthors(repoPath, fullAuthors, commits)
+      .then((refined) => {
+        if (typeof sender.isDestroyed === 'function' && sender.isDestroyed()) return;
+        if (!Array.isArray(refined) || refined.length === fullAuthors.length) return;
+        sender.send('pr-authors-refined', { prNumber, authors: refined });
+        log('INFO', `[pr-authors] PR #${prNumber} contributors refined: ${fullAuthors.join(', ')} -> ${refined.join(', ') || '(none)'}`);
+      })
+      .catch((err) => log('WARN', `[pr-authors] Contributor refinement failed for PR #${prNumber}: ${err.message}`));
+  });
 }
 
 // Generate diff for a PR — supports full diff or since-last-review
@@ -1078,14 +1165,21 @@ async function generateDiff(prNumber, repoKey) {
   const basePromise = resolveBaseSha(owner, repo, prNumber, diffMode);
   const commitAuthorsPromise = fetchPrCommitAuthors(owner, repo, prNumber).catch((err) => {
     log('WARN', `[generateDiff] Failed to fetch PR commit authors: ${err.message}`);
-    return [];
+    return { authors: [], commits: [] };
   });
 
   const results = await Promise.all([prViewPromise, prDiffPromise, basePromise, commitAuthorsPromise]);
   const prJson = results[0];
   let diffOut = results[1];
   const baseResult = results[2];
-  let prOtherAuthors = results[3] || [];
+  const authorInfo = results[3] || {};
+  let prOtherAuthors = authorInfo.authors || [];
+  // Drop users who only merged master in before this list is cached, so the
+  // fast metadata path can serve the reduced list straight away. Pure CPU on
+  // metadata we already hold — no extra API or git round-trips here.
+  if ((authorInfo.commits || []).length > 0) {
+    prOtherAuthors = dropMergeOnlyAuthors(prOtherAuthors, authorInfo.commits).kept;
+  }
   // Set when a since-review net diff is produced; lets per-file operations
   // (context expansion) diff against the same rebased base as the display.
   let sinceReviewRef = null;
@@ -1881,16 +1975,31 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
   }
   try {
     log('INFO', '[get-pr-info] Fetching metadata for PR #' + safePr);
-    const prJson = await execPromise(
-      `gh pr view ${safePr} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,changedFiles --jq '{title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles}'`,
-      { timeout: 15000 }
-    );
+    // Metadata and contributor walk run together — both are pure API reads, so
+    // this stays in the fast lane (~1-2s) while still giving the header a
+    // contributor list to paint immediately.
+    const [prJson, authorInfo] = await Promise.all([
+      execPromise(
+        `gh pr view ${safePr} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,changedFiles --jq '{title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles}'`,
+        { timeout: 15000 }
+      ),
+      fetchPrCommitAuthors(owner, repoName, safePr).catch((err) => {
+        log('WARN', '[get-pr-info] Failed to fetch PR commit authors:', err.message);
+        return { authors: [], commits: [] };
+      })
+    ]);
     const prData = JSON.parse(prJson || '{}');
     log('INFO', '[get-pr-info] Got metadata:', prData.title?.substring(0, 50));
+    const fullAuthors = (authorInfo.authors || []).filter(a => a && a !== (prData.author || ''));
+    // Stage 1 done — return the FULL contributor list so the header renders
+    // now. Stage 2 (merge-only checks against the local clone) runs detached
+    // and pushes the reduced list back over 'pr-authors-refined'.
+    schedulePrAuthorsRefinement(event.sender, safePr, repo, fullAuthors, authorInfo);
     return {
       prTitle: prData.title || '',
       prAuthor: prData.author || '',
       prAssignees: (prData.assignees || []).filter(a => a !== prData.author),
+      prOtherAuthors: fullAuthors,
       prBody: prData.body || '',
       state: prData.state || '',
       filesChanged: prData.changedFiles || 0,

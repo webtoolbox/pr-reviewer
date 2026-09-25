@@ -4541,3 +4541,166 @@ describe('PR description hotkey', () => {
     expect(hSrc).toContain('<kbd>D</kbd><span class="shortcut-desc">Show PR description</span>');
   });
 });
+
+// ── Contributor line: full list immediately, merge-only users dropped later ──
+
+describe('Contributor refinement', () => {
+  let mSrc;
+  let rSrc;
+  let pSrc;
+
+  beforeAll(() => {
+    mSrc = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    rSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    pSrc = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+  });
+
+  // Runs the production helpers with injected deps (main.js boots Electron,
+  // so it can't be required — Pitfall 139).
+  function loadContributorFns() {
+    const masterSrc = extractFunctionBody(mSrc, 'isMasterImportCommit');
+    const mergeSrc = extractFunctionBody(mSrc, 'isMergeOnlyCommit');
+    const dropSrc = extractFunctionBody(mSrc, 'dropMergeOnlyAuthors');
+    const refineSrc = extractFunctionBody(mSrc, 'refinePrAuthors');
+    const mapLimitSrc = extractFunctionBody(mSrc, 'mapLimit');
+    expect(masterSrc).toBeTruthy();
+    expect(mergeSrc).toBeTruthy();
+    expect(dropSrc).toBeTruthy();
+    expect(refineSrc).toBeTruthy();
+    expect(mapLimitSrc).toBeTruthy();
+    // eslint-disable-next-line no-eval
+    const factory = eval(
+      '(function (execPromise, log) {' +
+        mapLimitSrc + ';' + masterSrc + ';' + mergeSrc + ';' + dropSrc + ';' + refineSrc + ';' +
+        'return { dropMergeOnlyAuthors: dropMergeOnlyAuthors, isMergeOnlyCommit: isMergeOnlyCommit, refinePrAuthors: refinePrAuthors };' +
+      '})'
+    );
+    return factory;
+  }
+
+  const PR5613 = {
+    authors: ['rishabh-wt', 'laeeqwtb', 'abhay-wt', 'deepakwt', 'rashi-wt', 'webtoolbox'],
+    commits: [
+      { sha: 'a1', key: 'rishabh-wt', subject: 'fix popup form validation', parents: ['p'] },
+      { sha: 'a2', key: 'rishabh-wt', subject: 'Revert "fix syntax"', parents: ['p'] },
+      { sha: 'b1', key: 'laeeqwtb', subject: "Merge branch 'master' into popup", parents: ['p', 'q'] },
+      { sha: 'c1', key: 'abhay-wt', subject: "Merge branch 'master' into popup", parents: ['p', 'q'] },
+      { sha: 'd1', key: 'deepakwt', subject: "Merge branch 'master' into popup", parents: ['p', 'q'] },
+      { sha: 'e1', key: 'webtoolbox', subject: "Merge branch 'master' into popup", parents: ['p', 'q'] },
+      { sha: 'f1', key: 'rashi-wt', subject: 'Fixed mantis - 21088.', parents: ['p'] }
+    ]
+  };
+
+  test('drops contributors whose every commit is a master merge', () => {
+    const { dropMergeOnlyAuthors } = loadContributorFns()(() => '', () => {});
+    const { kept, dropped } = dropMergeOnlyAuthors(PR5613.authors, PR5613.commits);
+    expect(kept).toEqual(['rishabh-wt', 'rashi-wt']);
+    expect(dropped).toEqual(['laeeqwtb', 'abhay-wt', 'deepakwt', 'webtoolbox']);
+  });
+
+  test('single-parent "Merge ... master ..." commits count as merges too', () => {
+    const { dropMergeOnlyAuthors } = loadContributorFns()(() => '', () => {});
+    const { kept, dropped } = dropMergeOnlyAuthors(
+      ['ghost-wt', 'real-wt'],
+      [
+        { sha: 'aa', key: 'ghost-wt', subject: "Merge branch 'master' into 2fa", parents: ['p'] },
+        { sha: 'bb', key: 'real-wt', subject: 'twoFA: tighten rate limit', parents: ['p'] }
+      ]
+    );
+    expect(kept).toEqual(['real-wt']);
+    expect(dropped).toEqual(['ghost-wt']);
+  });
+
+  test('a real merge is not dropped when the author also committed code', () => {
+    const { dropMergeOnlyAuthors } = loadContributorFns()(() => '', () => {});
+    const { kept, dropped } = dropMergeOnlyAuthors(
+      ['mixed-wt'],
+      [
+        { sha: 'aa', key: 'mixed-wt', subject: "Merge branch 'master' into x", parents: ['p', 'q'] },
+        { sha: 'bb', key: 'mixed-wt', subject: 'fix the actual bug', parents: ['p'] }
+      ]
+    );
+    expect(kept).toEqual(['mixed-wt']);
+    expect(dropped).toEqual([]);
+  });
+
+  test('without commit metadata nobody is hidden', () => {
+    const { dropMergeOnlyAuthors } = loadContributorFns()(() => '', () => {});
+    expect(dropMergeOnlyAuthors(['a', 'b'], [])).toEqual({ kept: ['a', 'b'], dropped: [] });
+  });
+
+  test('keeps the full list when the metadata would hide everyone', () => {
+    const { dropMergeOnlyAuthors } = loadContributorFns()(() => '', () => {});
+    const res = dropMergeOnlyAuthors(
+      ['a', 'b'],
+      [{ sha: 'aa', key: 'a', subject: "Merge branch 'master' into x", parents: ['p', 'q'] }]
+    );
+    expect(res.kept).toEqual(['a', 'b']);
+    expect(res.dropped).toEqual([]);
+  });
+
+  test('stage 2 verifies commits against the local clone when it has them', async () => {
+    const calls = [];
+    const factory = loadContributorFns();
+    const { refinePrAuthors: refine } = factory(async (cmd) => {
+      calls.push(cmd);
+      if (cmd.includes('a1a1')) return 'src/one.js\nlib/two.pm'; // has changes
+      if (cmd.includes('b2b2')) return '';                       // empty commit
+      throw new Error('bad object');                             // not fetched yet
+    }, () => {});
+    const res = await refine('/repo', ['author-a', 'author-b'], [
+      { sha: 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', key: 'author-a', subject: 'real work', parents: ['p'] },
+      { sha: 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2', key: 'author-b', subject: 'empty commit', parents: ['p'] },
+      { sha: 'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3', key: 'author-c', subject: 'not local', parents: ['p'] }
+    ]);
+    expect(res).toEqual(['author-a']);
+    expect(calls.length).toBe(3);
+    // every sha it shells out with is hex-only
+    calls.forEach(c => expect(c).toMatch(/^git diff-tree --no-commit-id --name-only -r [0-9a-f]{7,40}$/));
+  });
+
+  test('stage 2 keeps authors whose commits are not fetched locally yet', async () => {
+    const factory = loadContributorFns();
+    const { refinePrAuthors: refine } = factory(async () => { throw new Error('no such object'); }, () => {});
+    const res = await refine('/repo', ['remote-wt'], [
+      { sha: 'abcdef1', key: 'remote-wt', subject: 'real work', parents: ['p'] }
+    ]);
+    expect(res).toEqual(['remote-wt']);
+  });
+
+  test('stage 2 falls back to metadata when there is no local clone', async () => {
+    const factory = loadContributorFns();
+    const { refinePrAuthors: refine } = factory(async () => { throw new Error('should not shell out'); }, () => {});
+    const res = await refine(null, PR5613.authors, PR5613.commits);
+    expect(res).toEqual(['rishabh-wt', 'rashi-wt']);
+  });
+
+  test('get-pr-info returns the full list immediately and refines in the background', () => {
+    // Stage 1: metadata and the contributor walk share one Promise.all so the
+    // header never waits for per-commit checks.
+    expect(mSrc).toMatch(/const \[prJson, authorInfo\] = await Promise\.all\(\[/);
+    expect(mSrc).toContain('prOtherAuthors: fullAuthors');
+    // Stage 2: scheduled detached, never awaited by the fast path.
+    expect(mSrc).toContain("schedulePrAuthorsRefinement(event.sender, safePr, repo, fullAuthors, authorInfo)");
+    expect(mSrc).toMatch(/function schedulePrAuthorsRefinement[\s\S]{0,600}setImmediate\(/);
+    expect(mSrc).toContain("sender.send('pr-authors-refined'");
+    // The diff path caches the reduced list so later fast loads skip stage 1's
+    // full list entirely.
+    expect(mSrc).toContain('dropMergeOnlyAuthors(prOtherAuthors, authorInfo.commits).kept');
+  });
+
+  test('preload bridges the refinement push', () => {
+    expect(pSrc).toContain("ipcRenderer.on('pr-authors-refined'");
+  });
+
+  test('renderer paints the full list at stage 1 and prefers the refined list', () => {
+    // stage 1: fast metadata already carries contributors
+    expect(rSrc).toContain('prOtherAuthors: prMeta.prOtherAuthors || []');
+    // header reads through otherAuthorsForPr so order of arrival cannot matter
+    expect(rSrc).toContain('otherAuthorsForPr(prNumber, result.prOtherAuthors)');
+    expect(rSrc).toMatch(/function applyRefinedPrAuthors[\s\S]{0,400}updatePrInfoBar\(/);
+    // stale state is dropped when a different PR opens
+    expect(rSrc).toMatch(/String\(prNumber\) !== String\(currentPrNumber\)[\s\S]{0,200}prAuthorsRefined = null/);
+    expect(rSrc).toContain('window.electronAPI.onPrAuthorsRefined(applyRefinedPrAuthors)');
+  });
+});

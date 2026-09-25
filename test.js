@@ -2926,6 +2926,52 @@ async function runTests() {
   `);
   assert('Shortcuts dialog lists Cmd+D (Show PR description)', prDescShortcutRow);
 
+  // ===================== CONTRIBUTOR LINE (stage 1 → stage 2) =====================
+
+  // Stage 1: fast metadata paints the FULL contributor list right away.
+  let contribStage1 = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      currentPrNumber = 99998;
+      updatePrInfoBar(99998, 'Contributor list test', {
+        prAuthor: 'rishabh-wt',
+        prOtherAuthors: ['laeeqwtb', 'rashi-wt', 'webtoolbox'],
+        prAssignees: ['rashi-wt']
+      });
+      const line = document.querySelector('#pr-info .pr-author-line');
+      return { text: line ? line.textContent : '' };
+    })()
+  `);
+  assert('Stage 1 header shows the full contributor list',
+    contribStage1.text.includes('laeeqwtb') && contribStage1.text.includes('rashi-wt')
+      && contribStage1.text.includes('webtoolbox'),
+    contribStage1.text);
+
+  // Stage 2: main process finished the per-commit checks and pushed the
+  // reduced list — merge-only contributors disappear from the same header.
+  let contribStage2 = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      applyRefinedPrAuthors({ prNumber: 99998, authors: ['rashi-wt'] });
+      const line = document.querySelector('#pr-info .pr-author-line');
+      return { text: line ? line.textContent : '' };
+    })()
+  `);
+  assert('Stage 2 drops merge-only contributors from the header',
+    !contribStage2.text.includes('laeeqwtb') && !contribStage2.text.includes('webtoolbox')
+      && contribStage2.text.includes('rashi-wt'),
+    contribStage2.text);
+
+  // A refinement aimed at a different PR must never touch this header.
+  let contribStale = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      applyRefinedPrAuthors({ prNumber: 12345, authors: ['someone-else'] });
+      const line = document.querySelector('#pr-info .pr-author-line');
+      return { text: line ? line.textContent : '' };
+    })()
+  `);
+  assert('Refinement for another PR is ignored',
+    contribStale.text === contribStage2.text && !contribStale.text.includes('someone-else'),
+    contribStale.text);
+
   // ===================== FIND-IN-PAGE (Cmd+F) =====================
   global.__findCalls = [];
   global.__findStops = 0;

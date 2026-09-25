@@ -3983,6 +3983,12 @@ prNumberInput.addEventListener('keydown', async (e) => {
 
 async function loadPrByNumber(prNumber, repoKey, force = false) {
   console.log('[loadPr] Loading PR #' + prNumber, 'repo:', repoKey || 'default');
+  // Stage-2 contributor state belongs to the PR it was computed for — drop it
+  // when a different PR is opened so a stale reduced list can never win.
+  if (String(prNumber) !== String(currentPrNumber)) {
+    prAuthorsRefined = null;
+    prInfoState = null;
+  }
   clearAiChat(); // Reset AI chat for the new PR — stale branch/PR context shouldn't linger
   // Show the loading indicator immediately so the previous PR's diff doesn't
   // linger while the next one loads (the title bar changes before the diff).
@@ -4029,6 +4035,7 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
           updatePrInfoBar(prNumber, currentPrTitle, {
             prAuthor: prMeta.prAuthor,
             prAssignees: prMeta.prAssignees,
+            prOtherAuthors: prMeta.prOtherAuthors || [],
             filesChanged: prMeta.filesChanged,
             reviewInfo: null // Will be set when diff loads
           });
@@ -5632,8 +5639,34 @@ async function loadPrCommits(prNumber) {
   }
 }
 
+// ── Contributor line: full list first, refined list later ──
+// get-pr-info hands back the full contributor list (stage 1) so the header
+// paints without waiting for anything; per-commit checks then run detached in
+// the main process and push the reduced list (stage 2) over
+// 'pr-authors-refined'. The refined list wins whenever it has arrived for the
+// PR on screen, whichever order the two land in.
+let prInfoState = null;      // { prNumber, prTitle, result } — for re-rendering
+let prAuthorsRefined = null; // { prNumber, authors } — stage-2 result
+
+function otherAuthorsForPr(prNumber, fallback) {
+  if (prAuthorsRefined && String(prAuthorsRefined.prNumber) === String(prNumber)) {
+    return prAuthorsRefined.authors;
+  }
+  return Array.isArray(fallback) ? fallback : [];
+}
+
+function applyRefinedPrAuthors(data) {
+  if (!data || !Array.isArray(data.authors)) return;
+  if (String(data.prNumber) !== String(currentPrNumber)) return;
+  prAuthorsRefined = { prNumber: data.prNumber, authors: data.authors };
+  if (prInfoState && String(prInfoState.prNumber) === String(data.prNumber)) {
+    updatePrInfoBar(prInfoState.prNumber, prInfoState.prTitle, prInfoState.result);
+  }
+}
+
 // Update PR info bar — just the title, subtitle removed (PR# is in the text box)
 function updatePrInfoBar(prNumber, prTitle, result) {
+  prInfoState = { prNumber, prTitle, result };
   // Title line + author/assignees line
   let html = '';
   if (prTitle) {
@@ -5647,11 +5680,10 @@ function updatePrInfoBar(prNumber, prTitle, result) {
   if (result) {
     const parts = [];
     if (result.prAuthor) parts.push(`by <strong>${escapeHtml(result.prAuthor)}</strong>`);
-    if (result.prOtherAuthors && result.prOtherAuthors.length > 0) {
-      const filtered = result.prOtherAuthors.filter(a => a && a !== result.prAuthor);
-      if (filtered.length > 0) {
-        parts.push(`· ${filtered.map(a => `<strong>${escapeHtml(a)}</strong>`).join(', ')}`);
-      }
+    const otherAuthors = otherAuthorsForPr(prNumber, result.prOtherAuthors)
+      .filter(a => a && a !== result.prAuthor);
+    if (otherAuthors.length > 0) {
+      parts.push(`· ${otherAuthors.map(a => `<strong>${escapeHtml(a)}</strong>`).join(', ')}`);
     }
     if (result.prAssignees && result.prAssignees.length > 0) {
       parts.push(`→ ${result.prAssignees.map(a => escapeHtml(a)).join(', ')}`);
@@ -6625,6 +6657,11 @@ if (shortcutsOverlay) shortcutsOverlay.addEventListener('click', (e) => {
 window.electronAPI.onOpenPreferences(() => openPreferences());
 window.electronAPI.onOpenShortcuts(() => openShortcutsDialog());
 window.electronAPI.onOpenReviewHistory(() => toggleReviewHistoryDropdown());
+// Stage 2 of the contributor line: the main process finished checking commits
+// and sent the reduced list (merge-only contributors removed).
+if (window.electronAPI.onPrAuthorsRefined) {
+  window.electronAPI.onPrAuthorsRefined(applyRefinedPrAuthors);
+}
 
 // Menu: File > Check for Updates (immediate, no idle wait)
 window.electronAPI.onCheckUpdateMenu(async () => {

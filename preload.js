@@ -73,5 +73,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   findInPage: (text, options) => ipcRenderer.invoke('find-in-page', { text, options }),
   stopFindInPage: (action) => ipcRenderer.invoke('stop-find-in-page', { action }),
   onFindResult: (callback) => ipcRenderer.on('find-result', (event, data) => callback(data)),
-  onOpenFind: (callback) => ipcRenderer.on('open-find', () => callback())
+  onOpenFind: (callback) => ipcRenderer.on('open-find', () => callback()),
+  onPrAuthorsRefined: (callback) => ipcRenderer.on('pr-authors-refined', (event, data) => callback(data))
 });
