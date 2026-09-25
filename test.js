@@ -2873,6 +2873,59 @@ async function runTests() {
   assert('Open-full-file buttons are not duplicated on re-render',
     openBtnCountAfter === openBtnCount, `before: ${openBtnCount}, after: ${openBtnCountAfter}`);
 
+  // ===================== PR DESCRIPTION HOTKEY (Cmd+D) =====================
+
+  // Cmd+D toggles the PR description dropdown, but only when a PR is loaded,
+  // so give the renderer a PR number and a body to render.
+  let prDescState = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      currentPrNumber = currentPrNumber || 99999;
+      currentPrBody = 'Description for the hotkey test';
+      return { number: currentPrNumber, alreadyOpen: !!document.querySelector('#pr-desc-dropdown.open') };
+    })()
+  `);
+  assert('Cmd+D test: PR context set (has PR: ' + prDescState.number + ')', prDescState.number);
+  assert('Cmd+D test: dropdown starts closed', !prDescState.alreadyOpen);
+
+  await mainWindow.webContents.executeJavaScript(
+    `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', metaKey: true, bubbles: true, cancelable: true })); true;`
+  );
+  let prDescOpen = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const dd = document.getElementById('pr-desc-dropdown');
+      return { exists: !!dd, open: !!(dd && dd.classList.contains('open')), text: dd ? dd.textContent.slice(0, 80) : '' };
+    })()
+  `);
+  assert('Cmd+D opens the PR description dropdown', prDescOpen.exists && prDescOpen.open);
+  assert('Cmd+D dropdown shows the PR description (got: "' + prDescOpen.text + '")',
+     prDescOpen.text.includes('hotkey test'));
+
+  // Second press toggles it closed again
+  await mainWindow.webContents.executeJavaScript(
+    `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', metaKey: true, bubbles: true, cancelable: true })); true;`
+  );
+  let prDescClosed = await mainWindow.webContents.executeJavaScript(
+    `!document.querySelector('#pr-desc-dropdown.open')`
+  );
+  assert('Cmd+D again closes the dropdown', prDescClosed);
+
+  // With no PR loaded it must stay shut instead of opening an empty panel
+  let prDescNoPr = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      currentPrNumber = null;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', metaKey: true, bubbles: true, cancelable: true }));
+      return !document.querySelector('#pr-desc-dropdown.open');
+    })()
+  `);
+  assert('Cmd+D with no PR loaded does nothing', prDescNoPr);
+
+  // Advertised in the shortcuts dialog (Shift+?)
+  const prDescShortcutRow = await mainWindow.webContents.executeJavaScript(`
+    [...document.querySelectorAll('#shortcuts-overlay .shortcut-row')]
+      .some(r => r.textContent.includes('Show PR description') && r.querySelector('kbd:nth-child(2)').textContent === 'D')
+  `);
+  assert('Shortcuts dialog lists Cmd+D (Show PR description)', prDescShortcutRow);
+
   // ===================== FIND-IN-PAGE (Cmd+F) =====================
   global.__findCalls = [];
   global.__findStops = 0;

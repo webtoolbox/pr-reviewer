@@ -2869,6 +2869,14 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Cmd+D — show/hide the PR description dropdown (same as clicking the
+  // title or the ▾ chevron)
+  if (key === 'D' && isMeta && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    if (currentPrNumber) togglePrDescDropdown();
+    return;
+  }
+
   // Cmd+Enter — submit current comment form
   if (e.key === 'Enter' && isMeta && !e.shiftKey) {
     const form = document.getElementById('active-comment-form');

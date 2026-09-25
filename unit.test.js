@@ -4510,3 +4510,34 @@ describe('Full-file viewer', () => {
     expect(rendererSrc).toContain("tpl: 'html'");
   });
 });
+
+// ── PR description dropdown hotkey (Cmd+D) ──
+
+describe('PR description hotkey', () => {
+  let rSrc;
+  let mSrc;
+  let hSrc;
+  beforeAll(() => {
+    rSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    mSrc = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    hSrc = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  });
+
+  test('keydown handler binds Cmd/Ctrl+D to the description dropdown', () => {
+    expect(rSrc).toContain("if (key === 'D' && isMeta && !e.shiftKey && !e.altKey)");
+    // must toggle the SAME dropdown the title / chevron button toggles
+    expect(rSrc).toMatch(
+      /key === 'D' && isMeta && !e\.shiftKey && !e\.altKey[\s\S]{0,160}togglePrDescDropdown\(\);/
+    );
+    // never opens an empty dropdown when no PR is loaded
+    expect(rSrc).toContain('if (currentPrNumber) togglePrDescDropdown();');
+  });
+
+  test('Cmd+D is not already taken by a menu accelerator', () => {
+    expect(mSrc).not.toMatch(/accelerator:\s*'CmdOrCtrl\+D'/);
+  });
+
+  test('shortcuts dialog advertises Cmd+D', () => {
+    expect(hSrc).toContain('<kbd>D</kbd><span class="shortcut-desc">Show PR description</span>');
+  });
+});
