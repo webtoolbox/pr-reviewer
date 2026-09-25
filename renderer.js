@@ -681,11 +681,21 @@ function restoreDraft(draft) {
   for (const c of draftComments) {
     if (!c._uid) c._uid = ++commentUidCounter;
     else commentUidCounter = Math.max(commentUidCounter, c._uid);
-    // Verify the comment's target line exists in current diff before adding
-    if (c.level !== 'file' && !findDiffLineRow(c.file, c.line, c.side)) {
-      console.warn('[restoreDraft] Skipping stale comment:', c.file, c.line, c.side);
-      continue;
-    }
+
+    // Both draft systems (file-based and PR-based) restore the same PR on a
+    // single load. Keep only one copy so the two restores don't duplicate.
+    const alreadyRestored = comments.some(x =>
+      x.file === c.file && String(x.line) === String(c.line) && x.side === c.side &&
+      x.level === c.level && x.text === c.text);
+    if (alreadyRestored) continue;
+
+    // ALWAYS keep the comment, even when its target line can't be found in the
+    // rendered diff. Skipping it here used to be permanent: autoSaveDraft()
+    // below overwrote the draft with the trimmed list, so the comment was gone
+    // for good. renderLineCommentMarker() just leaves the marker out until the
+    // line is visible again (e.g. after expanding context); the All Comments
+    // panel keeps listing it in the meantime, and submit skips (and reports)
+    // comments whose line is not in the PR diff.
     comments.push(c);
     if (c.level === 'file') {
       // Restore file-level comment marker
@@ -805,6 +815,25 @@ function insertInlineComments(commentsByFileLine, repliesByParentId) {
   }
 }
 
+// Build the grouped maps insertInlineComments* expects from the cached GitHub
+// inline review comments. Same grouping fetchAndDisplayReviewComments uses, so
+// re-insertion after a re-render shows exactly what the initial render showed.
+function groupInlineReviewComments() {
+  const commentsByFileLine = {};
+  const repliesByParentId = {};
+  for (const comment of inlineReviewComments || []) {
+    if (comment.inReplyToId) {
+      if (!repliesByParentId[comment.inReplyToId]) repliesByParentId[comment.inReplyToId] = [];
+      repliesByParentId[comment.inReplyToId].push(comment);
+    } else {
+      const key = `${comment.path}:${comment.line || comment.originalLine}`;
+      if (!commentsByFileLine[key]) commentsByFileLine[key] = [];
+      commentsByFileLine[key].push(comment);
+    }
+  }
+  return { commentsByFileLine, repliesByParentId };
+}
+
 // Re-insert this file's comment markers after its wrapper is re-rendered in
 // place (e.g. by "Show more lines" / context expand). Replacing the wrapper
 // destroys every marker that lived inside it, so we must re-render both the
@@ -821,22 +850,36 @@ function reinsertCommentsForFile(fileName) {
     }
   }
 
-  // GitHub inline review comments for this file. Build the same grouped maps
-  // fetchAndDisplayReviewComments builds, then insert only into this file.
+  // GitHub inline review comments for this file.
   if (!inlineReviewComments || inlineReviewComments.length === 0) return;
-  const commentsByFileLine = {};
-  const repliesByParentId = {};
-  for (const comment of inlineReviewComments) {
-    if (comment.inReplyToId) {
-      if (!repliesByParentId[comment.inReplyToId]) repliesByParentId[comment.inReplyToId] = [];
-      repliesByParentId[comment.inReplyToId].push(comment);
+  const { commentsByFileLine, repliesByParentId } = groupInlineReviewComments();
+  insertInlineCommentsForFile(fileName, commentsByFileLine, repliesByParentId);
+}
+
+// Re-insert EVERY comment marker after a full diff re-render
+// (renderFilteredDiff). A full redraw throws away the whole diff DOM, which
+// took every pending-comment marker and every GitHub inline comment with it —
+// the data was still in `comments` / `inlineReviewComments`, but nothing put
+// it back on screen, so comments looked deleted. Local markers are re-rendered
+// from `comments`; GitHub inline comments are re-inserted per file by LINE
+// NUMBER (insertInlineCommentsForFile), which stays correct after context
+// expansion adds rows that parsedDiff doesn't know about.
+function reinsertAllComments() {
+  for (const c of comments) {
+    if (c.level === 'file') {
+      renderFileCommentMarker(c);
     } else {
-      const key = `${comment.path}:${comment.line || comment.originalLine}`;
-      if (!commentsByFileLine[key]) commentsByFileLine[key] = [];
-      commentsByFileLine[key].push(comment);
+      renderLineCommentMarker(c);
     }
   }
-  insertInlineCommentsForFile(fileName, commentsByFileLine, repliesByParentId);
+
+  if (!inlineReviewComments || inlineReviewComments.length === 0) return;
+  const { commentsByFileLine, repliesByParentId } = groupInlineReviewComments();
+  for (const wrapper of diffContainer.querySelectorAll('.d2h-file-wrapper')) {
+    const nameEl = wrapper.querySelector('.d2h-file-name');
+    if (!nameEl) continue;
+    insertInlineCommentsForFile(nameEl.textContent.trim(), commentsByFileLine, repliesByParentId);
+  }
 }
 
 // Insert inline review comments for a single named file only (used after a
@@ -1460,6 +1503,12 @@ function renderSingleFileInPlace(fileName, fileDiff) {
 
   // Preserve an open, unposted comment draft in this file across the swap
   const openDraft = captureOpenCommentDraft();
+  // Close the form as well: reinsertCommentsForFile() renders markers into
+  // rows, and renderLineCommentMarker() reuses an open form row by REPLACING
+  // it — that would drop a marker onto whatever line the form sat on (often in
+  // a different file) and destroy the unposted draft. restoreCommentDraft()
+  // reopens it after the swap.
+  if (openDraft) closeCommentDialog();
 
   // Render just this file to an HTML string with the same config used elsewhere
   const html = Diff2Html.html(fileDiff, {
@@ -1830,8 +1879,10 @@ function renderLineCommentMarker(comment) {
     if (lineRow) {
       lineRow.parentNode.insertBefore(marker, lineRow.nextSibling);
     } else {
-      // Comment line not found in current diff — skip it (stale line numbers)
-      console.warn('[restoreDraft] Skipping comment — line not found:', comment.file, comment.line, comment.side);
+      // Line not in the current diff. The comment itself stays in `comments`
+      // (and in the saved draft) — only the marker is left out until the line
+      // is visible again, e.g. after expanding context.
+      console.warn('[markers] Line not in current diff, comment kept without a marker:', comment.file, comment.line, comment.side);
       marker.remove();
       return;
     }
@@ -1844,6 +1895,10 @@ function renderLineCommentMarker(comment) {
 function findDiffLineRow(fileName, lineNum, side) {
   if (!diffContainer || !fileName || !lineNum) return null;
   const targetLine = parseInt(lineNum, 10);
+  if (isNaN(targetLine)) return null;
+  // Side-by-side renders two stacked side diffs (left = old file, right = new
+  // file); unknown sides are treated as RIGHT to match the rest of the app.
+  const wantRight = side !== 'LEFT';
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
   for (const wrapper of fileWrappers) {
     const nameEl = wrapper.querySelector('.d2h-file-name');
@@ -1868,7 +1923,23 @@ function findDiffLineRow(fileName, lineNum, side) {
         // Fallback: check both line numbers
         const num1 = num1El ? parseInt(num1El.textContent.trim(), 10) : NaN;
         const num2 = num2El ? parseInt(num2El.textContent.trim(), 10) : NaN;
-        if (num1 === lineNum || num2 === lineNum) return row;
+        if (num1 === targetLine || num2 === targetLine) return row;
+      }
+    }
+
+    // Side-by-side (split) mode: no .d2h-code-linenumber and no
+    // .line-num1/.line-num2 divs — the number is plain text inside
+    // .d2h-code-side-linenumber, one side per row. Without this branch every
+    // row lookup failed in split view, so markers could never be re-placed
+    // after a re-render (they vanished and the draft got re-saved without them).
+    const sideDiffs = wrapper.querySelectorAll('.d2h-file-side-diff');
+    if (sideDiffs.length > 0) {
+      const sideDiff = sideDiffs.length > 1 ? sideDiffs[wantRight ? 1 : 0] : sideDiffs[0];
+      for (const row of sideDiff.querySelectorAll('tr')) {
+        const cell = row.querySelector('.d2h-code-side-linenumber');
+        if (!cell || cell.classList.contains('d2h-code-side-emptyplaceholder')) continue;
+        const num = parseInt(cell.textContent.trim(), 10);
+        if (num === targetLine) return row;
       }
     }
   }
@@ -4242,6 +4313,12 @@ const originalLoadDiff = typeof loadDiff !== 'undefined' ? loadDiff : null;
 function renderFilteredDiff() {
   if (!currentDiffContent) return;
 
+  // draw() replaces the whole diff DOM: every comment marker goes with it, and
+  // so does an open (unposted) comment form. Capture the draft up front, then
+  // re-insert all markers and reopen the draft once the redraw is done.
+  const openDraft = captureOpenCommentDraft();
+  if (openDraft) closeCommentDialog();
+
   // Determine which extensions are excluded (before sorting so filtered files
   // are pushed to the bottom)
   const allExts = extractExtensionsFromDiff(currentDiffContent);
@@ -4283,6 +4360,11 @@ function renderFilteredDiff() {
   addFunctionPreviewHandlers();
   // Re-run an active find so highlights stay in sync with the fresh DOM
   rerunActiveFind();
+
+  // The redraw destroyed every comment marker in the diff — put them all back,
+  // then reopen the comment form that was open before the redraw.
+  reinsertAllComments();
+  restoreCommentDraft(openDraft);
 }
 
 /**

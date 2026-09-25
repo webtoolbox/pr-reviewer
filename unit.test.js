@@ -2729,6 +2729,63 @@ describe('Dark color scheme consistency', () => {
     expect(reinsertFn).toContain('renderLineCommentMarker(c)');
     expect(reinsertFn).toContain('insertInlineCommentsForFile(fileName');
   });
+
+  test('full diff re-render re-inserts every comment marker and reopens the form', () => {
+    // renderFilteredDiff redraws the whole diff (Preferences save, context
+    // expand fallback). draw() throws the diff DOM away, which used to take
+    // every pending-comment marker with it — the comments stayed in
+    // `comments`, but nothing put them back on screen.
+    const start = rendererSource.indexOf('function renderFilteredDiff');
+    expect(start).toBeGreaterThan(-1);
+    const fn = rendererSource.substring(start, rendererSource.indexOf('\nfunction ', start + 1));
+    expect(fn).toContain('captureOpenCommentDraft()');
+    expect(fn).toContain('closeCommentDialog()');
+    expect(fn).toContain('reinsertAllComments();');
+    expect(fn).toContain('restoreCommentDraft(openDraft);');
+
+    const reinsertStart = rendererSource.indexOf('function reinsertAllComments');
+    expect(reinsertStart).toBeGreaterThan(-1);
+    const reinsertAll = rendererSource.substring(
+      reinsertStart,
+      rendererSource.indexOf('\nfunction ', reinsertStart + 1)
+    );
+    // local draft markers AND GitHub inline review comments
+    expect(reinsertAll).toContain('renderFileCommentMarker(c)');
+    expect(reinsertAll).toContain('renderLineCommentMarker(c)');
+    expect(reinsertAll).toContain('insertInlineCommentsForFile(');
+  });
+
+  test('findDiffLineRow reads side-by-side (split) rows', () => {
+    // Split view renders two stacked side diffs with the line number as plain
+    // text in .d2h-code-side-linenumber — no .d2h-code-linenumber and no
+    // .line-num1/.line-num2 divs. Without this branch every lookup returned
+    // null in split view, so markers could never be re-placed and a restore
+    // silently dropped them.
+    const start = rendererSource.indexOf('function findDiffLineRow');
+    expect(start).toBeGreaterThan(-1);
+    const fn = rendererSource.substring(start, rendererSource.indexOf('\nfunction ', start + 1));
+    expect(fn).toContain(".querySelectorAll('.d2h-file-side-diff')");
+    expect(fn).toContain(".querySelector('.d2h-code-side-linenumber')");
+    expect(fn).toContain('wantRight');
+    // and it must still handle unified rows
+    expect(fn).toContain(".querySelector('.d2h-code-linenumber')");
+    expect(fn).toContain('.line-num1');
+  });
+
+  test('restoreDraft keeps comments it cannot place and never duplicates them', () => {
+    // The old code did `continue` on a line it could not find, then called
+    // autoSaveDraft() — overwriting the draft without those comments, which
+    // was permanent data loss (they also vanished from the All Comments panel).
+    const start = rendererSource.indexOf('function restoreDraft');
+    expect(start).toBeGreaterThan(-1);
+    const fn = rendererSource.substring(start, rendererSource.indexOf('\nfunction ', start + 1));
+    expect(fn).not.toContain('Skipping stale comment');
+    expect(fn).toContain('comments.push(c);');
+    expect(fn).toContain('autoSaveDraft();');
+    // Both draft systems (file-based and PR-based) restore the same PR on one
+    // load, so restoreDraft must skip an identical comment already present.
+    expect(fn).toContain('alreadyRestored');
+  });
 });
 
 // ── Auto-advance after approve ──

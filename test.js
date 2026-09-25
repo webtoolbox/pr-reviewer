@@ -319,6 +319,134 @@ async function runTests() {
   `);
   assert('Button shows 2 comments', btnText2.includes('2'), `text: "${btnText2}"`);
 
+  // ── Pending-comment survival ──────────────────────────────────────────────
+  // Four paths used to silently drop pending comment markers: a full diff
+  // re-render, a split-view row lookup, a draft restore that could not place a
+  // comment (it then re-saved the draft without it), and an open comment form
+  // during an in-place expand.
+
+  // TEST 23b: markers survive a full diff re-render (Preferences save / expand
+  // fallback both redraw the whole diff)
+  const fullReRender = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const before = document.querySelectorAll('.line-comment-marker').length;
+      renderFilteredDiff();
+      return { before,
+               after: document.querySelectorAll('.line-comment-marker').length,
+               comments: comments.length };
+    })()
+  `);
+  assert('Markers survive a full diff re-render',
+    fullReRender.before > 0 && fullReRender.after === fullReRender.before,
+    JSON.stringify(fullReRender));
+
+  // TEST 23c: row lookup and marker re-insertion work in split view
+  const splitLookup = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      currentDiffViewMode = 'split';
+      renderFilteredDiff();
+      const sideDiffs = document.querySelectorAll('.d2h-file-side-diff').length;
+      const lineComments = comments.filter(c => c.level !== 'file');
+      const rows = lineComments.map(c => !!findDiffLineRow(c.file, c.line, c.side));
+      return { sideDiffs, rows,
+               markers: document.querySelectorAll('.line-comment-marker').length,
+               comments: lineComments.length };
+    })()
+  `);
+  assert('Split view: findDiffLineRow locates every commented line',
+    splitLookup.sideDiffs > 0 &&
+    splitLookup.rows.length > 0 && splitLookup.rows.every(Boolean),
+    JSON.stringify(splitLookup));
+  assert('Split view: every pending marker is re-inserted',
+    splitLookup.markers === splitLookup.comments && splitLookup.markers > 0,
+    JSON.stringify(splitLookup));
+
+  // TEST 23d: a draft restore in split view creates markers instead of
+  // dropping the comments (the old code skipped them, then saved the trimmed
+  // draft back to disk — permanent loss)
+  const splitRestore = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const kept = JSON.parse(JSON.stringify(comments));
+      comments.length = 0;
+      document.querySelectorAll('.line-comment-marker').forEach(m => m.remove());
+      restoreDraft({ comments: kept });
+      return { restored: comments.length,
+               markers: document.querySelectorAll('.line-comment-marker').length };
+    })()
+  `);
+  assert('Split view: draft restore re-creates every marker',
+    splitRestore.restored === splitRestore.markers && splitRestore.markers > 0,
+    JSON.stringify(splitRestore));
+
+  // TEST 23e: a comment whose line is not in the diff is kept, not deleted
+  const staleKeep = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const before = comments.length;
+      restoreDraft({ comments: [{ file: 'no/such/file.js', line: '99999', side: 'LEFT',
+                                  level: 'line', text: 'stale' }] });
+      const after = comments.length;
+      comments.pop();   // leave the suite exactly as we found it
+      updateCommentCount();
+      updateCommentNav();
+      return { before, after };
+    })()
+  `);
+  assert('Restore keeps a comment it cannot place',
+    staleKeep.after === staleKeep.before + 1, JSON.stringify(staleKeep));
+
+  // Back to unified for the remaining tests
+  await mainWindow.webContents.executeJavaScript(`
+    currentDiffViewMode = 'unified';
+    renderFilteredDiff();
+  `);
+
+  // TEST 23f: an open comment form survives an in-place expand of another file
+  const formSurvives = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const wrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper'));
+      if (wrappers.length < 2) return { skipped: 'only ' + wrappers.length + ' file(s)' };
+      const untouched = wrappers[1];
+      const btn = untouched.querySelector('.line-comment-btn');
+      if (!btn) return { skipped: 'no comment button in second file' };
+      btn.click();
+      const ta = document.querySelector('#active-comment-form textarea');
+      if (!ta) return { skipped: 'dialog did not open' };
+      ta.value = 'unposted draft';
+
+      const markerBefore = document.querySelectorAll('.line-comment-marker').length;
+      const first = wrappers[0];
+      const fileName = first.querySelector('.d2h-file-name').textContent.trim();
+      const start = currentDiffContent.indexOf('diff --git a/' + fileName);
+      if (start === -1) return { skipped: 'file not in current diff: ' + fileName };
+      const next = currentDiffContent.indexOf('\\ndiff --git ', start + 1);
+      const fileDiff = currentDiffContent.slice(start, next === -1 ? currentDiffContent.length : next + 1);
+
+      renderSingleFileInPlace(fileName, fileDiff);
+      await new Promise(r => setTimeout(r, 100));
+
+      const form = document.getElementById('active-comment-form');
+      const formTa = form && form.querySelector('#comment-text');
+      return { markerBefore,
+               markerAfter: document.querySelectorAll('.line-comment-marker').length,
+               comments: comments.length,
+               formOpen: !!form,
+               draftText: formTa ? formTa.value : null };
+    })()
+  `);
+  assert('Open comment form survives an in-place expand of another file',
+    formSurvives.formOpen === true && formSurvives.draftText === 'unposted draft',
+    JSON.stringify(formSurvives));
+  assert('Markers are unchanged by an in-place expand with a form open',
+    formSurvives.markerAfter === formSurvives.markerBefore &&
+    formSurvives.markerBefore > 0 && formSurvives.comments === 2,
+    JSON.stringify(formSurvives));
+
+  // Close the restored form so the tests below start clean
+  await mainWindow.webContents.executeJavaScript(`
+    closeCommentDialog();
+  `);
+
+
   // TEST 24: Review body textarea works
   const textareaTest = await mainWindow.webContents.executeJavaScript(`
     (() => {
