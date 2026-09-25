@@ -1642,6 +1642,95 @@
     .pr-title-line .pr-compare-toggle svg { width: 14px; height: 14px; }
     /* legacy .pr-compare-toggle selectors removed */
 
+    /* Open-full-file viewer dialog (whole file + Cmd+F + highlighting) */
+    .open-file-btn {
+      background: none; border: none; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 2px; margin-left: 6px; flex-shrink: 0;
+      position: relative; vertical-align: middle;
+    }
+    .open-file-btn svg {
+      width: 14px; height: 14px; stroke: #8b949e; fill: none;
+      transition: stroke 0.15s;
+    }
+    .open-file-btn:hover svg { stroke: #58a6ff; }
+
+    .file-viewer-overlay {
+      position: fixed; inset: 0; z-index: 1600;
+      background: rgba(1, 4, 9, 0.72);
+      display: none; align-items: center; justify-content: center;
+    }
+    .fv-dialog {
+      width: min(1180px, 96vw); height: 90vh;
+      background: #0d1117; border: 1px solid #30363d; border-radius: 10px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .fv-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; background: #161b22; border-bottom: 1px solid #30363d;
+      flex-shrink: 0;
+    }
+    .fv-file-icon { color: #8b949e; display: flex; }
+    .fv-title {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+      color: #c9d1d9; max-width: 42%;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .fv-ref {
+      font-size: 11px; color: #8b949e; background: #21262d;
+      border: 1px solid #30363d; padding: 1px 6px; border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .fv-spacer { flex: 1; }
+    .fv-icon-btn {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      border-radius: 6px; padding: 4px 7px; cursor: pointer;
+      display: inline-flex; align-items: center; font-size: 12px;
+    }
+    .fv-icon-btn:hover { background: #30363d; }
+    .fv-find {
+      display: none; align-items: center; gap: 6px;
+      background: #0d1117; border: 1px solid #30363d;
+      border-radius: 6px; padding: 2px 6px;
+    }
+    .fv-find input {
+      background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+      border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 190px;
+      outline: none; font-family: inherit;
+    }
+    .fv-find input:focus { border-color: #58a6ff; }
+    .fv-find-count { font-size: 11px; color: #8b949e; min-width: 46px; text-align: center; }
+    .fv-find-count.no-match { color: #f85149; }
+    .fv-find-btn {
+      background: none; border: none; color: #8b949e; cursor: pointer;
+      font-size: 10px; padding: 2px 3px;
+    }
+    .fv-find-btn:hover { color: #c9d1d9; }
+    .fv-body {
+      flex: 1; overflow: auto; background: #0d1117;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12.5px; line-height: 19px;
+      padding: 10px 0;
+    }
+    .fv-line { display: flex; width: max-content; min-width: 100%; }
+    .fv-num {
+      flex: none; width: 64px; padding-right: 14px; text-align: right;
+      color: #484f58; user-select: none; -webkit-user-select: none;
+      position: sticky; left: 0; background: #0d1117;
+    }
+    .fv-code { flex: 1; min-width: 0; padding-right: 16px; white-space: pre; tab-size: 4; }
+    /* hljs' own theme sets a background; keep the line background clean so
+       highlight matches and selection stay visible. */
+    .fv-code.hljs { background: transparent !important; padding: 0; }
+    .fv-loading { color: #8b949e; padding: 24px; font-size: 13px; }
+    .fv-loading.fv-error { color: #f85149; }
+    .fv-status { color: #484f58; font-size: 11px; padding: 10px 16px 18px; }
+
+    /* Find matches inside the file viewer (CSS Custom Highlight API) */
+    ::highlight(fv-find) { background-color: rgba(255, 211, 61, 0.35); }
+    ::highlight(fv-find-active) { background-color: #ffd33d; color: #0d1117; }
+
     /* Before/After slideshow overlay */
     .compare-overlay {
       position: fixed; top: 0; left: 0; right: 0; bottom: 0;

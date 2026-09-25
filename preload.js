@@ -11,6 +11,7 @@ try {
 contextBridge.exposeInMainWorld('electronAPI', {
   rendererLog: (level, ...args) => ipcRenderer.invoke('renderer-log', level, ...args),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
+  readFileContent: (repoPath, filePath, ref) => ipcRenderer.invoke('read-file-content', { repoPath, filePath, ref }),
   checkoutMaster: (repoKey) => ipcRenderer.invoke('checkout-master', { repoKey }),
   openFile: () => ipcRenderer.invoke('open-file'),
   saveReview: (review) => ipcRenderer.invoke('save-review', review),

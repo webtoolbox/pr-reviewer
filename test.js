@@ -2746,6 +2746,133 @@ async function runTests() {
   );
   assert('addCopyFileNameButtons function exists', fnExists);
 
+  // ===================== FULL-FILE VIEWER DIALOG =====================
+
+  // The viewer needs a repo path to run git show against (set when a PR is
+  // loaded via load-pr; this harness injects the diff directly).
+  await mainWindow.webContents.executeJavaScript(`
+    currentRepoPath = currentRepoPath || '/tmp/fake-repo';
+    true;
+  `);
+
+  // TEST: open-full-file buttons exist on every file header
+  const openBtnCount = await mainWindow.webContents.executeJavaScript(`
+    document.querySelectorAll('.open-file-btn').length
+  `);
+  assert('Open-full-file buttons on every file header',
+    openBtnCount === headerCount, `buttons: ${openBtnCount}, headers: ${headerCount}`);
+
+  // TEST: button has an icon and the expected tooltip
+  const openBtnMeta = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.open-file-btn');
+      if (!btn) return null;
+      return { title: btn.title, hasSvg: btn.querySelector('svg') !== null,
+               inHeader: !!btn.closest('.d2h-file-header') };
+    })()
+  `);
+  assert('Open-full-file button has icon + tooltip in the file header',
+    !!openBtnMeta && openBtnMeta.hasSvg && openBtnMeta.inHeader &&
+    openBtnMeta.title === 'Open full file (Cmd+F to search)', JSON.stringify(openBtnMeta));
+
+  // TEST: clicking it opens the dialog and renders the whole file
+  const viewerOpened = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const btn = document.querySelector('.open-file-btn');
+      if (!btn) return { ok: false, reason: 'no button' };
+      btn.click();
+      await new Promise(r => setTimeout(r, 400));
+      const overlay = document.getElementById('file-viewer-overlay');
+      if (!overlay || overlay.style.display === 'none') return { ok: false, reason: 'overlay not visible' };
+      const lines = overlay.querySelectorAll('.fv-line').length;
+      const nums = overlay.querySelectorAll('.fv-num').length;
+      const lastNum = nums ? overlay.querySelectorAll('.fv-num')[nums - 1].textContent : '';
+      const spans = overlay.querySelectorAll('.fv-code span[class^="hljs-"]').length;
+      const title = overlay.querySelector('.fv-title').textContent;
+      const status = overlay.querySelector('.fv-status');
+      return { ok: true, lines, nums, lastNum, spans, title,
+               status: status ? status.textContent : '' };
+    })()
+  `);
+  assert('Full-file viewer opens with one line per line number',
+    !!viewerOpened.ok && viewerOpened.lines > 0 && viewerOpened.lines === viewerOpened.nums &&
+    viewerOpened.lastNum === String(viewerOpened.lines), JSON.stringify(viewerOpened));
+  assert('Full-file viewer highlights syntax',
+    !!viewerOpened.ok && viewerOpened.spans > 0, `hljs spans: ${viewerOpened && viewerOpened.spans}`);
+  assert('Full-file viewer shows file name and line count',
+    !!viewerOpened.ok && viewerOpened.title.indexOf('src/utils.js') !== -1 &&
+    /lines/.test(viewerOpened.status), JSON.stringify(viewerOpened));
+
+  // TEST: Cmd+F opens the dialog's find bar (not the page find bar)
+  const findOpened = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true }));
+      const bar = document.getElementById('fv-find-bar');
+      const pageBar = document.getElementById('find-bar');
+      return { open: !!bar && bar.style.display !== 'none',
+               pageFindOpen: !!pageBar && pageBar.style.display !== 'none' };
+    })()
+  `);
+  assert('Cmd+F opens the file viewer find bar',
+    findOpened.open && !findOpened.pageFindOpen, JSON.stringify(findOpened));
+
+  // TEST: searching counts matches and Cmd+G walks them
+  const findResult = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const input = document.getElementById('fv-find-input');
+      if (!input) return { ok: false, reason: 'no find input' };
+      input.value = 'FINDME';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 400)); // 120ms debounce
+      const count1 = document.getElementById('fv-find-count').textContent;
+      const painted = (window.CSS && CSS.highlights && CSS.highlights.get('fv-find'))
+        ? CSS.highlights.get('fv-find').size : -1;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', metaKey: true, bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 50));
+      const count2 = document.getElementById('fv-find-count').textContent;
+      const active = (window.CSS && CSS.highlights && CSS.highlights.get('fv-find-active'))
+        ? CSS.highlights.get('fv-find-active').size : -1;
+      return { ok: true, count1, count2, painted, active };
+    })()
+  `);
+  assert('Find bar counts matches in the file',
+    !!findResult.ok && findResult.count1 === '1/2' && findResult.painted === 2,
+    JSON.stringify(findResult));
+  assert('Cmd+G advances to the next match',
+    !!findResult.ok && findResult.count2 === '2/2' && findResult.active === 1,
+    JSON.stringify(findResult));
+
+  // TEST: Esc closes find first, then the dialog
+  const escResult = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      const bar = document.getElementById('fv-find-bar');
+      const overlay = document.getElementById('file-viewer-overlay');
+      const afterFirst = { findOpen: !!bar && bar.style.display !== 'none',
+                           dialogOpen: !!overlay && overlay.style.display !== 'none' };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      const overlay2 = document.getElementById('file-viewer-overlay');
+      return { afterFirst, dialogGone: !overlay2 };
+    })()
+  `);
+  assert('Esc closes find, second Esc closes the dialog',
+    !escResult.afterFirst.findOpen && escResult.afterFirst.dialogOpen && escResult.dialogGone,
+    JSON.stringify(escResult));
+
+  // TEST: highlights are cleared when the dialog closes
+  const highlightsCleared = await mainWindow.webContents.executeJavaScript(`
+    !(window.CSS && CSS.highlights && CSS.highlights.get('fv-find'))
+  `);
+  assert('Find highlights are removed when the dialog closes', highlightsCleared === true);
+
+  // TEST: addCopyFileNameButtons stays idempotent with two buttons per header
+  await mainWindow.webContents.executeJavaScript(`addCopyFileNameButtons();`);
+  const openBtnCountAfter = await mainWindow.webContents.executeJavaScript(`
+    document.querySelectorAll('.open-file-btn').length
+  `);
+  assert('Open-full-file buttons are not duplicated on re-render',
+    openBtnCountAfter === openBtnCount, `before: ${openBtnCount}, after: ${openBtnCountAfter}`);
+
   // ===================== FIND-IN-PAGE (Cmd+F) =====================
   global.__findCalls = [];
   global.__findStops = 0;
@@ -3154,6 +3281,20 @@ async function runTests() {
 
 ipcMain.handle('open-file', async () => null);
 ipcMain.handle('copy-text', async (event, text) => { return true; });
+// Full-file viewer: serve language-appropriate content with a FINDME marker
+// twice so the dialog's Cmd+F can be exercised.
+ipcMain.handle('read-file-content', async (event, { filePath, ref } = {}) => {
+  const name = String(filePath || '');
+  let body;
+  if (/\.m?js$/.test(name)) {
+    body = '// FINDME header\nconst a = 1;\nfunction b() {\n  return a;\n}\n// FINDME again\n';
+  } else if (/\.(pm|pl|cgi|t)$/.test(name)) {
+    body = '# FINDME header\nmy $x = 1;\nsub b {\n  return $x;\n}\n# FINDME again\n';
+  } else {
+    body = '<!-- FINDME header -->\n<div class="menu">\n  <span>hi</span>\n</div>\n<!-- FINDME again -->\n';
+  }
+  return { content: body, ref: ref || 'HEAD' };
+});
 ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', hermesProfile: 'wt', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
 ipcMain.handle('save-review', async (event, review) => {
   const outputPath = path.join(app.getPath('temp'), 'diff-review-pending.json');

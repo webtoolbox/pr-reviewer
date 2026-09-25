@@ -4312,3 +4312,54 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
     return { error: err.message, content: '' };
   }
 });
+
+
+// ===================== READ FULL FILE (file viewer dialog) =====================
+
+// Reads one file's entire content at a given ref so the renderer can open it
+// in a dialog. Kept as a standalone function (instead of inline in the IPC
+// handler) so unit tests can run it with an injected exec — main.js can't be
+// required directly because it boots Electron (see Pitfall 139).
+async function readFileAtRef(repoPath, filePath, ref, execFn) {
+  const run = execFn || execPromise;
+  if (!repoPath || !filePath) return { error: 'Missing repo path or file path' };
+  // Same guard as expand-diff-context: the path goes into a shell command.
+  if (/[;&|`$(){}!<>"]/.test(filePath)) return { error: 'Invalid file path' };
+  // The ref is interpolated too — only accept a sha or a plain ref name.
+  const safeRef = /^[0-9a-zA-Z._\/-]{1,200}$/.test(String(ref || '')) ? String(ref) : 'HEAD';
+  const spec = JSON.stringify(safeRef + ':' + filePath); // shell-quoted "ref:path"
+  const opts = { cwd: repoPath, timeout: 30000, maxBuffer: 64 * 1024 * 1024 };
+  log('INFO', '[read-file] Reading', filePath, 'at', safeRef);
+  try {
+    const content = await run(`git show ${spec}`, opts);
+    log('INFO', '[read-file] Got', (content || '').length, 'chars for', filePath);
+    return { content: content || '', ref: safeRef };
+  } catch (err) {
+    log('WARN', '[read-file] Failed at', safeRef + ':', err.message.split('\n')[0]);
+    // The file may not exist at that ref (new file after the review base, or
+    // deleted at head) — fall back to whatever HEAD has before giving up.
+    if (safeRef !== 'HEAD') {
+      try {
+        const content = await run(`git show ${JSON.stringify('HEAD:' + filePath)}`, opts);
+        log('INFO', '[read-file] Fallback to HEAD got', (content || '').length, 'chars');
+        return {
+          content: content || '',
+          ref: 'HEAD',
+          note: 'Not present at ' + safeRef + ' — showing HEAD.'
+        };
+      } catch (err2) {
+        log('WARN', '[read-file] HEAD fallback failed:', err2.message.split('\n')[0]);
+      }
+    }
+    return { error: 'Could not read ' + filePath + ': ' + (err.message || '').split('\n')[0] };
+  }
+}
+
+ipcMain.handle('read-file-content', async (event, { repoPath, filePath, ref } = {}) => {
+  try {
+    return await readFileAtRef(repoPath, filePath, ref);
+  } catch (err) {
+    log('ERROR', '[read-file] handler error:', err.message);
+    return { error: err.message };
+  }
+});

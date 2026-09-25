@@ -1147,6 +1147,7 @@ function addCopyFileNameButtons() {
   const fileHeaders = document.querySelectorAll('.d2h-file-header');
   fileHeaders.forEach(header => {
     addCopyFileNameButtonForHeader(header);
+    addOpenFileButtonForHeader(header);
   });
 }
 
@@ -1182,6 +1183,391 @@ function addCopyFileNameButtonForHeader(header) {
 
   // Insert right after the file name (before stats)
   fileNameEl.after(copyBtn);
+}
+
+// ===================== OPEN FULL FILE (viewer dialog) =====================
+// Header button that opens a file's ENTIRE content in a dialog. The diff only
+// shows hunks around the changes; reviewers often need to read the whole file.
+// Comes with syntax highlighting and its own Cmd+F find bar (page-level find
+// would also count matches in the diff behind the dialog).
+
+// Only languages bundled in hljs-bundle.js (see that file's registerLanguage
+// list) — asking hljs for an unregistered language throws.
+const FILE_VIEWER_LANG = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+  ts: 'typescript', tsx: 'typescript', json: 'json',
+  css: 'css', less: 'css', scss: 'css', sass: 'css',
+  html: 'html', htm: 'html', xhtml: 'html', tpl: 'html', twig: 'html',
+  xml: 'xml', svg: 'xml', vue: 'xml', xsl: 'xml',
+  md: 'markdown', markdown: 'markdown', yml: 'yaml', yaml: 'yaml',
+  py: 'python', rb: 'ruby', php: 'php',
+  sh: 'bash', zsh: 'bash', bash: 'bash', fish: 'bash',
+  sql: 'sql', pl: 'perl', pm: 'perl', cgi: 'perl', t: 'perl', pod: 'perl',
+  go: 'go', rs: 'rust', java: 'java', c: 'c', h: 'c',
+  cpp: 'cpp', cc: 'cpp', hpp: 'cpp', hxx: 'cpp',
+  ini: 'ini', conf: 'ini', cfg: 'ini', env: 'ini', toml: 'ini',
+  mk: 'makefile'
+};
+const FILE_VIEWER_MAX_CHARS = 1500000;
+const FILE_VIEWER_MAX_LINES = 20000;
+
+// Find state for the dialog's own find bar.
+let fvState = { fileName: null, matches: [], index: -1 };
+
+function addOpenFileButtonForHeader(header) {
+  if (header.querySelector('.open-file-btn')) return;
+  const fileNameEl = header.querySelector('.d2h-file-name');
+  if (!fileNameEl) return;
+
+  const btn = document.createElement('button');
+  btn.className = 'open-file-btn';
+  btn.title = 'Open full file (Cmd+F to search)';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+    '<path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    openFullFileViewer(fileNameEl.textContent.trim());
+  });
+  // Sits right after the copy-path button (same anchor logic as that button).
+  const anchor = header.querySelector('.copy-file-name-btn') || fileNameEl;
+  anchor.after(btn);
+}
+
+function isFileViewerOpen() {
+  const overlay = document.getElementById('file-viewer-overlay');
+  return !!(overlay && overlay.style.display !== 'none');
+}
+
+function closeFullFileViewer() {
+  fvState = { fileName: null, matches: [], index: -1 };
+  // Drop custom highlights so they don't paint over the diff behind us.
+  if (window.CSS && CSS.highlights) {
+    CSS.highlights.delete('fv-find');
+    CSS.highlights.delete('fv-find-active');
+  }
+  const overlay = document.getElementById('file-viewer-overlay');
+  if (overlay) overlay.remove();
+}
+
+function openFullFileViewer(fileName) {
+  if (!fileName) return;
+  if (!currentRepoPath) {
+    showToast('No repository available', 'error', 3000);
+    return;
+  }
+  closeFullFileViewer();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'file-viewer-overlay';
+  overlay.id = 'file-viewer-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="fv-dialog" role="dialog" aria-label="Full file viewer">
+      <div class="fv-header">
+        <span class="fv-file-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+        </span>
+        <span class="fv-title" title="Full file"></span>
+        <span class="fv-ref" id="fv-ref-label"></span>
+        <div class="fv-find" id="fv-find-bar" style="display:none">
+          <input id="fv-find-input" type="text" placeholder="Find in file" spellcheck="false" autocomplete="off">
+          <span class="fv-find-count" id="fv-find-count">0/0</span>
+          <button class="fv-find-btn" id="fv-find-prev" title="Previous match (Shift+Cmd+G)">▲</button>
+          <button class="fv-find-btn" id="fv-find-next" title="Next match (Cmd+G)">▼</button>
+          <button class="fv-find-btn" id="fv-find-close" title="Close find (Esc)">✕</button>
+        </div>
+        <span class="fv-spacer"></span>
+        <button class="fv-icon-btn" id="fv-find-open" title="Find in file (Cmd+F)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        </button>
+        <button class="fv-icon-btn" id="fv-close" title="Close (Esc)">✕</button>
+      </div>
+      <div class="fv-body" id="fv-body"><div class="fv-loading">Loading…</div></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#fv-close').addEventListener('click', closeFullFileViewer);
+  overlay.querySelector('#fv-find-open').addEventListener('click', fileViewerFindOpen);
+  overlay.querySelector('#fv-find-close').addEventListener('click', fileViewerCloseFind);
+  overlay.querySelector('#fv-find-prev').addEventListener('click', () => fvGo(-1));
+  overlay.querySelector('#fv-find-next').addEventListener('click', () => fvGo(1));
+  // Click on the backdrop (outside the dialog) closes it.
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === overlay) closeFullFileViewer();
+  });
+
+  const findInput = overlay.querySelector('#fv-find-input');
+  let fvDebounce = null;
+  findInput.addEventListener('input', () => {
+    clearTimeout(fvDebounce);
+    fvDebounce = setTimeout(fileViewerRunFind, 120);
+  });
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); fvGo(e.shiftKey ? -1 : 1); return; }
+    if (e.key === 'Escape') { e.preventDefault(); fileViewerCloseFind(); return; }
+    const isMeta = e.metaKey || e.ctrlKey;
+    if (isMeta && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); fvGo(e.shiftKey ? -1 : 1); }
+  });
+
+  const titleEl = overlay.querySelector('.fv-title');
+  titleEl.textContent = fileName;
+  titleEl.title = fileName;
+
+  const ref = currentHeadSha || 'HEAD';
+  const body = document.getElementById('fv-body');
+  body.innerHTML = '<div class="fv-loading">Loading ' + escapeHtml(fileName) + '…</div>';
+
+  window.electronAPI.readFileContent(currentRepoPath, fileName, ref).then((result) => {
+    if (!isFileViewerOpen()) return; // dialog was closed while loading
+    renderFileViewerContent(fileName, result || {});
+  }).catch((err) => {
+    console.error('[file-viewer] readFileContent failed:', err);
+    if (!isFileViewerOpen()) return;
+    const b = document.getElementById('fv-body');
+    if (b) b.innerHTML = '<div class="fv-loading fv-error">' + escapeHtml('Failed to load file: ' + (err && err.message ? err.message : err)) + '</div>';
+  });
+}
+
+// Split hljs HTML on newlines, re-opening any still-open tags at the start of
+// each line so every line can live in its own element.
+function splitHighlightedLines(html) {
+  const lines = [];
+  let current = '';
+  const openTags = [];
+  const tagRe = /<[^>]+>/g;
+  let lastIndex = 0;
+  let m;
+  const pushText = (text) => {
+    const parts = text.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      current += parts[i];
+      if (i < parts.length - 1) {
+        lines.push(current);
+        current = openTags.join('');
+      }
+    }
+  };
+  while ((m = tagRe.exec(html)) !== null) {
+    pushText(html.slice(lastIndex, m.index));
+    const tag = m[0];
+    if (tag.startsWith('</')) openTags.pop();
+    else if (/^<[a-zA-Z]/.test(tag) && !tag.endsWith('/>')) openTags.push(tag);
+    current += tag;
+    lastIndex = tagRe.lastIndex;
+  }
+  pushText(html.slice(lastIndex));
+  lines.push(current);
+  return lines;
+}
+
+function detectFileLanguage(fileName, content) {
+  if (!window.hljs) return null;
+  const pick = (name) => (window.hljs.getLanguage(name) ? name : null);
+  const base = String(fileName || '').split('/').pop() || '';
+  if (/^makefile$/i.test(base)) return pick('makefile');
+  if (/^dockerfile$/i.test(base)) return pick('dockerfile');
+  const ext = base.includes('.') ? base.split('.').pop().toLowerCase() : '';
+  if (FILE_VIEWER_LANG[ext]) {
+    const lang = pick(FILE_VIEWER_LANG[ext]);
+    if (lang) return lang;
+  }
+  const head = String(content || '').split('\n').slice(0, 40).join('\n');
+  // Extensionless Perl CGI scripts (Pitfall 62): check the shebang/imports.
+  if (/^#!.*\bperl\b/m.test(head) || /^\s*use\s+(strict|warnings)\b/m.test(head)) {
+    const perl = pick('perl');
+    if (perl) return perl;
+  }
+  try {
+    // Let hljs guess for everything else (Pitfall 73).
+    const guess = window.hljs.highlightAuto(head.slice(0, 4000));
+    if (guess.language && guess.relevance > 5) return pick(guess.language);
+  } catch (err) { /* fall through to plain text */ }
+  return null;
+}
+
+function renderFileViewerContent(fileName, result) {
+  const body = document.getElementById('fv-body');
+  if (!body) return;
+  body.innerHTML = '';
+  fvState = { fileName, matches: [], index: -1 };
+
+  const refLabel = document.getElementById('fv-ref-label');
+  if (refLabel) refLabel.textContent = result.ref ? (result.ref.length > 12 ? result.ref.slice(0, 12) : result.ref) : '';
+
+  if (result.error) {
+    body.innerHTML = '<div class="fv-loading fv-error">' + escapeHtml(result.error) + '</div>';
+    return;
+  }
+
+  let text = String(result.content || '');
+  if (text.endsWith('\n')) text = text.slice(0, -1); // no phantom last line
+  const rawLines = text.split('\n');
+
+  // Highlight the whole file once, then split it per line. Very large files
+  // are shown as plain text instead — hljs on a megabyte of minified JS takes
+  // seconds and would freeze the dialog.
+  const canHighlight = !!window.hljs && text.length <= FILE_VIEWER_MAX_CHARS &&
+                       rawLines.length <= FILE_VIEWER_MAX_LINES;
+  let htmlLines = null;
+  let lang = null;
+  if (canHighlight) {
+    lang = detectFileLanguage(fileName, text);
+    if (lang) {
+      try {
+        htmlLines = splitHighlightedLines(window.hljs.highlight(text, { language: lang, ignoreIllegals: true }).value);
+      } catch (err) {
+        console.warn('[file-viewer] highlight failed:', err.message);
+        htmlLines = null;
+        lang = null;
+      }
+    }
+  }
+
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < rawLines.length; i++) {
+    const row = document.createElement('div');
+    row.className = 'fv-line';
+    const num = document.createElement('span');
+    num.className = 'fv-num';
+    num.textContent = String(i + 1);
+    const code = document.createElement('span');
+    code.className = 'fv-code hljs';
+    if (htmlLines && htmlLines[i] !== undefined) code.innerHTML = htmlLines[i];
+    else code.textContent = rawLines[i];
+    row.appendChild(num);
+    row.appendChild(code);
+    frag.appendChild(row);
+  }
+  body.appendChild(frag);
+
+  const status = document.createElement('div');
+  status.className = 'fv-status';
+  const bits = [rawLines.length + ' lines'];
+  if (lang) bits.push(lang); else bits.push('plain text');
+  if (result.note) bits.push(result.note);
+  if (!canHighlight && rawLines.length > 0) bits.push('large file shown without highlighting');
+  status.textContent = bits.join('  ·  ');
+  body.appendChild(status);
+
+  body.scrollTop = 0;
+}
+
+// ---- find bar inside the viewer ----
+
+function fileViewerFindOpen() {
+  const bar = document.getElementById('fv-find-bar');
+  if (!bar) return;
+  const wasHidden = bar.style.display === 'none';
+  bar.style.display = 'flex';
+  if (!wasHidden) return; // already open — don't steal the caret (Cmd+F can fire twice)
+  const input = document.getElementById('fv-find-input');
+  input.focus();
+  input.select();
+  if (input.value) fileViewerRunFind();
+}
+
+// Returns true if a find bar was actually open (and got closed).
+function fileViewerCloseFind() {
+  const bar = document.getElementById('fv-find-bar');
+  if (!bar || bar.style.display === 'none') return false;
+  bar.style.display = 'none';
+  const input = document.getElementById('fv-find-input');
+  if (input) input.value = '';
+  fvState.matches = [];
+  fvState.index = -1;
+  fvPaint();
+  fvUpdateCount();
+  return true;
+}
+
+function fileViewerRunFind() {
+  const input = document.getElementById('fv-find-input');
+  const body = document.getElementById('fv-body');
+  const query = input ? input.value : '';
+  fvState.matches = [];
+  fvState.index = -1;
+  if (query && body) fvState.matches = fvCollectMatches(body, query);
+  if (fvState.matches.length) fvState.index = 0;
+  fvPaint();
+  fvUpdateCount();
+  fvScrollToActive();
+}
+
+// Every match must sit inside a single text node, so a match never spans two
+// lines. Line-number gutters are excluded — only .fv-code is searched.
+function fvCollectMatches(root, query) {
+  const ranges = [];
+  const needle = query.toLowerCase();
+  const nodes = root.querySelectorAll('.fv-code');
+  for (const node of nodes) {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      const text = textNode.nodeValue || '';
+      if (!text) continue;
+      const lower = text.toLowerCase();
+      let idx = lower.indexOf(needle);
+      while (idx !== -1) {
+        const r = document.createRange();
+        r.setStart(textNode, idx);
+        r.setEnd(textNode, idx + needle.length);
+        ranges.push(r);
+        if (ranges.length >= 5000) return ranges;
+        idx = lower.indexOf(needle, idx + Math.max(1, needle.length));
+      }
+    }
+  }
+  return ranges;
+}
+
+function fvPaint() {
+  const active = fvState.matches[fvState.index];
+  if (!(window.CSS && CSS.highlights)) {
+    // Older Chromium: at least select the active match.
+    if (active && window.getSelection) {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(active);
+    }
+    return;
+  }
+  CSS.highlights.delete('fv-find');
+  CSS.highlights.delete('fv-find-active');
+  if (fvState.matches.length) CSS.highlights.set('fv-find', new Highlight(...fvState.matches));
+  if (active) CSS.highlights.set('fv-find-active', new Highlight(active));
+}
+
+function fvUpdateCount() {
+  const count = document.getElementById('fv-find-count');
+  if (!count) return;
+  count.textContent = fvState.matches.length
+    ? (fvState.index + 1) + '/' + fvState.matches.length
+    : '0/0';
+  count.classList.toggle('no-match',
+    document.getElementById('fv-find-input') && document.getElementById('fv-find-input').value !== ''
+      && fvState.matches.length === 0);
+}
+
+function fvGo(delta) {
+  const n = fvState.matches.length;
+  if (!n) return;
+  fvState.index = ((fvState.index + delta) % n + n) % n;
+  fvPaint();
+  fvUpdateCount();
+  fvScrollToActive();
+}
+
+function fvScrollToActive() {
+  const body = document.getElementById('fv-body');
+  const r = fvState.matches[fvState.index];
+  if (!body || !r) return;
+  const rect = r.getBoundingClientRect();
+  const box = body.getBoundingClientRect();
+  if (rect.top < box.top + 8 || rect.bottom > box.bottom - 8) {
+    body.scrollTop += (rect.top - box.top) - (box.height / 3);
+  }
 }
 
 // Wrapper-specific versions for targeted DOM updates (context expand)
@@ -2451,6 +2837,12 @@ document.addEventListener('keydown', (e) => {
 
   // Escape — close comment form (or the find bar if open)
   if (e.key === 'Escape') {
+    // Full-file viewer is a modal: Esc closes its find bar first, then it.
+    if (isFileViewerOpen()) {
+      e.preventDefault();
+      if (!fileViewerCloseFind()) closeFullFileViewer();
+      return;
+    }
     const findBar = document.getElementById('find-bar');
     if (findBar && findBar.style.display !== 'none') {
       e.preventDefault();
@@ -2461,10 +2853,19 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Cmd+F — open find-in-page search bar
+  // Cmd+F — find. Inside the full-file viewer it searches only that file
+  // (page-level find would also match the diff behind the dialog).
   if (key === 'F' && isMeta && !e.shiftKey && !e.altKey) {
     e.preventDefault();
-    openFindBar();
+    if (isFileViewerOpen()) fileViewerFindOpen();
+    else openFindBar();
+    return;
+  }
+
+  // Cmd+G / Cmd+Shift+G — next / previous match in the open file viewer
+  if (key === 'G' && isMeta && !e.altKey && isFileViewerOpen()) {
+    e.preventDefault();
+    fvGo(e.shiftKey ? -1 : 1);
     return;
   }
 
@@ -2743,7 +3144,11 @@ function setupFindBar() {
     window.electronAPI.onFindResult(updateFindCount);
   }
   if (window.electronAPI && window.electronAPI.onOpenFind) {
-    window.electronAPI.onOpenFind(openFindBar);
+    window.electronAPI.onOpenFind(() => {
+      // Same routing as the page-level Cmd+F handler.
+      if (isFileViewerOpen()) fileViewerFindOpen();
+      else openFindBar();
+    });
   }
 }
 setupFindBar();

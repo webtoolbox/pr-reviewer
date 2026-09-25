@@ -4399,3 +4399,114 @@ describe('Since-review net diff', () => {
     expect(handler).toContain('sinceReviewRef && baseSha');
   });
 });
+
+
+// ── Full-file viewer dialog (header button, Cmd+F, syntax highlighting) ──
+
+describe('Full-file viewer', () => {
+  let mainSrc, rendererSrc, preloadSrc;
+
+  beforeAll(() => {
+    mainSrc = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    rendererSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    preloadSrc = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+  });
+
+  // Runs the production readFileAtRef with an injected exec (main.js boots
+  // Electron, so it can't be required — Pitfall 139).
+  function loadReadFileAtRef(fakeExec, fakeLog) {
+    const src = extractFunctionBody(mainSrc, 'readFileAtRef');
+    expect(src).toBeTruthy();
+    // eslint-disable-next-line no-eval
+    const factory = eval('(function (log, execPromise) { return ' + src + '; })');
+    return factory(fakeLog || (() => {}), fakeExec);
+  }
+
+  test('readFileAtRef reads a file with a quoted ref:path spec', async () => {
+    const calls = [];
+    const fn = loadReadFileAtRef(async (cmd) => {
+      calls.push(cmd);
+      return 'my $x = 1;\n';
+    });
+    const res = await fn('/repo', 'lib/helpers.pm', '605b5bcec2286593bd9b1f4af56269cdb16b5f1c');
+    expect(res.error).toBeUndefined();
+    expect(res.content).toBe('my $x = 1;\n');
+    expect(calls).toEqual(['git show "605b5bcec2286593bd9b1f4af56269cdb16b5f1c:lib/helpers.pm"']);
+    expect(calls[0]).not.toMatch(/[;&|`]/);
+  });
+
+  test('readFileAtRef rejects shell metacharacters in the file path', async () => {
+    let calls = 0;
+    const fn = loadReadFileAtRef(async () => { calls++; return ''; });
+    for (const bad of ['a;rm -rf /', 'a$(whoami)', 'a`id`', 'a|cat', 'a"b', 'a>b']) {
+      const res = await fn('/repo', bad, 'HEAD');
+      expect(res.error).toBeTruthy();
+    }
+    expect(calls).toBe(0);
+  });
+
+  test('readFileAtRef falls back to HEAD when the ref has no such file', async () => {
+    const calls = [];
+    const fn = loadReadFileAtRef(async (cmd) => {
+      calls.push(cmd);
+      if (calls.length === 1) throw new Error('path not found');
+      return 'head content';
+    });
+    const res = await fn('/repo', 'new/file.js', 'abc1234');
+    expect(res.content).toBe('head content');
+    expect(res.ref).toBe('HEAD');
+    expect(res.note).toContain('HEAD');
+    expect(calls).toEqual([
+      'git show "abc1234:new/file.js"',
+      'git show "HEAD:new/file.js"'
+    ]);
+  });
+
+  test('readFileAtRef sanitizes a hostile ref and reports a clean error', async () => {
+    const calls = [];
+    const fn = loadReadFileAtRef(async (cmd) => { calls.push(cmd); throw new Error('nope\nextra stderr'); });
+    const res = await fn('/repo', 'lib/helpers.pm', '$(evil)');
+    // hostile ref replaced with HEAD, then the error surfaced without stderr noise
+    expect(calls[0]).toBe('git show "HEAD:lib/helpers.pm"');
+    expect(res.error).toContain('Could not read');
+    expect(res.error).not.toContain('extra stderr');
+  });
+
+  test('splitHighlightedLines re-opens tags that cross a line break', () => {
+    const src = extractFunctionBody(rendererSrc, 'splitHighlightedLines');
+    expect(src).toBeTruthy();
+    // eslint-disable-next-line no-eval
+    const split = eval('(' + src + ')');
+    const lines = split('<span class="hljs-comment">// a\n// b</span>\n<span class="hljs-keyword">my</span> $x;');
+    expect(lines).toEqual([
+      '<span class="hljs-comment">// a',
+      '<span class="hljs-comment">// b</span>',
+      '<span class="hljs-keyword">my</span> $x;'
+    ]);
+    // no tags at all: plain lines come back untouched
+    expect(split('one\ntwo')).toEqual(['one', 'two']);
+  });
+
+  test('header button, IPC bridge and keyboard routing are wired', () => {
+    expect(rendererSrc).toContain('function addOpenFileButtonForHeader');
+    // button added alongside the copy button, so both load paths get it
+    expect(rendererSrc).toMatch(/addCopyFileNameButtonForHeader\(header\);\s*\n\s*addOpenFileButtonForHeader\(header\);/);
+    expect(rendererSrc).toContain("btn.title = 'Open full file (Cmd+F to search)'");
+
+    expect(preloadSrc).toContain("readFileContent: (repoPath, filePath, ref) => ipcRenderer.invoke('read-file-content'");
+    expect(mainSrc).toContain("ipcMain.handle('read-file-content'");
+
+    // Cmd+F and the menu accelerator must route to the dialog find bar while
+    // it is open, otherwise page-level find counts matches in the diff too.
+    expect(rendererSrc).toContain('if (isFileViewerOpen()) fileViewerFindOpen();');
+    expect(rendererSrc).toContain('else openFindBar();');
+    // Esc closes the find bar first, then the dialog
+    expect(rendererSrc).toContain('if (!fileViewerCloseFind()) closeFullFileViewer();');
+    // syntax highlighting + per-line numbers
+    expect(rendererSrc).toContain("window.hljs.highlight(text, { language: lang, ignoreIllegals: true })");
+    expect(rendererSrc).toContain("code.className = 'fv-code hljs'");
+    // language map covers this repo's extensions
+    expect(rendererSrc).toContain("cgi: 'perl'");
+    expect(rendererSrc).toContain("tpl: 'html'");
+  });
+});
