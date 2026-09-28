@@ -957,51 +957,72 @@
     #pr-desc-dropdown::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
     #pr-desc-dropdown::-webkit-scrollbar-track { background: #161b22; }
 
-    /* PR description rendered content */
+    /* Rendered markdown content — shared by the PR description dropdown
+       (.pr-desc-content) and the AI chat bubbles (.ai-md) */
     .pr-desc-content { font-size: 14px; color: #c9d1d9; line-height: 1.6; }
-    .pr-desc-content p { margin-bottom: 12px; }
-    .pr-desc-content h1, .pr-desc-content h2, .pr-desc-content h3,
-    .pr-desc-content h4, .pr-desc-content h5, .pr-desc-content h6 {
-      margin-top: 16px; margin-bottom: 8px; font-weight: 600; color: #c9d1d9;
+    .md-body p { margin-bottom: 12px; }
+    .md-body h1, .md-body h2, .md-body h3,
+    .md-body h4, .md-body h5, .md-body h6 {
+      margin-top: 16px; margin-bottom: 8px; font-weight: 600; color: inherit;
     }
-    .pr-desc-content h1 { font-size: 1.5em; }
-    .pr-desc-content h2 { font-size: 1.3em; }
-    .pr-desc-content h3 { font-size: 1.1em; }
-    .pr-desc-content img {
+    .md-body h1 { font-size: 1.5em; }
+    .md-body h2 { font-size: 1.3em; }
+    .md-body h3 { font-size: 1.1em; }
+    .md-body img {
       max-width: 100%; height: auto; border-radius: 8px;
       border: 1px solid #30363d; margin: 8px 0;
     }
-    .pr-desc-content a { color: #58a6ff; text-decoration: none; }
-    .pr-desc-content a:hover { text-decoration: underline; }
-    .pr-desc-content code {
+    .md-body a { color: #58a6ff; text-decoration: none; }
+    .md-body a:hover { text-decoration: underline; }
+    .md-body code {
       background: #0d1117; padding: 2px 6px; border-radius: 4px;
       font-size: 0.9em; font-family: 'SFMono-Regular', Consolas, monospace;
     }
-    .pr-desc-content pre {
+    .md-body pre {
       background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
       padding: 12px; overflow-x: auto; margin: 12px 0;
     }
-    .pr-desc-content pre code {
+    .md-body pre code {
       background: none; padding: 0; font-size: 13px;
     }
-    .pr-desc-content table {
+    .md-body table {
       border-collapse: collapse; width: 100%; margin: 12px 0;
     }
-    .pr-desc-content th, .pr-desc-content td {
+    .md-body th, .md-body td {
       border: 1px solid #30363d; padding: 6px 12px; text-align: left;
     }
-    .pr-desc-content th { background: #1c2128; font-weight: 600; }
-    .pr-desc-content blockquote {
+    .md-body th { background: #1c2128; font-weight: 600; }
+    .md-body blockquote {
       border-left: 3px solid #30363d; padding-left: 12px;
       color: #8b949e; margin: 12px 0;
     }
-    .pr-desc-content ul, .pr-desc-content ol {
+    .md-body ul, .md-body ol {
       padding-left: 24px; margin-bottom: 12px;
     }
-    .pr-desc-content li { margin-bottom: 4px; }
-    .pr-desc-content hr {
+    .md-body li { margin-bottom: 4px; }
+    .md-body hr {
       border: none; border-top: 1px solid #30363d; margin: 16px 0;
     }
+    .md-body > :first-child { margin-top: 0; }
+    .md-body > :last-child { margin-bottom: 0; }
+
+    /* AI chat markdown: bubbles keep pre-wrap for plain text, so the rendered
+       wrapper must switch back to normal whitespace and tighten spacing */
+    .ai-md {
+      white-space: normal; word-break: break-word;
+      font-size: 13px; line-height: 1.5;
+    }
+    .ai-md p, .ai-md ul, .ai-md ol, .ai-md pre,
+    .ai-md blockquote, .ai-md table { margin-bottom: 8px; }
+    .ai-md h1, .ai-md h2, .ai-md h3,
+    .ai-md h4, .ai-md h5, .ai-md h6 { margin-top: 10px; margin-bottom: 6px; }
+    .ai-md h1 { font-size: 1.2em; }
+    .ai-md h2 { font-size: 1.15em; }
+    .ai-md h3 { font-size: 1.05em; }
+    .ai-md pre { padding: 8px 10px; margin: 8px 0; }
+    .ai-md code { font-size: 12px; }
+    .ai-md pre code { font-size: 12px; }
+    .ai-md img { max-width: 100%; border-radius: 6px; margin: 6px 0; }
 
     /* Shortcut hints */
     .shortcut-hint {
@@ -1968,6 +1989,16 @@
       .ai-chat-msg.assistant { background: #eaeef2; color: #24292f; }
       .ai-chat-msg.error { background: #ffebe9; color: #cf222e; }
       .ai-chat-error-note { color: #cf222e; border-top-color: rgba(207, 34, 46, 0.35); }
+      /* Rendered markdown inside chat bubbles follows the light bubble,
+         not the dark styles shared with the (always-dark) PR description */
+      .ai-md code { background: #eff1f3; }
+      .ai-md pre { background: #ffffff; border-color: #d0d7de; }
+      .ai-md th, .ai-md td { border-color: #d0d7de; }
+      .ai-md th { background: #f6f8fa; }
+      .ai-md blockquote { border-left-color: #d0d7de; color: #59636e; }
+      .ai-md hr { border-top-color: #d0d7de; }
+      .ai-md a { color: #0969da; }
+      .ai-md img { border-color: #d0d7de; }
       #ai-chat-input { background: #ffffff; border-color: #d0d7de; color: #24292f; }
       #ai-chat-panel .ai-chat-input-row { border-top-color: #d0d7de; }
 

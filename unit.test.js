@@ -4067,6 +4067,44 @@ describe('AI Chat and Hermes profile', () => {
     expect(indexHtml).toContain('.ai-chat-answer');
   });
 
+  test('renderMarkdownHtml is the shared sanitizer for description + AI chat', () => {
+    const fn = rendererSource.substring(
+      rendererSource.indexOf('function renderMarkdownHtml'),
+      rendererSource.indexOf('function togglePrDescDropdown')
+    );
+    expect(fn).toContain('marked.parse(text, { renderer: cleanRenderer })');
+    expect(fn).toContain("querySelectorAll('script, iframe, object, embed");
+    expect(fn).toContain('/^javascript:/i.test(attr.value)');
+    expect(fn).toContain('javascript|data|vbscript'); // link hrefs are sanitized too
+    // Both surfaces call it: PR description dropdown and chat bubbles
+    expect(rendererSource).toContain('renderMarkdownHtml(body)');
+    expect(rendererSource).toContain("renderMarkdownHtml(text || '')");
+    expect(rendererSource).toContain('pr-desc-content md-body');
+  });
+
+  test('AI chat renders agent replies as markdown, user replies as plain text', () => {
+    expect(rendererSource).toContain('function renderAiMarkdown(el, text)');
+    expect(rendererSource).toContain('<div class="ai-md md-body">');
+    expect(rendererSource).toContain("if (role === 'assistant') renderAiMarkdown(el, text)");
+    const sendSrc = rendererSource.substring(rendererSource.indexOf('async function sendAiChat'));
+    // error partial text, final done (steps + no-steps), streaming (steps + no-steps), fallback
+    expect((sendSrc.match(/renderAiMarkdown\(/g) || []).length).toBeGreaterThanOrEqual(5);
+    // The heartbeat must not flatten already-rendered markdown back to textContent
+    expect(sendSrc).toContain('live.children.length === 0');
+  });
+
+  test('index.html shares markdown styles via .md-body and styles .ai-md bubbles', () => {
+    expect(indexHtml).toContain('.md-body p { margin-bottom: 12px; }');
+    expect(indexHtml).toContain('.md-body pre {');
+    expect(indexHtml).toContain('.md-body > :first-child');
+    expect(indexHtml).toContain('/* AI chat markdown');
+    // Rendered wrapper resets the bubble's pre-wrap whitespace
+    expect(indexHtml).toMatch(/\.ai-md \{[^}]*white-space: normal/);
+    // Light mode chips follow the light bubble (dropdown box stays dark)
+    expect(indexHtml).toContain('.ai-md pre { background: #ffffff;');
+    expect(indexHtml).toContain('.ai-md code { background: #eff1f3; }');
+  });
+
   test('cleanHermesResponse strips warnings, box UI, and session footer', () => {
     const raw = `Warning: Unknown toolsets: messaging\nQuery: prompt echo\nUser: hi\nAssistant:\nInitializing agent...\n\n╭─ Hermes ─╮\nThe answer is here.\n╰──────────╯\n\nResume this session with:\n  hermes --resume 123 -p wt\n\nSession: 123\nDuration: 5s\nMessages: 2`;
     // Execute the function's logic by extracting it from source is brittle; instead

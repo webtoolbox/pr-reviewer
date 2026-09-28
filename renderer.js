@@ -5737,6 +5737,61 @@ function updatePrInfoBar(prNumber, prTitle, result) {
 
 // ===================== PR DESCRIPTION DROPDOWN =====================
 
+// Parse markdown into sanitized HTML: raw HTML is filtered (dangerous elements
+// removed, on* handlers and javascript: URLs stripped) and image URLs are
+// restricted to http/https/file. Shared by the PR description dropdown and the
+// AI chat so everything renders markdown the same way.
+function renderMarkdownHtml(text) {
+  if (!text) return '';
+  try {
+    // Configure marked to strip dangerous HTML
+    const cleanRenderer = new marked.Renderer();
+    // Override HTML rendering: sanitize dangerous elements/attributes, allow safe HTML through
+    cleanRenderer.html = (token) => {
+      const raw = typeof token === 'string' ? token : (token.text || token.raw || '');
+      try {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = raw;
+        // Remove dangerous elements
+        tmp.querySelectorAll('script, iframe, object, embed, form, input, textarea, button, select, style, link, meta, base').forEach(el => el.remove());
+        // Remove dangerous attributes (on* events, javascript: URLs)
+        tmp.querySelectorAll('*').forEach(el => {
+          [...el.attributes].forEach(attr => {
+            if (/^on/i.test(attr.name)) el.removeAttribute(attr.name);
+            if (/^(href|src|action)$/i.test(attr.name) && /^javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+          });
+        });
+        return tmp.innerHTML;
+      } catch {
+        return escapeHtml(raw);
+      }
+    };
+    // Disable image URLs that aren't http/https/file
+    const origImage = cleanRenderer.image;
+    cleanRenderer.image = (token) => {
+      const href = typeof token === 'string' ? token : (token.href || '');
+      if (href && !/^https?:\/\//i.test(href) && !/^file:\/\//i.test(href)) {
+        return '';
+      }
+      return origImage.call(cleanRenderer, token);
+    };
+    // marked does not sanitize link targets — drop script-capable URLs and
+    // keep the label as plain text instead of an anchor.
+    const origLink = cleanRenderer.link;
+    cleanRenderer.link = (token) => {
+      const href = typeof token === 'string' ? token : (token.href || '');
+      if (/^\s*(javascript|data|vbscript):/i.test(href)) {
+        const label = typeof token === 'string' ? '' : (token.text || '');
+        return escapeHtml(label);
+      }
+      return origLink.call(cleanRenderer, token);
+    };
+    return marked.parse(text, { renderer: cleanRenderer });
+  } catch {
+    return `<p>${escapeHtml(text)}</p>`;
+  }
+}
+
 function togglePrDescDropdown() {
   let dropdown = document.getElementById('pr-desc-dropdown');
   if (dropdown && dropdown.classList.contains('open')) {
@@ -5751,49 +5806,11 @@ function togglePrDescDropdown() {
 
   // Render markdown with sanitization (strip raw HTML from PR body to prevent XSS)
   const body = currentPrBody || '';
-  let rendered = '';
-  if (body) {
-    try {
-      // Configure marked to strip dangerous HTML
-      const cleanRenderer = new marked.Renderer();
-      // Override HTML rendering: sanitize dangerous elements/attributes, allow safe HTML through
-      cleanRenderer.html = (token) => {
-        const raw = typeof token === 'string' ? token : (token.text || token.raw || '');
-        try {
-          const tmp = document.createElement('div');
-          tmp.innerHTML = raw;
-          // Remove dangerous elements
-          tmp.querySelectorAll('script, iframe, object, embed, form, input, textarea, button, select, style, link, meta, base').forEach(el => el.remove());
-          // Remove dangerous attributes (on* events, javascript: URLs)
-          tmp.querySelectorAll('*').forEach(el => {
-            [...el.attributes].forEach(attr => {
-              if (/^on/i.test(attr.name)) el.removeAttribute(attr.name);
-              if (/^(href|src|action)$/i.test(attr.name) && /^javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
-            });
-          });
-          return tmp.innerHTML;
-        } catch {
-          return escapeHtml(raw);
-        }
-      };
-      // Disable image URLs that aren't http/https/file
-      const origImage = cleanRenderer.image;
-      cleanRenderer.image = (token) => {
-        const href = typeof token === 'string' ? token : (token.href || '');
-        if (href && !/^https?:\/\//i.test(href) && !/^file:\/\//i.test(href)) {
-          return '';
-        }
-        return origImage.call(cleanRenderer, token);
-      };
-      rendered = marked.parse(body, { renderer: cleanRenderer });
-    } catch {
-      rendered = `<p>${escapeHtml(body)}</p>`;
-    }
-  } else {
-    rendered = '<p style="color:#484f58;font-style:italic;">No description provided.</p>';
-  }
+  const rendered = body
+    ? renderMarkdownHtml(body)
+    : '<p style="color:#484f58;font-style:italic;">No description provided.</p>';
 
-  dropdown.innerHTML = `<div class="pr-desc-content">${rendered}</div>`;
+  dropdown.innerHTML = `<div class="pr-desc-content md-body">${rendered}</div>`;
 
   // Position below the review bar, left-aligned under the title
   const reviewBar = document.getElementById('review-bar');
@@ -7285,11 +7302,19 @@ function positionAiChatPanel() {
   aiChatPanel.style.top = (rect.bottom + 4) + 'px';
 }
 
+// Render an agent reply as markdown inside a chat bubble. The .ai-md wrapper
+// resets the bubble's pre-wrap whitespace so block markup lays out normally.
+function renderAiMarkdown(el, text) {
+  if (!el) return;
+  el.innerHTML = '<div class="ai-md md-body">' + renderMarkdownHtml(text || '') + '</div>';
+}
+
 function appendAiChatMsg(role, text) {
   if (!aiChatMessages) return null;
   const el = document.createElement('div');
   el.className = 'ai-chat-msg ' + role;
-  el.textContent = text;
+  if (role === 'assistant') renderAiMarkdown(el, text);
+  else el.textContent = text;
   aiChatMessages.appendChild(el);
   aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
   return el;
@@ -7319,10 +7344,10 @@ async function sendAiChat() {
     if (myEpoch !== aiChatEpoch) return;
     if (data.heartbeat) {
       // Agent is alive but quiet (main's liveness heartbeat). Keep the live
-      // bubble honest without interrupting it. Only show the note if the
-      // stream is still in its pre-answer phase (no answer box yet) — once
-      // text is flowing normally this is noise.
-      if (!live.querySelector('.ai-chat-answer') && live.textContent !== 'Thinking…') {
+      // bubble honest without interrupting it. Only touch the bubble while it
+      // is still the untouched placeholder — anything already rendered (step
+      // rows, markdown answer) must not be flattened back to plain text.
+      if (live.children.length === 0 && live.textContent !== 'Thinking…') {
         live.textContent = live.textContent || 'Thinking…';
       }
       return;
@@ -7336,7 +7361,7 @@ async function sendAiChat() {
       if (data.text && data.text.length > 0) {
         const answer = document.createElement('div');
         answer.className = 'ai-chat-answer';
-        answer.textContent = data.text;
+        renderAiMarkdown(answer, data.text);
         const note = document.createElement('div');
         note.className = 'ai-chat-error-note';
         note.textContent = data.error;
@@ -7368,13 +7393,11 @@ async function sendAiChat() {
         if (!live.querySelector('.ai-chat-answer')) {
           const answer = document.createElement('div');
           answer.className = 'ai-chat-answer';
-          answer.textContent = data.text || '(no response)';
           live.appendChild(answer);
-        } else {
-          live.querySelector('.ai-chat-answer').textContent = data.text || '(no response)';
         }
+        renderAiMarkdown(live.querySelector('.ai-chat-answer'), data.text || '(no response)');
       } else {
-        live.textContent = data.text || '(no response)';
+        renderAiMarkdown(live, data.text || '(no response)');
       }
       aiChatHistory.push({ role: 'user', content: text });
       if (data.text) aiChatHistory.push({ role: 'assistant', content: data.text });
@@ -7390,13 +7413,11 @@ async function sendAiChat() {
         if (!live.querySelector('.ai-chat-answer')) {
           const answer = document.createElement('div');
           answer.className = 'ai-chat-answer';
-          answer.textContent = data.text;
           live.appendChild(answer);
-        } else {
-          live.querySelector('.ai-chat-answer').textContent = data.text;
         }
+        renderAiMarkdown(live.querySelector('.ai-chat-answer'), data.text);
       } else {
-        live.textContent = data.text;
+        renderAiMarkdown(live, data.text);
       }
       // Keep the panel scrolled so the growing reply stays in view.
       if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
@@ -7414,7 +7435,7 @@ async function sendAiChat() {
     // The 'ai-chat-stream' done event already finalized the message; this is a
     // safety net in case the stream event listener missed the final chunk.
     if (result && result.response && live.textContent === 'Thinking…') {
-      live.textContent = result.response;
+      renderAiMarkdown(live, result.response);
       aiChatHistory.push({ role: 'user', content: text });
       aiChatHistory.push({ role: 'assistant', content: result.response });
     } else if (result && result.error && !live.textContent.startsWith('Error')) {

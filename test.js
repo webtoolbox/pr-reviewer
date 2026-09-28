@@ -2104,6 +2104,63 @@ async function runTests() {
   `);
   assert('clearAiChat resets history + messages', clearAiChatWorks === 'ok', `result: ${clearAiChatWorks}`);
 
+  // TEST: renderMarkdownHtml turns agent markdown into sanitized HTML
+  const mdRender = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof renderMarkdownHtml !== 'function') return 'no-fn';
+      const html = renderMarkdownHtml('## Summary\\n\\n**bold** and \`code\`\\n\\n- one\\n- two');
+      const checks = {
+        heading: /<h2[^>]*>Summary<\\/h2>/.test(html),
+        bold: html.indexOf('<strong>bold</strong>') !== -1,
+        code: html.indexOf('<code>code</code>') !== -1,
+        list: html.indexOf('<li>') !== -1,
+        noRawMd: html.indexOf('**bold**') === -1
+      };
+      const xss = renderMarkdownHtml('<script>alert(1)</script>safe');
+      checks.xssStripped = xss.indexOf('<script') === -1;
+      const badLink = renderMarkdownHtml('[x](javascript:alert(1))');
+      checks.jsUrlStripped = badLink.indexOf('javascript:') === -1;
+      return Object.values(checks).every(Boolean) ? 'ok' : JSON.stringify({ checks, html: html.slice(0, 300), xss, badLink });
+    })()
+  `);
+  assert('renderMarkdownHtml renders markdown and strips script/js-URLs', mdRender === 'ok', `result: ${mdRender}`);
+
+  // TEST: assistant bubbles render markdown, user bubbles stay plain text,
+  // and the rendered wrapper resets the bubble's pre-wrap whitespace
+  const bubbleMd = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof appendAiChatMsg !== 'function') return 'no-fn';
+      const a = appendAiChatMsg('assistant', '**yes**\\n\\n\`code\`');
+      const u = appendAiChatMsg('user', '**not markdown**');
+      const wrap = a.querySelector('.ai-md');
+      const checks = {
+        strong: !!a.querySelector('.ai-md strong'),
+        noRawMd: a.innerHTML.indexOf('**yes**') === -1,
+        userPlain: u.textContent === '**not markdown**' && u.children.length === 0,
+        whitespace: !!wrap && getComputedStyle(wrap).whiteSpace === 'normal'
+      };
+      a.remove(); u.remove();
+      return Object.values(checks).every(Boolean) ? 'ok' : JSON.stringify(checks);
+    })()
+  `);
+  assert('assistant bubble renders markdown, user bubble stays plain', bubbleMd === 'ok', `result: ${bubbleMd}`);
+
+  // TEST: streaming path finalizes the live bubble as markdown
+  const streamMd = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof sendAiChat !== 'function') return 'no-fn';
+      const src = sendAiChat.toString();
+      const checks = {
+        doneRenders: src.includes("renderAiMarkdown(live, data.text || '(no response)')"),
+        answerRenders: src.includes("renderAiMarkdown(live.querySelector('.ai-chat-answer'), data.text)"),
+        fallbackRenders: src.includes('renderAiMarkdown(live, result.response)'),
+        plainErrorKept: src.includes("live.textContent = 'Error: ' + data.error")
+      };
+      return Object.values(checks).every(Boolean) ? 'ok' : JSON.stringify(checks);
+    })()
+  `);
+  assert('streaming finalizes reply as markdown, errors stay plain', streamMd === 'ok', `result: ${streamMd}`);
+
   // TEST: AI chat streaming — sendAiChat creates a live assistant message and registers a stream listener
   const aiChatStreaming = await mainWindow.webContents.executeJavaScript(`
     (() => {
