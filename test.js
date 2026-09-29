@@ -3410,8 +3410,9 @@ async function runTests() {
   const emptyDiffRetryInMain = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
   assert('Empty-diff path forces fresh master fetch + retry (main.js contains retry block)',
     /Diff empty — forcing a fresh fetch of master/.test(emptyDiffRetryInMain) &&
-    /git fetch origin master:refs\/remotes\/origin\/master --depth=1 --force/.test(emptyDiffRetryInMain),
-    'retry block present');
+    /git fetch origin master:refs\/remotes\/origin\/master --force/.test(emptyDiffRetryInMain) &&
+    !/origin\/master --depth=1/.test(emptyDiffRetryInMain),
+    'retry block present, no depth-1 re-shallow');
 
   // Summary
   log('');

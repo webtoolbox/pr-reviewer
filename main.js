@@ -206,12 +206,19 @@ async function getPrChatContext(prNumber, repoKey) {
 }
 
 // Build a conversational prompt embedding prior messages for back-and-forth chat
-function buildChatPrompt(context, history, message) {
+function buildChatPrompt(context, history, message, repoPath) {
   const lines = [
     'You are an AI coding assistant helping review a pull request in the PR Reviewer desktop app.',
     "Answer the user's questions about the code, the branch, or the pull request concisely and helpfully.",
     'When you need to search or locate files/code, ALWAYS prefer `fd` over `find` and `rg` over `grep` — they are installed and far faster.'
   ];
+  if (repoPath) {
+    // The app keeps its own clone. Agents that pick the user's checkout
+    // (~/Repos/Website-Toolbox) instead end up switching branches in the
+    // user's own working copy — never allow that.
+    lines.push('Repository checkout to use for ALL git commands: ' + repoPath);
+    lines.push('Run every git command in that directory. NEVER run git checkout, git switch, git pull, git push, git commit or any other branch-changing command in ~/Repos/Website-Toolbox, ~/Website-Toolbox or any other copy of this repository — those are the user\'s own working copies and their current branch must not change. Read-only commands (git show, git log, git grep) against them are fine.');
+  }
   if (context) lines.push('Current pull request context: ' + context);
   lines.push('');
   lines.push('Conversation so far:');
@@ -270,7 +277,7 @@ function cleanHermesResponse(stdout) {
 // they're produced; each chunk is throttled and pushed to the renderer over the
 // 'ai-chat-stream' channel, and a final 'done' event carries the cleaned reply.
 ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history }) => {
-  const prompt = buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '');
+  const prompt = buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '', getLocalRepoPath(repoKey || ''));
   // NOTE: `-q` (boxed streaming) is REQUIRED here — `-Q` suppresses the box and
   // would break the live "thinking" bubble stream. `-t hermes-cli` slims the
   // toolset so the agent spends far less time loading tools before first token.
@@ -1207,9 +1214,14 @@ async function generateDiff(prNumber, repoKey) {
   // current upstream master — a stale local master (app left open for days) made
   // base..head look empty because the base commit had already been absorbed.
   log('INFO', `[generateDiff] Fetching PR ${prNumber} branch + master from origin`);
+  // The PR head fetch gets a generous timeout: a cold PR head on this clone
+  // can need a ~300MB pack (PR 7535 took 2m41s), which blew the old 60s cap
+  // and surfaced as "Cannot fetch head commit". master is fetched WITHOUT
+  // --depth=1: each depth-1 fetch re-shallowed the clone, which is exactly
+  // what made every cold PR head fetch re-download hundreds of MB.
   const [prFetch, masterFetch] = await Promise.allSettled([
-    execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 60000 }),
-    execPromise('git fetch origin master:refs/remotes/origin/master --depth=1 --force', { cwd: repoPath, timeout: 30000 })
+    execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 300000 }),
+    execPromise('git fetch origin master:refs/remotes/origin/master --force', { cwd: repoPath, timeout: 120000 })
   ]);
   if (prFetch.status === 'fulfilled') log('INFO', '[generateDiff] Fetched PR branch successfully');
   else log('ERROR', '[generateDiff] PR branch fetch failed:', prFetch.reason && prFetch.reason.message);
@@ -1220,14 +1232,31 @@ async function generateDiff(prNumber, repoKey) {
     try { await execPromise(`git cat-file -e ${sha}`, { cwd: repoPath }); return true; } catch { return false; }
   }
 
+  // False when the local clone cannot supply the PR's commits even after
+  // fetching — the gh pr diff (fetched in parallel above) is then used as the
+  // diff source so the PR still opens instead of hard-failing.
+  let localGitReady = true;
+
   if (!(await shaExists(headSha))) {
-    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} still not available after PR fetch`);
-    throw new Error(`Cannot fetch head commit ${headSha.substring(0,7)}`);
+    log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} still not available after PR fetch — retrying once`);
+    try {
+      await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 300000 });
+    } catch (retryErr) {
+      log('ERROR', '[generateDiff] PR branch fetch retry failed:', retryErr.message);
+    }
+    if (!(await shaExists(headSha))) {
+      if (diffOut && diffOut.trim()) {
+        log('WARN', `[generateDiff] Head commit ${headSha.substring(0,7)} unavailable locally — falling back to the gh pr diff`);
+        localGitReady = false;
+      } else {
+        throw new Error(`Cannot fetch head commit ${headSha.substring(0,7)}`);
+      }
+    }
   }
-  if (!(await shaExists(baseSha))) {
+  if (localGitReady && !(await shaExists(baseSha))) {
     log('INFO', `[generateDiff] Base SHA ${baseSha.substring(0,7)} not in local repo, fetching individually`);
     try {
-      await execPromise(`git fetch origin ${baseSha}`, { cwd: repoPath, timeout: 60000 });
+      await execPromise(`git fetch origin ${baseSha}`, { cwd: repoPath, timeout: 300000 });
     } catch (fetchErr) {
       throw new Error(`Cannot reach base commit ${baseSha.substring(0,7)}: ${fetchErr.message}`);
     }
@@ -1305,7 +1334,7 @@ async function generateDiff(prNumber, repoKey) {
   // commits after the review (see computeSinceReviewNetDiff). This matches
   // GitHub's "changes since your review" — placeholder states cancel out while
   // master's merged-in changes are excluded.
-  if (reviewInfo && baseSha && headSha) {
+  if (localGitReady && reviewInfo && baseSha && headSha) {
     try {
       // Get files changed by PR commits after the review (non-merge commits only).
       // allCommits was already fetched by getChangedFilesViaCommits (with
@@ -1374,23 +1403,22 @@ async function generateDiff(prNumber, repoKey) {
     }
   }
 
-  if (!diffOut || !diffOut.trim()) {
-    // Empty diff. Root cause seen in the wild: the app's clone is depth-1
-    // shallow and the local `master` ref can be days old (the app was left
-    // open; PRs kept loading against a stale master). A since-review diff
-    // computed against an ancient base then looks empty because the review
-    // base commit was already absorbed into master. Cmd+R "fixed" it only
-    // because a fresh PR load happened to refetch master. Fix here: force a
-    // fresh `git fetch` of master + the PR branch, then retry the local diff
-    // once before giving up.
+  if (localGitReady && (!diffOut || !diffOut.trim())) {
+    // Empty diff. Root cause seen in the wild: the local `master` ref can be
+    // days old (the app was left open; PRs kept loading against a stale
+    // master). A since-review diff computed against an ancient base then looks
+    // empty because the review base commit was already absorbed into master.
+    // Cmd+R "fixed" it only because a fresh PR load happened to refetch
+    // master. Fix here: force a fresh `git fetch` of master + the PR branch,
+    // then retry the local diff once before giving up.
     log('WARN', '[generateDiff] Diff empty — forcing a fresh fetch of master + PR branch and retrying once');
     await Promise.allSettled([
-      execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber} --force`, { cwd: repoPath, timeout: 60000 }),
-      execPromise('git fetch origin master:refs/remotes/origin/master --depth=1 --force', { cwd: repoPath, timeout: 30000 })
+      execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber} --force`, { cwd: repoPath, timeout: 300000 }),
+      execPromise('git fetch origin master:refs/remotes/origin/master --force', { cwd: repoPath, timeout: 120000 })
     ]);
     for (const sha of [headSha, baseSha]) {
       if (!(await shaExists(sha))) {
-        try { await execPromise(`git fetch origin ${sha}`, { cwd: repoPath, timeout: 60000 }); }
+        try { await execPromise(`git fetch origin ${sha}`, { cwd: repoPath, timeout: 300000 }); }
         catch { /* best-effort */ }
       }
     }
@@ -1417,6 +1445,13 @@ async function generateDiff(prNumber, repoKey) {
     if (!diffOut || !diffOut.trim()) {
       throw new Error('Diff is empty — no changes detected between base and head commits');
     }
+  }
+
+  // Last line of defence: the local-git retry block above is skipped when the
+  // clone could not supply the PR's commits (gh pr diff fallback path), so an
+  // empty diff must still fail loudly rather than write an empty file.
+  if (!diffOut || !diffOut.trim()) {
+    throw new Error('Diff is empty — no changes detected between base and head commits');
   }
 
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);

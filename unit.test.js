@@ -3421,6 +3421,72 @@ diff --git a/config.yaml b/config.yaml
 
 // ── Source-code inspection: main.js no longer filters to code files ──
 
+describe('PR head fetch resilience (Cannot fetch head commit regression)', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  const generateDiffSrc = () => {
+    const start = mainSource.indexOf('async function generateDiff(');
+    const end = mainSource.indexOf('\n// Clean up stale since-review temp refs', start);
+    return mainSource.substring(start, end);
+  };
+
+  test('PR head fetch gets 300s, not the old 60s cap', () => {
+    // A cold PR head on the app clone needed a ~300MB pack (PR 7535: 2m41s),
+    // so the 60s timeout killed it and the PR failed to load.
+    expect(generateDiffSrc()).toContain('git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 300000 }');
+  });
+
+  test('the head-missing path retries once and falls back to the gh pr diff', () => {
+    const src = generateDiffSrc();
+    expect(src).toContain('retrying once');
+    expect(src).toContain('falling back to the gh pr diff');
+    // The hard error survives only when there is no API diff to fall back on.
+    expect(src).toMatch(/if \(diffOut && diffOut\.trim\(\)\)/);
+    expect(src).toContain('localGitReady');
+  });
+
+  test('git-dependent steps are skipped when the clone cannot supply the PR', () => {
+    const src = generateDiffSrc();
+    expect(src).toContain('if (localGitReady && reviewInfo && baseSha && headSha)');
+    expect(src).toContain('if (localGitReady && (!diffOut || !diffOut.trim()))');
+    expect(src).toContain('if (localGitReady && !(await shaExists(baseSha)))');
+  });
+
+  test('master fetch no longer re-shallows the clone', () => {
+    // Every --depth=1 master fetch re-added a shallow boundary, which is what
+    // forced later PR head fetches to re-download hundreds of MB.
+    expect(mainSource).not.toMatch(/origin\/master --depth=1 --force/);
+  });
+});
+
+describe('AI chat never touches the user working copy', () => {
+  let mainSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  test('buildChatPrompt pins the repo path and forbids branch changes in ~/Repos', () => {
+    const start = mainSource.indexOf('function buildChatPrompt');
+    const end = mainSource.indexOf('function cleanHermesResponse', start);
+    const fn = mainSource.substring(start, end);
+    expect(fn).toContain('Repository checkout to use for ALL git commands');
+    expect(fn).toContain('NEVER run git checkout');
+    expect(fn).toContain('~/Repos/Website-Toolbox');
+    expect(fn).toContain('repoPath');
+  });
+
+  test('ai-chat handler resolves and passes that repo path', () => {
+    expect(mainSource).toContain(
+      "buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '', getLocalRepoPath(repoKey || ''))"
+    );
+  });
+});
+
 describe('generateDiff — no code file extension filter', () => {
   let mainSource;
 
