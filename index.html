@@ -82,16 +82,30 @@
       to { transform: rotate(360deg); }
     }
 
-    /* AI chat + PR comment icon buttons (match the voice/mic button) */
-    #btn-ai-chat, #btn-pr-comment {
+    /* AI chat icon button (match the voice/mic button) */
+    #btn-ai-chat {
       background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
       padding: 4px 6px; border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: all 0.15s;
     }
-    #btn-ai-chat:hover, #btn-pr-comment:hover { background: #30363d; }
-    #btn-ai-chat svg, #btn-pr-comment svg { width: 14px; height: 14px; fill: none; stroke: #c9d1d9; }
-    #btn-pr-comment.active { background: #388bfd; color: #fff; border-color: #388bfd; }
+    #btn-ai-chat:hover { background: #30363d; }
+    #btn-ai-chat svg { width: 14px; height: 14px; fill: none; stroke: #c9d1d9; }
+
+    /* Rows in the ⋮ "More actions" menu: Add PR Comment + Close Pull Request */
+    .more-menu-item {
+      display: flex; align-items: center; gap: 8px;
+      width: 100%; text-align: left; padding: 8px 16px;
+      background: none; border: none; color: #c9d1d9;
+      font-size: 13px; cursor: pointer; border-radius: 4px;
+      transition: background 0.15s;
+    }
+    .more-menu-item:hover { background: #1c2128; }
+    .more-menu-item svg { width: 14px; height: 14px; fill: none; stroke: currentColor; flex-shrink: 0; }
+    .more-menu-item span { white-space: nowrap; }
+
+    /* Blue "a PR comment is written" state on the Add PR Comment menu row */
+    #btn-pr-comment.active { background: #388bfd; color: #fff; }
     #btn-pr-comment.active:hover { background: #316dca; }
     #btn-pr-comment.active svg { stroke: #fff; }
 
@@ -2080,12 +2094,6 @@
     <button id="btn-comment" style="display:none" title="Cmd+Shift+C">Comment</button>
     <button id="btn-request-changes" style="display:none" title="Cmd+Shift+R">Request Changes</button>
     <button id="btn-approve" style="display:none" title="Cmd+Shift+A">Approve</button>
-    <button id="btn-pr-comment" style="display:none" title="Add PR comment" aria-label="Add PR comment">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-        <path d="M8 9h8"/><path d="M8 13h5"/>
-      </svg>
-    </button>
     <button id="btn-voice" title="Voice mode (Ctrl+B)" aria-label="Voice mode">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
@@ -2118,7 +2126,14 @@
     </span>
     <button id="btn-more" title="More actions" aria-label="More actions">⋮</button>
     <div id="more-menu" style="display:none;position:absolute;right:20px;top:var(--review-bar-height, 52px);background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 0;z-index:1001;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
-      <button id="menu-close-pr" style="display:block;width:100%;text-align:left;padding:8px 16px;background:none;border:none;color:#c9d1d9;font-size:13px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#1c2128'" onmouseout="this.style.background='none'">Close Pull Request</button>
+      <button id="btn-pr-comment" class="more-menu-item" style="display:none" title="Add PR comment" aria-label="Add PR comment">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+          <path d="M8 9h8"/><path d="M8 13h5"/>
+        </svg>
+        <span>Add PR Comment</span>
+      </button>
+      <button id="menu-close-pr" class="more-menu-item" style="display:block">Close Pull Request</button>
     </div>
 
     <div id="ai-chat-panel">

@@ -4240,6 +4240,25 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain("btnPrComment.classList.toggle('active', reviewBody.value.trim().length > 0)");
   });
 
+  test('PR comment button lives in the ⋮ more menu, not the toolbar', () => {
+    // The trigger was moved out of the review bar into the menu that holds
+    // "Close Pull Request".
+    const menuStart = indexHtml.indexOf('id="more-menu"');
+    expect(menuStart).toBeGreaterThan(-1);
+    const btnPos = indexHtml.indexOf('id="btn-pr-comment"');
+    expect(btnPos).toBeGreaterThan(menuStart);
+    const menuBlock = indexHtml.substring(menuStart, indexHtml.indexOf('</div>', menuStart));
+    expect(menuBlock).toContain('id="btn-pr-comment"');
+    expect(menuBlock).toContain('id="menu-close-pr"');
+    expect(menuBlock).toContain('class="more-menu-item"');
+    // The row must not be styled as a toolbar icon button any more
+    expect(indexHtml).not.toContain('#btn-ai-chat, #btn-pr-comment');
+    // Opening the comment box closes the menu, and the panel anchors to the ⋮
+    // button because the trigger has no box once the menu is hidden.
+    expect(rendererSource).toContain('if (moreMenu) moreMenu.style.display = \'none\'');
+    expect(rendererSource).toContain('rect = btnMore ? btnMore.getBoundingClientRect() : null');
+  });
+
   test('renderer.js prefFields includes hermesProfile', () => {
     expect(rendererSource).toContain("{ id: 'pref-hermes-profile', key: 'hermesProfile', type: 'text' }");
   });

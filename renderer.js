@@ -7492,8 +7492,14 @@ const btnPrComment = document.getElementById('btn-pr-comment');
 const prCommentPanel = document.getElementById('pr-comment-panel');
 
 function positionPrCommentPanel() {
-  if (!btnPrComment || !prCommentPanel) return;
-  const rect = btnPrComment.getBoundingClientRect();
+  if (!prCommentPanel) return;
+  // The trigger lives inside the ⋮ menu, which is hidden before we measure, so
+  // fall back to the ⋮ button whenever the trigger has no box of its own.
+  let rect = btnPrComment ? btnPrComment.getBoundingClientRect() : null;
+  if (!rect || !rect.width) {
+    rect = btnMore ? btnMore.getBoundingClientRect() : null;
+  }
+  if (!rect || !rect.width) return;
   prCommentPanel.style.right = (window.innerWidth - rect.right) + 'px';
   prCommentPanel.style.top = (rect.bottom + 4) + 'px';
 }
@@ -7503,6 +7509,9 @@ if (btnPrComment && prCommentPanel) {
   if (reviewBody) setupMentionHandling(reviewBody);
   btnPrComment.addEventListener('click', (e) => {
     e.stopPropagation();
+    // The trigger is a row of the ⋮ menu — close the menu so the comment box
+    // opens against the ⋮ button instead of sitting on top of the open menu.
+    if (moreMenu) moreMenu.style.display = 'none';
     const isOpen = prCommentPanel.classList.contains('open');
     if (!isOpen) {
       positionPrCommentPanel();
