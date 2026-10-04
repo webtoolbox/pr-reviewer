@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadPr: (data) => ipcRenderer.invoke('load-pr', data),
   getPrInfo: (data) => ipcRenderer.invoke('get-pr-info', data),
   prefetchPr: (data) => ipcRenderer.invoke('prefetch-pr', data),
+  prefetchPrMeta: (data) => ipcRenderer.invoke('prefetch-pr-meta', data),
   getPrefetchedPr: (data) => ipcRenderer.invoke('get-prefetched-pr', data),
   listPrs: () => ipcRenderer.invoke('list-prs'),
   openPrNewWindow: (prNumber) => ipcRenderer.invoke('open-pr-new-window', prNumber),

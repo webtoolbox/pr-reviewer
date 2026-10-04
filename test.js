@@ -77,11 +77,11 @@ async function runTests() {
   `);
   assert('Request Changes button visible', requestChangesVisible === 'inline-block', `display="${requestChangesVisible}"`);
 
-  // TEST 7: Comment button should be visible
+  // TEST 7: Comment button should be visible (it lives in the ⋮ menu as a row)
   const commentBtnVisible = await mainWindow.webContents.executeJavaScript(`
     document.getElementById('btn-comment').style.display
   `);
-  assert('Comment button visible', commentBtnVisible === 'inline-block', `display="${commentBtnVisible}"`);
+  assert('Comment button visible', commentBtnVisible === 'flex', `display="${commentBtnVisible}"`);
 
   // TEST 8: File list should show files
   const fileNames = await mainWindow.webContents.executeJavaScript(`
@@ -3082,7 +3082,10 @@ async function runTests() {
   await new Promise(resolve => setTimeout(resolve, 200));
   const firstEnterCall = global.__findCalls[global.__findCalls.length - 1];
   assert('Enter triggers findInPage with query', firstEnterCall && firstEnterCall.text === 'old', `text=${firstEnterCall && firstEnterCall.text}`);
-  assert('First Enter searches from top', firstEnterCall && firstEnterCall.options && firstEnterCall.options.findNext === false && firstEnterCall.options.forward === true);
+  // Fresh search: findNext must be left unset. Electron 37 keeps the yellow
+  // match marks after stopFindInPage('clearSelection') when findNext was
+  // explicitly sent as false, so closing the pane left highlights behind.
+  assert('First Enter searches from top', firstEnterCall && firstEnterCall.options && firstEnterCall.options.findNext === undefined && firstEnterCall.options.forward === true, `findNext=${firstEnterCall && firstEnterCall.options && JSON.stringify(firstEnterCall.options.findNext)}`);
 
   // Simulate a find result and check the counter updates
   await mainWindow.webContents.send('find-result', { activeMatchOrdinal: 2, matches: 14 });
@@ -3148,6 +3151,9 @@ async function runTests() {
   const findStopCalled = global.__findStops;
   assert('Esc closes find bar', findBarClosed === true);
   assert('Esc stops find-in-page', findStopCalled >= 1, `stops=${findStopCalled}`);
+  // 'clearSelection' is the action that makes Chromium drop the match marks;
+  // any other action would leave highlights on screen after the pane is gone.
+  assert('Esc stops find with clearSelection (drops highlights)', global.__findLastStop === 'clearSelection', `action=${global.__findLastStop}`);
 
   // Shortcuts dialog lists Cmd+F
   const shortcutHasFind = await mainWindow.webContents.executeJavaScript(`

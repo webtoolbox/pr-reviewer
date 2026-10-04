@@ -81,7 +81,7 @@ function loadConfig() {
     repoPath: '',
     editorCommand: 'code',
     contextLines: 5,
-    cache: { viewedTtlMinutes: 15, prefetchTtlMinutes: 5 },
+    cache: { maxAgeMinutes: 1440, prefetchMetaTtlMinutes: 15 },
     imageUpload: {
       enabled: false,
       provider: 's3',
@@ -1156,8 +1156,11 @@ async function generateDiff(prNumber, repoKey) {
   //  - resolveBaseSha (review lookup → base SHA)
   //  - PR commit authors (distinct humans) — shown when the PR author is a
   //    bot (e.g. "app/wt-builderbot") so reviewers see who actually worked on it.
+  // baseRefOid/state/reviewDecision/updatedAt ride along so every cached
+  // result carries the PR facts a later freshness check compares against
+  // (see prEntryStaleReason). One gh call, four extra fields.
   const prViewPromise = execPromise(
-    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,title,author,assignees,body --jq '{headRefOid: .headRefOid, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
+    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,baseRefOid,state,reviewDecision,updatedAt,title,author,assignees,body --jq '{headRefOid: .headRefOid, baseRefOid: .baseRefOid, state: .state, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
   );
   const prDiffPromise = execPromise(
     `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
@@ -1897,22 +1900,35 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     if (!force) {
       // Check the retained viewed cache first — instant return of the SAME diff
       // for PRs already loaded this session (e.g. navigating back to a reviewed
-      // PR). getViewedPr() drops entries older than cache.viewedTtlMinutes, so a
-      // PR that got new commits and was re-sent for review regenerates fresh.
+      // PR). cachedResultStaleReason() then compares it with the PR's live
+      // facts, so a PR that got new commits and was re-sent for review
+      // regenerates fresh instead of serving the old diff.
       const viewed = getViewedPr(cacheKey);
       if (viewed) {
-        log('INFO', '[pr] Returning viewed-cached result for PR #' + prNumber);
-        return viewed;
+        // Cached does not mean current: compare against the PR's live facts
+        // before serving, so a pushed commit shows up immediately.
+        const staleReason = await cachedResultStaleReason(cacheKey, safePr, repo, viewed);
+        if (!staleReason) {
+          log('INFO', '[pr] Returning viewed-cached result for PR #' + prNumber);
+          return viewed;
+        }
+        log('INFO', '[pr] Cached diff for PR #' + prNumber + ' is stale (' + staleReason + ') - regenerating');
+        invalidatePrCache(cacheKey);
       }
 
-      // Check prefetch cache second — instant return if already fetched and
-      // still within cache.prefetchTtlMinutes (older entries are dropped).
+      // Check prefetch cache second — instant return if already fetched, and
+      // only if its PR facts still match (same freshness rule as above).
       const prefetched = getPrefetchEntry(cacheKey);
       if (prefetched) {
+        const staleReason = await cachedResultStaleReason(cacheKey, safePr, repo, prefetched);
+        if (!staleReason) {
+          delete prefetchCache[cacheKey];
+          cacheViewedPr(cacheKey, prefetched);
+          log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
+          return prefetched;
+        }
+        log('INFO', '[pr] Prefetched diff for PR #' + prNumber + ' is stale (' + staleReason + ') - regenerating');
         delete prefetchCache[cacheKey];
-        cacheViewedPr(cacheKey, prefetched);
-        log('INFO', '[pr] Returning prefetched result for PR #' + prNumber);
-        return prefetched;
       }
     } else {
       // Force reload: drop this PR's cached results outright so a stale copy
@@ -1949,6 +1965,10 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     repoPath: getLocalRepoPath(repo),
     baseSha: result.baseSha || null,
     headSha: result.headSha || null,
+    baseRefOid: prData.baseRefOid || null,
+    state: prData.state || 'OPEN',
+    reviewDecision: prData.reviewDecision || '',
+    updatedAt: prData.updatedAt || '',
     sinceReviewRef: result.sinceReviewRef || null
     };
     cacheViewedPr(cacheKey, out);
@@ -1961,16 +1981,27 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
 
 // Fast PR metadata — title, author, assignees (no diff generation)
 // Returns in ~1-2s vs 10-30s for full load-pr
+// Fast PR metadata — title, author, assignees (no diff generation)
+// Returns in ~1-2s vs 10-30s for full load-pr
 ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
   const safePr = safePrNumber(prNumber);
   if (!safePr) return { error: 'Invalid PR number' };
-  // Serve title/author/assignees from the prefetch cache when available so the
-  // title appears instantly alongside the diff. Do NOT consume the entry here —
-  // load-pr still needs it for the diff content.
   const cacheKey = `${safePr}:${repo || 'default'}`;
-  // Serve from the retained viewed cache first (covers back-navigation to a PR
-  // whose prefetch entry was already consumed by a previous load). getViewedPr()
-  // returns null once the entry is older than cache.viewedTtlMinutes.
+
+  // 1. Fast metadata cache: a live `gh pr view` read from the last
+  //    PR_META_TTL_MS. On advance this is the entry prefetch-pr-meta warmed
+  //    while the previous PR was still on screen, so the header is instant.
+  const meta = getPrMeta(cacheKey);
+  if (meta) {
+    log('INFO', '[get-pr-info] Returning live-metadata cache for PR #' + safePr);
+    return meta;
+  }
+
+  // 2. Serve title/author/assignees from a cached diff result when available so
+  //    the title appears instantly alongside the diff. Do NOT consume the
+  //    prefetch entry here — load-pr still needs it for the diff content.
+  //    Do NOT feed this back into prMetaCache: it would echo the diff cache's
+  //    own facts back at the freshness check and hide real changes.
   const viewed = getViewedPr(cacheKey);
   if (viewed) {
     log('INFO', '[get-pr-info] Returning viewed-cached metadata for PR #' + safePr);
@@ -2001,6 +2032,32 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
       baseSha: prefetched.baseSha || ''
     };
   }
+
+  // 3. Live read — one gh pr view plus the contributor walk, both pure API
+  // reads, so this stays in the fast lane (~1-2s).
+  try {
+    log('INFO', '[get-pr-info] Fetching metadata for PR #' + safePr);
+    const { meta, authorInfo } = await fetchPrMetadata(safePr, repo);
+    const fullAuthors = meta.prOtherAuthors;
+    // Stage 1 done — return the FULL contributor list so the header renders
+    // now. Stage 2 (merge-only checks against the local clone) runs detached
+    // and pushes the reduced list back over 'pr-authors-refined'.
+    schedulePrAuthorsRefinement(event.sender, safePr, repo, fullAuthors, authorInfo);
+    // Keep the live read warm: next time (back-navigation, or load-pr's
+    // freshness check for the same PR) no network round trip is needed.
+    putPrMeta(cacheKey, meta);
+    log('INFO', '[get-pr-info] Got metadata:', (meta.prTitle || '').substring(0, 50));
+    return meta;
+  } catch (err) {
+    log('ERROR', '[get-pr-info] Failed:', err.message);
+    return { error: err.message };
+  }
+});
+
+// One `gh pr view` plus the contributor walk for a PR's header metadata.
+// Shared by get-pr-info (first open) and prefetch-pr-meta (warming the next
+// PR). Returns { meta, authorInfo } so the caller owns the refinement push.
+async function fetchPrMetadata(prNumber, repo) {
   let owner, repoName;
   if (repo && repo.includes('/')) {
     [owner, repoName] = repo.split('/');
@@ -2008,55 +2065,51 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
     owner = appConfig.repoOwner || 'webtoolbox';
     repoName = appConfig.repoName || 'Website-Toolbox';
   }
-  try {
-    log('INFO', '[get-pr-info] Fetching metadata for PR #' + safePr);
-    // Metadata and contributor walk run together — both are pure API reads, so
-    // this stays in the fast lane (~1-2s) while still giving the header a
-    // contributor list to paint immediately.
-    const [prJson, authorInfo] = await Promise.all([
-      execPromise(
-        `gh pr view ${safePr} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,changedFiles --jq '{title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles}'`,
-        { timeout: 15000 }
-      ),
-      fetchPrCommitAuthors(owner, repoName, safePr).catch((err) => {
-        log('WARN', '[get-pr-info] Failed to fetch PR commit authors:', err.message);
-        return { authors: [], commits: [] };
-      })
-    ]);
-    const prData = JSON.parse(prJson || '{}');
-    log('INFO', '[get-pr-info] Got metadata:', prData.title?.substring(0, 50));
-    const fullAuthors = (authorInfo.authors || []).filter(a => a && a !== (prData.author || ''));
-    // Stage 1 done — return the FULL contributor list so the header renders
-    // now. Stage 2 (merge-only checks against the local clone) runs detached
-    // and pushes the reduced list back over 'pr-authors-refined'.
-    schedulePrAuthorsRefinement(event.sender, safePr, repo, fullAuthors, authorInfo);
-    return {
-      prTitle: prData.title || '',
-      prAuthor: prData.author || '',
-      prAssignees: (prData.assignees || []).filter(a => a !== prData.author),
-      prOtherAuthors: fullAuthors,
-      prBody: prData.body || '',
-      state: prData.state || '',
-      filesChanged: prData.changedFiles || 0,
-      headSha: prData.headRefOid || '',
-      baseSha: prData.baseRefOid || ''
-    };
-  } catch (err) {
-    log('ERROR', '[get-pr-info] Failed:', err.message);
-    return { error: err.message };
-  }
-});
+  const [prJson, authorInfo] = await Promise.all([
+    execPromise(
+      `gh pr view ${prNumber} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,changedFiles,reviewDecision,updatedAt --jq '{title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt}'`,
+      { timeout: 15000 }
+    ),
+    fetchPrCommitAuthors(owner, repoName, prNumber).catch((err) => {
+      log('WARN', '[get-pr-info] Failed to fetch PR commit authors:', err.message);
+      return { authors: [], commits: [] };
+    })
+  ]);
+  const prData = JSON.parse(prJson || '{}');
+  const fullAuthors = (authorInfo.authors || []).filter(a => a && a !== (prData.author || ''));
+  const meta = {
+    prTitle: prData.title || '',
+    prAuthor: prData.author || '',
+    prAssignees: (prData.assignees || []).filter(a => a !== prData.author),
+    prOtherAuthors: fullAuthors,
+    prBody: prData.body || '',
+    state: prData.state || '',
+    filesChanged: prData.changedFiles || 0,
+    headSha: prData.headRefOid || '',
+    baseSha: prData.baseRefOid || '',
+    baseRefOid: prData.baseRefOid || '',
+    reviewDecision: prData.reviewDecision || '',
+    updatedAt: prData.updatedAt || ''
+  };
+  return { meta, authorInfo };
+}
 
 // ── PR result caches ─────────────────────────────────────────────────────────
-// Both caches stamp every entry with the time it was stored and expire it, so
-// an app left open for days never serves a diff that has gone stale (e.g. a PR
-// that was reviewed, then received new commits and was re-sent for review).
-// TTLs are configurable in config.json under "cache" (minutes).
-const VIEWED_PR_CACHE_TTL_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.viewedTtlMinutes, 15);
-const PREFETCH_TTL_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.prefetchTtlMinutes, 5);
-// An in-progress prefetch that never resolved (crashed gh call, etc.) must not
-// block future prefetches of the same PR forever.
-const PREFETCH_STUCK_MS = 2 * 60 * 1000;
+// Cached diffs are NOT dropped on a timer. A cached result stays valid while
+// the PR facts it was built from still hold: head commit unchanged, base
+// branch unchanged, still open, same review decision. prEntryStaleReason() is
+// the single rule, load-pr applies it by comparing a cached entry against
+// fresh metadata before serving it (getFreshPrInfo).
+// PR_CACHE_MAX_AGE_MS is only a hoarding backstop for a long-running app, and
+// lines up with the 24h since-review ref retention. It is not a freshness rule.
+const PR_CACHE_MAX_AGE_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.maxAgeMinutes, 1440);
+// Live `gh pr view` metadata (title/author/description) kept warm so the next
+// header paints instantly. Short-lived on purpose: a title edit should show up,
+// while a stale title must never cost us 10-30s of diff regeneration.
+const PR_META_TTL_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.prefetchMetaTtlMinutes, 15);
+if (appConfig.cache && (appConfig.cache.viewedTtlMinutes !== undefined || appConfig.cache.prefetchTtlMinutes !== undefined)) {
+  log('INFO', '[cache] cache.viewedTtlMinutes and cache.prefetchTtlMinutes are no longer used: cached diffs now expire on PR freshness checks, not on a timer');
+}
 
 function ttlMinutesToMs(value, fallbackMinutes) {
   const n = Number(value);
@@ -2067,7 +2120,7 @@ function ttlMinutesToMs(value, fallbackMinutes) {
 // Retained results for recently-viewed PRs. Unlike prefetchCache (which is
 // consumed once on load), this cache keeps the full diff+metadata so navigating
 // back to a PR you already reviewed returns the SAME diff instantly instead of
-// regenerating it (10-30s). Bounded to 50 entries and VIEWED_PR_CACHE_TTL_MS.
+// regenerating it (10-30s). Bounded to 50 entries and PR_CACHE_MAX_AGE_MS.
 const viewedPrCache = new Map(); // cacheKey -> { result, cachedAt }
 const VIEWED_PR_CACHE_MAX = 50;
 function cacheViewedPr(cacheKey, result) {
@@ -2084,12 +2137,90 @@ function cacheViewedPr(cacheKey, result) {
 function getViewedPr(cacheKey) {
   const entry = viewedPrCache.get(cacheKey);
   if (!entry) return null;
-  if (Date.now() - entry.cachedAt > VIEWED_PR_CACHE_TTL_MS) {
+  if (Date.now() - entry.cachedAt > PR_CACHE_MAX_AGE_MS) {
     viewedPrCache.delete(cacheKey);
-    log('INFO', '[cache] Viewed entry expired for ' + cacheKey + ' — regenerating fresh');
+    log('INFO', '[cache] Viewed entry for ' + cacheKey + ' aged out (backstop), dropping');
     return null;
   }
   return entry.result;
+}
+
+// ── PR freshness ─────────────────────────────────────────────────────────────
+// Pure rule: is a cached result still valid for the PR facts we just read?
+// Returns '' when the entry can be served as-is, otherwise a short reason.
+// Deliberately ignores title/body/label edits: those only change the header,
+// which get-pr-info refreshes separately. They must not force 10-30s of git work.
+function prEntryStaleReason(entry, fresh) {
+  if (!entry || !fresh) return '';
+  if (entry.headSha && fresh.headSha && entry.headSha !== fresh.headSha) return 'new commits';
+  if (entry.baseRefOid && fresh.baseRefOid && entry.baseRefOid !== fresh.baseRefOid) return 'base branch moved';
+  const entryState = entry.state || 'OPEN';
+  if (fresh.state && fresh.state !== entryState) return 'PR is now ' + fresh.state;
+  if ((entry.reviewDecision || '') !== (fresh.reviewDecision || '')) return 'review decision changed';
+  return '';
+}
+
+// Fresh PR facts for that check. Served from the fast metadata cache (warm
+// while the previous PR was on screen), otherwise one cheap gh pr view.
+// Returns null when GitHub is unreachable so the caller serves what it has
+// instead of failing the load.
+async function getFreshPrInfo(cacheKey, prNumber, repo) {
+  const cached = getPrMeta(cacheKey);
+  if (cached) return cached;
+  let owner, repoName;
+  if (repo && repo.includes('/')) {
+    [owner, repoName] = repo.split('/');
+  } else {
+    owner = appConfig.repoOwner || 'webtoolbox';
+    repoName = appConfig.repoName || 'Website-Toolbox';
+  }
+  try {
+    const out = await execPromise(
+      `gh pr view ${prNumber} --repo ${owner}/${repoName} --json headRefOid,baseRefOid,state,reviewDecision,updatedAt --jq '{headRefOid: .headRefOid, baseRefOid: .baseRefOid, state: .state, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt}'`,
+      { timeout: 15000 }
+    );
+    const json = JSON.parse(out || '{}');
+    return {
+      headSha: json.headRefOid || '',
+      baseRefOid: json.baseRefOid || '',
+      state: json.state || '',
+      reviewDecision: json.reviewDecision || '',
+      updatedAt: json.updatedAt || ''
+    };
+  } catch (err) {
+    log('WARN', '[cache] Freshness check failed for PR #' + prNumber + ':', err.message);
+    return null;
+  }
+}
+
+// Convenience wrapper for the load-pr cache reads.
+async function cachedResultStaleReason(cacheKey, prNumber, repo, entry) {
+  const fresh = await getFreshPrInfo(cacheKey, prNumber, repo);
+  if (!fresh) return '';
+  return prEntryStaleReason(entry, fresh);
+}
+
+// ── Fast PR metadata cache ───────────────────────────────────────────────────
+// Populated only by live `gh pr view` reads (get-pr-info and prefetch-pr-meta).
+// Copying diff-cache metadata in here would just hand stale facts back to the
+// freshness check, so it would stop noticing real changes.
+const prMetaCache = new Map(); // cacheKey -> { meta, cachedAt }
+const PR_META_CACHE_MAX = 50;
+function putPrMeta(cacheKey, meta) {
+  if (!meta) return;
+  prMetaCache.set(cacheKey, { meta, cachedAt: Date.now() });
+  if (prMetaCache.size > PR_META_CACHE_MAX) {
+    prMetaCache.delete(prMetaCache.keys().next().value);
+  }
+}
+function getPrMeta(cacheKey) {
+  const entry = prMetaCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > PR_META_TTL_MS) {
+    prMetaCache.delete(cacheKey);
+    return null;
+  }
+  return entry.meta;
 }
 
 // Prefetch PR diff in background — result cached for next load-pr call
@@ -2107,9 +2238,9 @@ function getPrefetchEntry(cacheKey) {
     }
     return null;
   }
-  if (Date.now() - entry.cachedAt > PREFETCH_TTL_MS) {
+  if (Date.now() - entry.cachedAt > PR_CACHE_MAX_AGE_MS) {
     delete prefetchCache[cacheKey];
-    log('INFO', '[cache] Prefetch entry expired for ' + cacheKey + ' — regenerating fresh');
+    log('INFO', '[cache] Prefetch entry for ' + cacheKey + ' aged out (backstop), dropping');
     return null;
   }
   return entry;
@@ -2119,6 +2250,7 @@ function getPrefetchEntry(cacheKey) {
 // processed PR must be re-fetched — new commits may already be pushed) and on
 // force reload.
 function invalidatePrCache(cacheKey) {
+  prMetaCache.delete(cacheKey);
   const hadViewed = viewedPrCache.delete(cacheKey);
   const hadPrefetch = !!prefetchCache[cacheKey];
   delete prefetchCache[cacheKey];
@@ -2126,6 +2258,32 @@ function invalidatePrCache(cacheKey) {
     log('INFO', '[cache] Invalidated cached results for ' + cacheKey);
   }
 }
+
+// Warm header metadata for a PR the reviewer has not opened yet: one cheap
+// gh pr view plus the contributor walk, no git work. Fired while the current
+// PR is on screen, so get-pr-info (and load-pr's freshness check) read it from
+// prMetaCache instead of the network when the reviewer advances.
+ipcMain.handle('prefetch-pr-meta', async (event, { prNumber, repo } = {}) => {
+  const safePr = safePrNumber(prNumber);
+  if (!safePr) return { error: 'Invalid PR number' };
+  const cacheKey = `${safePr}:${repo || 'default'}`;
+  if (getPrMeta(cacheKey)) {
+    log('INFO', '[prefetch-pr-meta] PR #' + safePr + ' metadata already warm');
+    return { status: 'cached' };
+  }
+  try {
+    const fetched = await fetchPrMetadata(safePr, repo);
+    putPrMeta(cacheKey, fetched.meta);
+    if (event && event.sender) {
+      schedulePrAuthorsRefinement(event.sender, safePr, repo, fetched.meta.prOtherAuthors, fetched.authorInfo);
+    }
+    log('INFO', '[prefetch-pr-meta] Warmed metadata for PR #' + safePr + ':', (fetched.meta.prTitle || '').substring(0, 50));
+    return { status: 'done' };
+  } catch (err) {
+    log('WARN', '[prefetch-pr-meta] Failed for PR #' + safePr + ':', err.message);
+    return { error: err.message };
+  }
+});
 
 ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
   const safePr = safePrNumber(prNumber);
@@ -2163,6 +2321,10 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       repoPath: getLocalRepoPath(repo),
       baseSha: result.baseSha || null,
       headSha: result.headSha || null,
+      baseRefOid: prData.baseRefOid || null,
+      state: prData.state || 'OPEN',
+      reviewDecision: prData.reviewDecision || '',
+      updatedAt: prData.updatedAt || '',
       sinceReviewRef: result.sinceReviewRef || null,
       cachedAt: Date.now()
     };
@@ -2197,12 +2359,15 @@ setInterval(() => {
     const entry = prefetchCache[key];
     if (entry.inProgress) {
       if (now - entry.startedAt > PREFETCH_STUCK_MS) delete prefetchCache[key];
-    } else if (now - entry.cachedAt > PREFETCH_TTL_MS) {
+    } else if (now - entry.cachedAt > PR_CACHE_MAX_AGE_MS) {
       delete prefetchCache[key];
     }
   }
   for (const [key, entry] of viewedPrCache) {
-    if (now - entry.cachedAt > VIEWED_PR_CACHE_TTL_MS) viewedPrCache.delete(key);
+    if (now - entry.cachedAt > PR_CACHE_MAX_AGE_MS) viewedPrCache.delete(key);
+  }
+  for (const [key, entry] of prMetaCache) {
+    if (now - entry.cachedAt > PR_META_TTL_MS) prMetaCache.delete(key);
   }
 }, 60000);
 

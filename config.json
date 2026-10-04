@@ -19,8 +19,8 @@
   "editorCommand": "code",
   "contextLines": 5,
   "cache": {
-    "viewedTtlMinutes": 15,
-    "prefetchTtlMinutes": 5
+    "maxAgeMinutes": 1440,
+    "prefetchMetaTtlMinutes": 15
   },
   "diff": {
     "mode": "since-review",

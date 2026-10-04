@@ -3063,36 +3063,106 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(hSrc).toContain('prTitle: viewed.prTitle ||');
   });
 
-  test('viewed and prefetch caches expire after their TTL', () => {
-    // TTLs are configurable (config.json "cache") and stamped at cache time
-    expect(mainSource).toContain('VIEWED_PR_CACHE_TTL_MS');
-    expect(mainSource).toContain('PREFETCH_TTL_MS');
-    expect(mainSource).toContain('viewedTtlMinutes');
-    expect(mainSource).toContain('prefetchTtlMinutes');
-    expect(mainSource).toMatch(/viewedPrCache\.set\(cacheKey, \{ result, cachedAt: Date\.now\(\) \}\)/);
-    expect(mainSource).toMatch(/prefetchCache\[cacheKey\] = \{ inProgress: true, startedAt: Date\.now\(\) \}/);
-    expect(mainSource).toContain('sinceReviewRef: result.sinceReviewRef || null,\n      cachedAt: Date.now()');
-    // Expired entries are dropped on read so load-pr/get-pr-info regenerate fresh
-    expect(mainSource).toContain('function getViewedPr(cacheKey)');
-    expect(mainSource).toMatch(/Date\.now\(\) - entry\.cachedAt > VIEWED_PR_CACHE_TTL_MS/);
-    expect(mainSource).toContain('function getPrefetchEntry(cacheKey)');
-    expect(mainSource).toMatch(/Date\.now\(\) - entry\.cachedAt > PREFETCH_TTL_MS/);
+  test('cached diffs expire on PR freshness, not on a blanket timer', () => {
+    // A cached diff is served while the PR facts it was built from still hold.
+    // prEntryStaleReason is the whole rule; load-pr applies it before serving.
+    expect(mainSource).toContain('function prEntryStaleReason(entry, fresh)');
+    expect(mainSource).toContain('function getFreshPrInfo(cacheKey, prNumber, repo)');
+    expect(mainSource).toContain('function cachedResultStaleReason(cacheKey, prNumber, repo, entry)');
+    // Freshness signals: new commits, moved base, merged/closed, review decision.
+    expect(mainSource).toContain("return 'new commits'");
+    expect(mainSource).toContain("return 'base branch moved'");
+    expect(mainSource).toContain("return 'PR is now ' + fresh.state");
+    expect(mainSource).toContain("return 'review decision changed'");
+    // Every cached result carries the facts the check compares against.
+    expect(mainSource).toMatch(/baseRefOid: prData\.baseRefOid \|\| null/);
+    expect(mainSource).toMatch(/state: prData\.state \|\| 'OPEN'/);
+    expect(mainSource).toMatch(/reviewDecision: prData\.reviewDecision \|\| ''/);
+    // load-pr compares both cache branches before returning them.
+    const loadIdx = mainSource.indexOf("ipcMain.handle('load-pr'");
+    const loadEnd = mainSource.indexOf("ipcMain.handle('get-pr-info'", loadIdx);
+    const loadSrc = mainSource.substring(loadIdx, loadEnd);
+    expect(loadSrc.match(/await cachedResultStaleReason\(/g)).toHaveLength(2);
+    expect(loadSrc).toContain('is stale (');
+    // Offline: serve the cache rather than failing the load.
+    expect(mainSource).toMatch(/if \(!fresh\) return '';[\s\S]{0,120}return prEntryStaleReason/);
+    // What is left of TTL is a memory/hoarding backstop only.
+    expect(mainSource).toContain('PR_CACHE_MAX_AGE_MS');
+    expect(mainSource).toContain('maxAgeMinutes');
+    expect(mainSource).not.toContain('VIEWED_PR_CACHE_TTL_MS');
+    expect(mainSource).not.toContain('PREFETCH_TTL_MS');
+    expect(mainSource).toMatch(/Date\.now\(\) - entry\.cachedAt > PR_CACHE_MAX_AGE_MS/);
     // A stuck in-progress prefetch can't block re-prefetching the PR forever
     expect(mainSource).toContain('PREFETCH_STUCK_MS');
     expect(mainSource).toMatch(/now - entry\.startedAt > PREFETCH_STUCK_MS/);
-    // Periodic sweep keeps a long-running app from hoarding stale diffs
-    expect(mainSource).toMatch(/setInterval\(\(\) => \{[\s\S]{0,800}viewedPrCache\.delete\(key\)/);
+    // Periodic sweep keeps a long-running app from hoarding diffs
+    expect(mainSource).toMatch(/setInterval\(\(\) => \{[\s\S]{0,1200}viewedPrCache\.delete\(key\)/);
     // Force reload drops both caches for the PR instead of only bypassing reads
     expect(mainSource).toMatch(/} else \{\s*\n\s*\/\/ Force reload[\s\S]{0,200}invalidatePrCache\(cacheKey\);/);
   });
 
-  test('config.json exposes cache TTL settings', () => {
+  test('title/body edits do not invalidate a cached diff', () => {
+    // The rule ignores metadata-only changes: they only move the header, which
+    // get-pr-info refreshes. Regenerating 10-30s of git work for a renamed PR
+    // would be the cost of being wrong here.
+    const stale = extractFunctionBody(mainSource, 'prEntryStaleReason');
+    expect(stale).toBeTruthy();
+    const fn = eval('(' + stale + ')');
+    const base = { headSha: 'aaa', baseRefOid: 'bbb', state: 'OPEN', reviewDecision: 'APPROVED' };
+    expect(fn(base, { headSha: 'aaa', baseRefOid: 'bbb', state: 'OPEN', reviewDecision: 'APPROVED' })).toBe('');
+    expect(fn(base, { headSha: 'aaa', baseRefOid: 'bbb', state: 'OPEN', reviewDecision: 'APPROVED', title: 'renamed' })).toBe('');
+    expect(fn(base, { headSha: 'aaa', baseRefOid: 'bbb', state: 'OPEN', reviewDecision: 'APPROVED', updatedAt: '2026-10-04' })).toBe('');
+    // A pushed commit invalidates.
+    expect(fn(base, { headSha: 'zzz', baseRefOid: 'bbb', state: 'OPEN', reviewDecision: 'APPROVED' })).toBe('new commits');
+    // A moved base branch invalidates.
+    expect(fn(base, { headSha: 'aaa', baseRefOid: 'yyy', state: 'OPEN', reviewDecision: 'APPROVED' })).toBe('base branch moved');
+    // Merged or closed invalidates.
+    expect(fn(base, { headSha: 'aaa', baseRefOid: 'bbb', state: 'MERGED', reviewDecision: 'APPROVED' })).toBe('PR is now MERGED');
+    // A new review decision invalidates (it is drawn over the diff).
+    expect(fn(base, { headSha: 'aaa', baseRefOid: 'bbb', state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED' })).toBe('review decision changed');
+    // No fresh facts (offline) means serve what we have.
+    expect(fn(base, null)).toBe('');
+    expect(fn(null, base)).toBe('');
+  });
+
+  test('config.json exposes cache settings', () => {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
-    expect(cfg.cache.viewedTtlMinutes).toBe(15);
-    expect(cfg.cache.prefetchTtlMinutes).toBe(5);
+    // maxAgeMinutes is a hoarding backstop, prefetchMetaTtlMinutes controls the
+    // fast header metadata cache. The old viewed/prefetch TTLs are gone.
+    expect(cfg.cache.maxAgeMinutes).toBe(1440);
+    expect(cfg.cache.prefetchMetaTtlMinutes).toBe(15);
+    expect(cfg.cache.viewedTtlMinutes).toBeUndefined();
+    expect(cfg.cache.prefetchTtlMinutes).toBeUndefined();
     // loadConfig defaults + private-config merge keep the settings overridable
-    expect(mainSource).toContain('cache: { viewedTtlMinutes: 15, prefetchTtlMinutes: 5 },');
+    expect(mainSource).toContain('cache: { maxAgeMinutes: 1440, prefetchMetaTtlMinutes: 15 },');
     expect(mainSource).toContain('if (parsed.cache) config.cache = { ...config.cache, ...parsed.cache };');
+    // Old keys still in a user's config are reported instead of silently ignored
+    expect(mainSource).toContain('cache.viewedTtlMinutes and cache.prefetchTtlMinutes are no longer used');
+  });
+
+  test('next PR header metadata is prefetched while the current PR loads', () => {
+    const pSrc = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+    const rSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    // Renderer warms the next PR's header before Phase 1 of the current one,
+    // so advancing does not wait on the slow diff prefetch.
+    expect(rSrc).toContain('prefetchNextPrMeta(prNumber, repoKey);');
+    expect(rSrc.indexOf('prefetchNextPrMeta(prNumber, repoKey);')).toBeLessThan(rSrc.indexOf('let prMeta = null;'));
+    expect(rSrc).toContain('function prefetchNextPrMeta(');
+    expect(pSrc).toContain("prefetchPrMeta: (data) => ipcRenderer.invoke('prefetch-pr-meta', data)");
+    // Main process: one gh pr view, no git work, stored in prMetaCache
+    expect(mainSource).toContain("ipcMain.handle('prefetch-pr-meta'");
+    expect(mainSource).toContain('function fetchPrMetadata(prNumber, repo)');
+    expect(mainSource).toContain('function putPrMeta(cacheKey, meta)');
+    expect(mainSource).toContain('function getPrMeta(cacheKey)');
+    // get-pr-info reads the warm cache before touching the network, and a live
+    // read is what feeds it (diff-cache metadata must never be copied in).
+    const gIdx = mainSource.indexOf("ipcMain.handle('get-pr-info'");
+    const gSrc = mainSource.substring(gIdx, mainSource.indexOf('async function fetchPrMetadata'));
+    expect(gSrc.indexOf('const meta = getPrMeta(cacheKey);')).toBeLessThan(gSrc.indexOf('const viewed = getViewedPr(cacheKey);'));
+    expect(gSrc).toContain('putPrMeta(cacheKey, meta);');
+    expect(mainSource.indexOf('function getFreshPrInfo')).toBeGreaterThan(-1);
+    // Freshness check reads the same warm cache first
+    expect(mainSource).toMatch(/async function getFreshPrInfo[\s\S]{0,300}getPrMeta\(cacheKey\)/);
   });
 
   test('submit-github-review invalidates the processed PR cache', () => {
@@ -4240,23 +4310,28 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain("btnPrComment.classList.toggle('active', reviewBody.value.trim().length > 0)");
   });
 
-  test('PR comment button lives in the ⋮ more menu, not the toolbar', () => {
-    // The trigger was moved out of the review bar into the menu that holds
-    // "Close Pull Request".
+  test('PR comment icon stays in the toolbar, Comment submit lives in the ⋮ menu', () => {
+    // The toolbar keeps the "add PR comment" icon; the menu that holds
+    // "Close Pull Request" holds the button that actually posts the review.
     const menuStart = indexHtml.indexOf('id="more-menu"');
     expect(menuStart).toBeGreaterThan(-1);
-    const btnPos = indexHtml.indexOf('id="btn-pr-comment"');
-    expect(btnPos).toBeGreaterThan(menuStart);
     const menuBlock = indexHtml.substring(menuStart, indexHtml.indexOf('</div>', menuStart));
-    expect(menuBlock).toContain('id="btn-pr-comment"');
+    expect(menuBlock).toContain('id="btn-comment"');
     expect(menuBlock).toContain('id="menu-close-pr"');
     expect(menuBlock).toContain('class="more-menu-item"');
-    // The row must not be styled as a toolbar icon button any more
-    expect(indexHtml).not.toContain('#btn-ai-chat, #btn-pr-comment');
-    // Opening the comment box closes the menu, and the panel anchors to the ⋮
-    // button because the trigger has no box once the menu is hidden.
-    expect(rendererSource).toContain('if (moreMenu) moreMenu.style.display = \'none\'');
-    expect(rendererSource).toContain('rect = btnMore ? btnMore.getBoundingClientRect() : null');
+    expect(menuBlock).not.toContain('id="btn-pr-comment"');
+    // The icon lives in the review bar, outside the menu
+    const iconPos = indexHtml.indexOf('id="btn-pr-comment"');
+    expect(iconPos).toBeGreaterThan(-1);
+    expect(iconPos).toBeLessThan(menuStart);
+    // Shared icon-button styling with the AI chat button
+    expect(indexHtml).toContain('#btn-ai-chat, #btn-pr-comment');
+    // Menu rows are scoped so #review-bar's pill radius can't round them
+    expect(indexHtml).toContain('#more-menu .more-menu-item {');
+    expect(indexHtml).not.toMatch(/^\s*\.more-menu-item \{/m);
+    // The comment box anchors to the toolbar icon, and posting closes the menu
+    expect(rendererSource).not.toContain('rect = btnMore ? btnMore.getBoundingClientRect() : null');
+    expect(rendererSource).toContain("document.getElementById('more-menu')");
   });
 
   test('renderer.js prefFields includes hermesProfile', () => {
@@ -4825,5 +4900,394 @@ describe('Contributor refinement', () => {
     // stale state is dropped when a different PR opens
     expect(rSrc).toMatch(/String\(prNumber\) !== String\(currentPrNumber\)[\s\S]{0,200}prAuthorsRefined = null/);
     expect(rSrc).toContain('window.electronAPI.onPrAuthorsRefined(applyRefinedPrAuthors)');
+  });
+});
+
+
+describe('Find bar highlights clear when the pane closes', () => {
+  let src;
+
+  beforeAll(() => {
+    src = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+  });
+
+  const savedKeys = ['document', 'window', 'findMatchCase', 'findStarted', 'lastFindQuery',
+                     'pendingFindRestore', 'restorePendingFind'];
+  let saved;
+
+  beforeEach(() => {
+    saved = {};
+    for (const k of savedKeys) saved[k] = global[k];
+  });
+
+  afterEach(() => {
+    for (const k of savedKeys) {
+      if (saved[k] === undefined) delete global[k];
+      else global[k] = saved[k];
+    }
+  });
+
+  function stubDom(stops) {
+    const el = () => ({
+      value: '', textContent: '', selectionStart: 0, selectionEnd: 0,
+      style: {}, classList: { add() {}, remove() {}, contains() { return false; } },
+      blur() {}, focus() {}, select() {}
+    });
+    const findInput = el(), findCount = el(), findBar = el();
+    global.document = {
+      getElementById: id => ({ 'find-input': findInput, 'find-count': findCount, 'find-bar': findBar }[id] || null)
+    };
+    global.window = {
+      electronAPI: {
+        findInPage: (t, o) => (global.__findCalls = global.__findCalls || []).push({ t, o }),
+        stopFindInPage: a => stops.push(a)
+      }
+    };
+    return { findInput, findCount, findBar };
+  }
+
+  test('restart search never sends findNext:false — it defeats stopFindInPage', () => {
+    // Electron 37 leaves the yellow match marks on screen after
+    // stopFindInPage('clearSelection') when findNext was explicitly sent as
+    // false (empty options, forward, matchCase or findNext:true all clear).
+    // Found via pixel counting: search -> 18,966 yellow px, close -> 0 after
+    // this fix, but 18,966 -> 18,966 with findNext:false.
+    const stops = [];
+    const dom = stubDom(stops);
+    global.findMatchCase = false;
+    global.findStarted = false;
+    global.lastFindQuery = 'search target';
+    global.pendingFindRestore = null;
+    global.restorePendingFind = () => {};
+    global.__findCalls = [];
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = () => 0; // keep the safety-net timer out of jest's run
+
+    try {
+      const runFind = eval('(' + extractFunctionBody(src, 'runFind') + ')');
+
+      dom.findInput.value = 'search target';
+      runFind('restart');
+      expect(global.__findCalls).toHaveLength(1);
+      expect(global.__findCalls[0].o.findNext).toBeUndefined();
+      expect(global.__findCalls[0].o.forward).toBe(true);
+
+      dom.findInput.value = 'search target';
+      runFind('next');
+      expect(global.__findCalls[1].o).toEqual(expect.objectContaining({ findNext: true, forward: true }));
+
+      dom.findInput.value = 'search target';
+      runFind('prev');
+      expect(global.__findCalls[2].o).toEqual(expect.objectContaining({ findNext: true, forward: false }));
+
+      // Empty box: the session is stopped, which is what clears the marks.
+      dom.findInput.value = '';
+      runFind('restart');
+      expect(stops).toContain('clearSelection');
+    } finally {
+      global.setTimeout = realSetTimeout;
+    }
+  });
+
+  test('closing the pane stops the find session so highlights disappear', () => {
+    const stops = [];
+    const { findBar, findInput, findCount } = stubDom(stops);
+    findBar.style.display = 'flex';
+    global.findStarted = true;
+    global.lastFindQuery = '';
+    global.pendingFindRestore = null;
+
+    const closeFindBar = eval('(' + extractFunctionBody(src, 'closeFindBar') + ')');
+    closeFindBar();
+
+    expect(stops).toContain('clearSelection');
+    expect(findBar.style.display).toBe('none');
+    expect(global.findStarted).toBe(false);
+  });
+
+  test('renderer source never asks Electron to find with findNext:false', () => {
+    expect(src).not.toMatch(/findNext\s*[:=]\s*false/);
+  });
+});
+
+
+describe('PR freshness and header prefetch', () => {
+  let mainSource, rendererSource, preloadSource;
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    preloadSource = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+  });
+
+  test('prEntryStaleReason invalidates on real PR changes only', () => {
+    const fn = eval('(' + extractFunctionBody(mainSource, 'prEntryStaleReason') + ')');
+    const entry = { headSha: 'a1', baseRefOid: 'b1', state: 'OPEN', reviewDecision: 'APPROVED' };
+    const same = { headSha: 'a1', baseRefOid: 'b1', state: 'OPEN', reviewDecision: 'APPROVED' };
+    // Unchanged PR (and a title/description-only edit) stays servable — that is
+    // the whole point of dropping the blanket TTL.
+    expect(fn(entry, same)).toBe('');
+    expect(fn(entry, { ...same, updatedAt: '2026-10-04T00:00:00Z' })).toBe('');
+    expect(fn(entry, { ...same, title: 'renamed' })).toBe('');
+    expect(fn(entry, { ...same, prTitle: 'renamed' })).toBe('');
+    // Pushed commit
+    expect(fn(entry, { ...same, headSha: 'a2' })).toBe('new commits');
+    // Base branch moved under the PR
+    expect(fn(entry, { ...same, baseRefOid: 'b2' })).toBe('base branch moved');
+    // PR merged or closed
+    expect(fn(entry, { ...same, state: 'MERGED' })).toBe('PR is now MERGED');
+    // Review state changed (approval / changes requested / dismissed)
+    expect(fn(entry, { ...same, reviewDecision: 'CHANGES_REQUESTED' })).toContain('review decision');
+    // No fresh facts (offline or gh failure): serve the cache, never throw
+    expect(fn(entry, null)).toBe('');
+    expect(fn(null, same)).toBe('');
+    // Entries written before these fields existed must not throw
+    expect(fn({}, { headSha: 'a1' })).toBe('');
+  });
+
+  test('getFreshPrInfo prefers the warm metadata cache, then one gh call', () => {
+    const body = extractFunctionBody(mainSource, 'getFreshPrInfo');
+    expect(body).toBeTruthy();
+    // Cache first: on advance this is prefilled by prefetch-pr-meta, so the
+    // freshness gate costs zero network.
+    expect(body.indexOf('getPrMeta(cacheKey)')).toBeLessThan(body.indexOf('gh pr view'));
+    // gh reads exactly the facts the rule compares (plus updatedAt for logging)
+    expect(body).toContain('headRefOid,baseRefOid,state,reviewDecision,updatedAt');
+    // Unreachable GitHub returns null, which cachedResultStaleReason treats as
+    // "serve what we have" instead of failing the load.
+    expect(body).toMatch(/catch \(err\) \{[\s\S]{0,300}return null;/);
+    expect(body).not.toContain('generateDiff');
+  });
+
+  test('load-pr gates both cache reads on the freshness rule', () => {
+    const start = mainSource.indexOf("ipcMain.handle('load-pr'");
+    const end = mainSource.indexOf("ipcMain.handle('get-pr-info'");
+    const src = mainSource.substring(start, end);
+    expect(src.match(/await cachedResultStaleReason\(/g)).toHaveLength(2);
+    // Stale means drop it (viewed) or drop it (prefetch) and regenerate
+    expect(src).toContain('is stale (');
+    expect(src).toMatch(/const staleReason = await cachedResultStaleReason\(cacheKey, safePr, repo, viewed\)/);
+    expect(src).toMatch(/const staleReason = await cachedResultStaleReason\(cacheKey, safePr, repo, prefetched\)/);
+    // Fresh entries still return instantly from cache
+    expect(src).toContain("log('INFO', '[pr] Returning viewed-cached result");
+    expect(src).toContain("log('INFO', '[pr] Returning prefetched result");
+    // Cmd+R still bypasses everything
+    expect(src).toMatch(/\/\/ Force reload[\s\S]{0,300}invalidatePrCache\(cacheKey\);/);
+  });
+
+  test('cached results carry the freshness facts', () => {
+    // generateDiff's gh pr view must ask for them...
+    expect(mainSource).toContain('--json headRefOid,baseRefOid,state,reviewDecision,updatedAt,title,author,assignees,body');
+    // ...and both cache writers must store them
+    expect(mainSource).toMatch(/baseRefOid: prData\.baseRefOid \|\| null/);
+    expect(mainSource).toMatch(/state: prData\.state \|\| 'OPEN'/);
+    expect(mainSource).toMatch(/reviewDecision: prData\.reviewDecision \|\| ''/);
+    expect(mainSource).toMatch(/updatedAt: prData\.updatedAt \|\| ''/);
+  });
+
+  test('prefetch-pr-meta warms the header cache with no git work', () => {
+    const start = mainSource.indexOf("ipcMain.handle('prefetch-pr-meta'");
+    expect(start).toBeGreaterThan(-1);
+    const end = mainSource.indexOf("ipcMain.handle('prefetch-pr'", start);
+    const src = mainSource.substring(start, end);
+    expect(src).toContain('fetchPrMetadata(safePr, repo)');
+    expect(src).toContain('putPrMeta(cacheKey,');
+    // No diff generation in this path: it must stay in the fast lane
+    expect(src).not.toContain('generateDiff');
+    expect(src).not.toMatch(/git (fetch|diff|log|rev-parse)/);
+    expect(mainSource).toContain('function fetchPrMetadata(prNumber, repo)');
+  });
+
+  test('get-pr-info reads the warm metadata cache before the network', () => {
+    const start = mainSource.indexOf("ipcMain.handle('get-pr-info'");
+    const end = mainSource.indexOf('async function fetchPrMetadata', start);
+    const src = mainSource.substring(start, end);
+    expect(src.indexOf('getPrMeta(cacheKey)')).toBeLessThan(src.indexOf('fetchPrMetadata('));
+    // Live reads feed the cache; diff-cache metadata is never copied in, or the
+    // freshness check would just echo the cache back at itself.
+    expect(src).toContain('putPrMeta(cacheKey, meta);');
+    expect(src).not.toContain('putPrMeta(cacheKey, viewed');
+    expect(src).not.toContain('putPrMeta(cacheKey, prefetched');
+    // Caches checked before the live fetch, in order, without consuming entries
+    expect(src.indexOf('const viewed = getViewedPr(cacheKey)')).toBeLessThan(src.indexOf('const prefetched = getPrefetchEntry(cacheKey)'));
+    expect(src).not.toContain('delete prefetchCache[cacheKey]');
+  });
+
+  test('renderer prefetches the next PR header early and never blocks', () => {
+    const loadStart = rendererSource.indexOf('async function loadPrByNumber');
+    const src = rendererSource.substring(loadStart, rendererSource.indexOf('function prefetchNextPr'));
+    // Fired right after the instant title paint, before Phase 1 metadata
+    expect(src.indexOf('prefetchNextPrMeta(prNumber, repoKey);')).toBeLessThan(src.indexOf('let prMeta = null;'));
+    // It must not be awaited: the current PR keeps the floor
+    expect(src).not.toMatch(/await\s+prefetchNextPrMeta/);
+    // Same "next PR in the list" rule as the diff prefetch
+    const fnSrc = extractFunctionBody(rendererSource, 'prefetchNextPrMeta');
+    expect(fnSrc).toContain('cachedPrList.find');
+    expect(fnSrc).toContain('prefetchPrMeta({ prNumber:');
+    expect(fnSrc).toContain('.catch(err => console.warn');
+    expect(preloadSource).toContain("prefetchPrMeta: (data) => ipcRenderer.invoke('prefetch-pr-meta', data)");
+  });
+});
+
+
+describe('freshness gate behaves end to end', () => {
+  let mainSource, api;
+  const META = { headSha: 'a1', baseRefOid: 'b1', state: 'OPEN', reviewDecision: 'APPROVED' };
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    const extracted = ['putPrMeta', 'getPrMeta', 'prEntryStaleReason', 'cachedResultStaleReason']
+      .map(fn => extractFunctionBody(mainSource, fn)).join('\n');
+    expect(extracted).toContain('prEntryStaleReason');
+    // Real cache + rule, gh replaced by a controllable stub.
+    const body = `
+      const PR_META_TTL_MS = 15 * 60000;
+      const PR_META_CACHE_MAX = 50;
+      const prMetaCache = new Map();
+      let __fresh = null;
+      function log() {}
+      async function getFreshPrInfo() { return __fresh; }
+      ${extracted}
+      return { putPrMeta, getPrMeta, cachedResultStaleReason, setFresh: (f) => { __fresh = f; } };
+    `;
+    api = eval('(function(){' + body + '})()');
+  });
+
+  test('warm metadata cache makes the gate free', async () => {
+    await api.putPrMeta('7830:default', { ...META, prTitle: 'x' });
+    expect(api.getPrMeta('7830:default')).toMatchObject(META);
+    // Fresh facts served from cache: no stale reason, entry is servable
+    api.setFresh(await api.getPrMeta('7830:default'));
+    expect(await api.cachedResultStaleReason('7830:default', 7830, null, { ...META })).toBe('');
+    expect(api.getPrMeta('7830:default')).not.toBeNull();
+  });
+
+  test('a pushed commit makes the cached diff stale', async () => {
+    await api.putPrMeta('7830:default', { ...META });
+    api.setFresh({ ...META, headSha: 'a2' });
+    expect(await api.cachedResultStaleReason('7830:default', 7830, null, { ...META })).toBe('new commits');
+    // Same cache entry still matches the old entry for the previous head
+    api.setFresh(META);
+    expect(await api.cachedResultStaleReason('7830:default', 7830, null, { ...META })).toBe('');
+  });
+
+  test('offline GitHub serves the cache instead of failing the load', async () => {
+    api.setFresh(null); // getFreshPrInfo returns null when gh is unreachable
+    expect(await api.cachedResultStaleReason('9:default', 9, null, { ...META })).toBe('');
+  });
+
+  test('unknown PR has no cached metadata and falls through to gh', async () => {
+    expect(api.getPrMeta('404:default')).toBeNull();
+    api.setFresh(null);
+    expect(await api.cachedResultStaleReason('404:default', 404, null, { ...META })).toBe('');
+  });
+});
+
+
+describe('load-pr freshness gate against the real handler code', () => {
+  let api;
+  const diffPath = path.join(os.tmpdir(), 'pr-freshness-e2e.diff');
+
+  beforeAll(() => {
+    const src = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    const slice = src.substring(src.indexOf("ipcMain.handle('load-pr'"), src.indexOf("ipcMain.handle('list-prs'"));
+    fs.writeFileSync(diffPath, 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n');
+
+    let freshFacts = {};
+    let metaOut = {};
+    let offline = false;
+    const counts = { gh: 0, gen: 0 };
+
+    const body = `
+      const appConfig = { repoOwner: 'webtoolbox', repoName: 'Website-Toolbox', cache: {} };
+      const counts = ${JSON.stringify(counts)};
+      let freshFacts = {}, metaOut = {}, offline = false;
+      function log() {}
+      function safePrNumber(p) { const s = String(p); return /^\\d+$/.test(s) ? s : null; }
+      function getLocalRepoPath() { return '/tmp/none'; }
+      function schedulePrAuthorsRefinement() {}
+      async function fetchPrCommitAuthors() { return { authors: ['x'], commits: [] }; }
+      function cleanupSinceReviewRefs() {}
+      const setInterval = () => 0;
+      const handlers = {};
+      const ipcMain = { handle: (name, fn) => { handlers[name] = fn; } };
+      async function execPromise(cmd) {
+        counts.gh++;
+        if (offline) throw new Error('network down');
+        // fetchPrMetadata asks for changedFiles, getFreshPrInfo does not
+        return JSON.stringify(cmd.includes('changedFiles') ? metaOut : freshFacts);
+      }
+      async function generateDiff(prNumber) {
+        counts.gen++;
+        return { diffPath: ${JSON.stringify(diffPath)}, prData: global.__prData, reviewInfo: null,
+                 filesChanged: 1, baseSha: 'base1', headSha: global.__prData.headRefOid, sinceReviewRef: null };
+      }
+      ${slice}
+      return {
+        handlers, counts,
+        setFresh: f => { freshFacts = f; },
+        setMeta: m => { metaOut = m; },
+        setOffline: v => { offline = v; }
+      };
+    `;
+    api = eval('(function(){' + body + '})()');
+  });
+
+  const PR_DATA = (head) => ({
+    headRefOid: head, baseRefOid: 'b1', state: 'OPEN', reviewDecision: '', updatedAt: 't1',
+    title: 'A title', author: 'wt-bot', assignees: [], body: 'desc'
+  });
+  const FACTS = (head) => ({ headRefOid: head, baseRefOid: 'b1', state: 'OPEN', reviewDecision: '', updatedAt: 't1' });
+
+  test('first load generates, second load serves the cache without regenerating', async () => {
+    global.__prData = PR_DATA('h1');
+    api.setFresh(FACTS('h1'));
+    api.setMeta({ ...PR_DATA('h1'), changedFiles: 3 });
+
+    const first = await api.handlers['load-pr'](null, { prNumber: 123, repo: null });
+    expect(first.content).toContain('diff --git');
+    expect(api.counts.gen).toBe(1);
+
+    const second = await api.handlers['load-pr'](null, { prNumber: 123, repo: null });
+    expect(second.content).toContain('diff --git');
+    expect(api.counts.gen).toBe(1); // served from cache, no git work
+    expect(api.counts.gh).toBe(1);  // exactly one freshness read
+  });
+
+  test('a pushed commit regenerates the diff instead of serving the cache', async () => {
+    global.__prData = PR_DATA('h2');
+    api.setFresh(FACTS('h2'));
+
+    const third = await api.handlers['load-pr'](null, { prNumber: 123, repo: null });
+    expect(api.counts.gen).toBe(2);
+    expect(third.headSha).toBe('h2');
+
+    // And it is cached again afterwards
+    const fourth = await api.handlers['load-pr'](null, { prNumber: 123, repo: null });
+    expect(api.counts.gen).toBe(2);
+  });
+
+  test('offline GitHub serves the cache rather than failing the load', async () => {
+    api.setOffline(true);
+    const out = await api.handlers['load-pr'](null, { prNumber: 123, repo: null });
+    expect(out.error).toBeUndefined();
+    expect(out.content).toContain('diff --git');
+    expect(api.counts.gen).toBe(2); // no regeneration attempted
+    api.setOffline(false);
+  });
+
+  test('prefetch-pr-meta warms the cache get-pr-info then reads for free', async () => {
+    api.setMeta({ ...PR_DATA('h3'), changedFiles: 7 });
+    api.setFresh(FACTS('h3'));
+    const before = api.counts.gh;
+
+    const warmed = await api.handlers['prefetch-pr-meta'](null, { prNumber: 456, repo: null });
+    expect(warmed.status).toBe('done');
+    expect(api.counts.gh).toBe(before + 1); // one gh pr view, no git work
+
+    const info = await api.handlers['get-pr-info'](null, { prNumber: 456, repo: null });
+    expect(api.counts.gh).toBe(before + 1); // served from the warm cache
+    expect(info.prTitle).toBe('A title');
+    expect(info.filesChanged).toBe(7);
+    expect(info.headSha).toBe('h3');
   });
 });

@@ -2819,7 +2819,13 @@ if (btnOpen) btnOpen.addEventListener('click', async () => {
 btnApprove.addEventListener('click', () => submitReview('approve'));
 
 btnRequestChanges.addEventListener('click', () => submitReview('request_changes'));
-btnComment.addEventListener('click', () => submitReview('comment'));
+// Comment lives in the ⋮ menu — dismiss the menu before posting so the
+// auto-advanced next PR doesn't open with the menu still on screen.
+btnComment.addEventListener('click', () => {
+  const menu = document.getElementById('more-menu');
+  if (menu) menu.style.display = 'none';
+  submitReview('comment');
+});
 
 // Auto-save on review body change + reflect active (blue) state while a comment is being written
 reviewBody.addEventListener('input', () => {
@@ -3045,8 +3051,11 @@ function runFind(direction) {
     options.forward = false;
     options.findNext = true;
   } else {
+    // First request of a search. Do NOT set findNext to false explicitly —
+    // Electron 37 then refuses to clear the match highlights when
+    // stopFindInPage('clearSelection') runs (closing the pane leaves the
+    // yellow marks behind). Omitting the key is the same default and clears.
     options.forward = true;
-    options.findNext = false;
   }
   findStarted = true;
   // Clear the box value before the (async) findInPage call so the search
@@ -3702,7 +3711,8 @@ async function exportAsMarkdown() {
 function showReviewButtons() {
   btnApprove.style.display = 'inline-block';
   btnRequestChanges.style.display = 'inline-block';
-  btnComment.style.display = 'inline-block';
+  // Comment sits in the ⋮ menu, so it renders as a flex row there
+  btnComment.style.display = 'flex';
   // The PR-wide comment icon only makes sense when a PR is loaded
   if (btnPrComment) btnPrComment.style.display = 'inline-flex';
 }
@@ -4016,6 +4026,11 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
       console.log('[loadPr] Title shown instantly from pending list for PR #' + prNumber + ':', currentPrTitle);
     }
 
+    // Phase 0b: warm the NEXT PR's header metadata while this one loads. One
+    // cheap gh pr view, no git work, so it finishes long before the reviewer
+    // advances and the next header does not have to wait on the diff prefetch.
+    prefetchNextPrMeta(prNumber, repoKey);
+
     // Phase 1: Fetch metadata first (~1-2s) — title, author, assignees
     // This shows the user key info immediately while the diff loads
     let prMeta = null;
@@ -4144,6 +4159,23 @@ function prefetchNextPr(currentPrNumber, currentRepoKey) {
       }
     })
     .catch(err => console.warn('[prefetch] Error:', err.message));
+}
+
+// Prefetch only the header metadata of the next PR (title, author, description,
+// file count). Independent of prefetchNextPr: that one does 10-30s of git work
+// and may still be running when the reviewer advances, while this finishes in
+// about half a second. Fire and forget.
+function prefetchNextPrMeta(currentPrNumber, currentRepoKey) {
+  if (!cachedPrList || cachedPrList.length === 0) return;
+  const nextPr = cachedPrList.find(pr => pr.number !== currentPrNumber);
+  if (!nextPr) return;
+  if (!window.electronAPI.prefetchPrMeta) return;
+  console.log('[prefetch] Warming metadata for next PR #' + nextPr.number);
+  window.electronAPI.prefetchPrMeta({ prNumber: nextPr.number, repo: nextPr.repo || currentRepoKey })
+    .then(result => {
+      if (result && result.error) console.warn('[prefetch] Metadata failed for PR #' + nextPr.number + ':', result.error);
+    })
+    .catch(err => console.warn('[prefetch] Metadata error:', err.message));
 }
 
 // PR dropdown toggle
@@ -7492,13 +7524,8 @@ const btnPrComment = document.getElementById('btn-pr-comment');
 const prCommentPanel = document.getElementById('pr-comment-panel');
 
 function positionPrCommentPanel() {
-  if (!prCommentPanel) return;
-  // The trigger lives inside the ⋮ menu, which is hidden before we measure, so
-  // fall back to the ⋮ button whenever the trigger has no box of its own.
-  let rect = btnPrComment ? btnPrComment.getBoundingClientRect() : null;
-  if (!rect || !rect.width) {
-    rect = btnMore ? btnMore.getBoundingClientRect() : null;
-  }
+  if (!btnPrComment || !prCommentPanel) return;
+  const rect = btnPrComment.getBoundingClientRect();
   if (!rect || !rect.width) return;
   prCommentPanel.style.right = (window.innerWidth - rect.right) + 'px';
   prCommentPanel.style.top = (rect.bottom + 4) + 'px';
@@ -7509,9 +7536,6 @@ if (btnPrComment && prCommentPanel) {
   if (reviewBody) setupMentionHandling(reviewBody);
   btnPrComment.addEventListener('click', (e) => {
     e.stopPropagation();
-    // The trigger is a row of the ⋮ menu — close the menu so the comment box
-    // opens against the ⋮ button instead of sitting on top of the open menu.
-    if (moreMenu) moreMenu.style.display = 'none';
     const isOpen = prCommentPanel.classList.contains('open');
     if (!isOpen) {
       positionPrCommentPanel();
