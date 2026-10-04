@@ -246,20 +246,22 @@ function expandPath(p, homeDir) {
   return p;
 }
 
-function getLocalRepoPath(repoKey, config, homeDir) {
-  if (repoKey && repoKey.includes('/')) {
-    const repoName = repoKey.split('/')[1];
-    // In real code this checks fs.existsSync, we simulate with a set
-    const existingPaths = config._existingPaths || new Set();
-    const reposPath = path.join(homeDir, 'Repos', repoName);
-    if (existingPaths.has(reposPath)) return reposPath;
-    const defaultRepoKey = `${config.repoOwner}/${config.repoName}`;
-    if (repoKey === defaultRepoKey && config.repoPath) {
-      return expandPath(config.repoPath, homeDir);
-    }
-    return path.join(homeDir, repoName);
+function getLocalRepoPath(repoKey, config, homeDir, dataDir) {
+  // Mirror of main.js: the app only uses its own clone under the app data
+  // directory. The reviewer's working copies are never returned.
+  const repoName = repoKey && repoKey.includes('/')
+    ? repoKey.split('/')[1]
+    : (config.repoName || 'Website-Toolbox');
+  const base = dataDir || path.join(homeDir, 'Library', 'Application Support', 'pr-reviewer');
+  const dataReposPath = path.join(base, 'repos', repoName);
+  // In real code this checks fs.existsSync, we simulate with a set
+  const existingPaths = config._existingPaths || new Set();
+  if (existingPaths.has(dataReposPath)) return dataReposPath;
+  const defaultRepoKey = `${config.repoOwner}/${config.repoName}`;
+  if ((!repoKey || repoKey === defaultRepoKey) && config.repoPath) {
+    return expandPath(config.repoPath, homeDir);
   }
-  return config.repoPath ? expandPath(config.repoPath, homeDir) : path.join(homeDir, config.repoName || 'Website-Toolbox');
+  return dataReposPath;
 }
 
 // ── Functions from renderer.js ──
@@ -976,57 +978,66 @@ describe('expandPath', () => {
 
 describe('getLocalRepoPath', () => {
   const HOME = '/Users/testuser';
+  const APPDATA = path.join(HOME, 'Library', 'Application Support', 'pr-reviewer');
+  const appClone = (repo) => path.join(APPDATA, 'repos', repo);
 
-  test('derives path from repoKey when ~/Repos/ exists', () => {
+  test('uses the app own clone, never the ~/Repos checkout', () => {
     const config = {
       repoOwner: 'webtoolbox',
       repoName: 'Website-Toolbox',
-      _existingPaths: new Set(['/Users/testuser/Repos/MyApp'])
+      _existingPaths: new Set([appClone('MyApp'), path.join(HOME, 'Repos', 'MyApp')])
     };
-    const result = getLocalRepoPath('org/MyApp', config, HOME);
-    expect(result).toBe('/Users/testuser/Repos/MyApp');
+    expect(getLocalRepoPath('org/MyApp', config, HOME)).toBe(appClone('MyApp'));
   });
 
-  test('falls back to config repoPath for default repo', () => {
+  test('ignores ~/Repos even when the app clone is missing', () => {
+    // The reviewer's checkout exists but the app must not touch it.
     const config = {
       repoOwner: 'webtoolbox',
       repoName: 'Website-Toolbox',
-      repoPath: '~/Website-Toolbox',
-      _existingPaths: new Set()
+      _existingPaths: new Set([path.join(HOME, 'Repos', 'Website-Toolbox')])
     };
-    const result = getLocalRepoPath('webtoolbox/Website-Toolbox', config, HOME);
-    expect(result).toBe('/Users/testuser/Website-Toolbox');
+    expect(getLocalRepoPath('webtoolbox/Website-Toolbox', config, HOME)).toBe(appClone('Website-Toolbox'));
   });
 
-  test('falls back to home/repoName when no ~/Repos/ match', () => {
+  test('uses config repoPath when the app clone is missing', () => {
     const config = {
       repoOwner: 'webtoolbox',
       repoName: 'Website-Toolbox',
+      repoPath: appClone('Website-Toolbox'),
       _existingPaths: new Set()
     };
-    const result = getLocalRepoPath('org/SomeRepo', config, HOME);
-    expect(result).toBe('/Users/testuser/SomeRepo');
+    expect(getLocalRepoPath('webtoolbox/Website-Toolbox', config, HOME)).toBe(appClone('Website-Toolbox'));
+  });
+
+  test('an unknown repo resolves to the app data location, not home', () => {
+    const config = { repoOwner: 'webtoolbox', repoName: 'Website-Toolbox', _existingPaths: new Set() };
+    expect(getLocalRepoPath('org/SomeRepo', config, HOME)).toBe(appClone('SomeRepo'));
   });
 
   test('uses config repoPath when no repoKey given', () => {
-    const config = {
-      repoPath: '~/my-repo',
-      repoName: 'TestRepo'
-    };
-    const result = getLocalRepoPath(null, config, HOME);
-    expect(result).toBe('/Users/testuser/my-repo');
+    const config = { repoPath: '~/my-repo', repoName: 'TestRepo' };
+    expect(getLocalRepoPath(null, config, HOME)).toBe(path.join(HOME, 'my-repo'));
   });
 
-  test('falls back to home/repoName when no repoKey and no repoPath', () => {
-    const config = { repoName: 'MyProject' };
-    const result = getLocalRepoPath(null, config, HOME);
-    expect(result).toBe('/Users/testuser/MyProject');
+  test('no repoKey and no repoPath resolves to the app data location', () => {
+    expect(getLocalRepoPath(null, { repoName: 'MyProject' }, HOME)).toBe(appClone('MyProject'));
   });
 
-  test('falls back to Website-Toolbox when no config at all', () => {
-    const config = {};
-    const result = getLocalRepoPath(null, config, HOME);
-    expect(result).toBe('/Users/testuser/Website-Toolbox');
+  test('no config at all resolves to the app data location', () => {
+    expect(getLocalRepoPath(null, {}, HOME)).toBe(appClone('Website-Toolbox'));
+  });
+
+  test('main.js never points git at the reviewer own checkout', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    // The ~/Repos and ~/ fallbacks are gone; only the protected-checkout
+    // note in the AI prompt may still mention ~/Repos.
+    const fnSrc = extractFunctionBody(src, 'getLocalRepoPath');
+    expect(fnSrc).not.toContain("'Repos'");
+    expect(fnSrc).toContain("path.join(getAppDataDir(), 'repos', repoName)");
+    expect(fnSrc).toContain('no longer falls back to ~/Repos');
+    const repoMentions = (src.match(/path\.join\(app\.getPath\('home'\), 'Repos'/g) || []);
+    expect(repoMentions).toHaveLength(0);
   });
 });
 

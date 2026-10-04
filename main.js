@@ -446,24 +446,30 @@ function expandPath(p) {
   return p;
 }
 
-// Derive local repo path from repoKey (owner/repo) or appConfig
+// Derive local repo path from repoKey (owner/repo) or appConfig.
+// The app works ONLY in its own clone under the app data directory. It must
+// never fall back to the reviewer's working copies (~/Repos/..., ~/<repo>):
+// this path is used for fetches, ref updates, worktree add/remove and prune,
+// which would disturb the checkout the reviewer has open in their editor.
+const warnedMissingClone = new Set();
 function getLocalRepoPath(repoKey) {
-  if (repoKey && repoKey.includes('/')) {
-    const repoName = repoKey.split('/')[1];
-    // Prefer shallow clone in app data directory (always on master, independent of main repo)
-    const dataReposPath = path.join(app.getPath('userData'), 'repos', repoName);
-    if (fs.existsSync(dataReposPath)) return dataReposPath;
-    // Check ~/Repos/ first (conventional location), then ~/
-    const reposPath = path.join(app.getPath('home'), 'Repos', repoName);
-    if (fs.existsSync(reposPath)) return reposPath;
-    // If this is the default repo and repoPath is configured, use it
-    const defaultRepoKey = `${appConfig.repoOwner}/${appConfig.repoName}`;
-    if (repoKey === defaultRepoKey && appConfig.repoPath) {
-      return expandPath(appConfig.repoPath);
-    }
-    return path.join(app.getPath('home'), repoName);
+  const repoName = repoKey && repoKey.includes('/')
+    ? repoKey.split('/')[1]
+    : (appConfig.repoName || 'Website-Toolbox');
+  const dataReposPath = path.join(getAppDataDir(), 'repos', repoName);
+  if (fs.existsSync(dataReposPath)) return dataReposPath;
+  // Configured repoPath (config.json points at the same app-owned clone)
+  const defaultRepoKey = `${appConfig.repoOwner}/${appConfig.repoName}`;
+  if ((!repoKey || repoKey === defaultRepoKey) && appConfig.repoPath) {
+    return expandPath(appConfig.repoPath);
   }
-  return appConfig.repoPath ? expandPath(appConfig.repoPath) : path.join(app.getPath('home'), appConfig.repoName || 'Website-Toolbox');
+  // Not cloned yet: return the app's own location and say so once, instead of
+  // quietly reading and writing the reviewer's own checkout.
+  if (!warnedMissingClone.has(repoName)) {
+    warnedMissingClone.add(repoName);
+    log('WARN', '[repo-path] No app clone for ' + repoName + ' at ' + dataReposPath + ' - clone it there; the app no longer falls back to ~/Repos');
+  }
+  return dataReposPath;
 }
 
 // Get the app's data directory for reviews, drafts, images, etc.
