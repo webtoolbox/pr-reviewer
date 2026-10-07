@@ -6215,7 +6215,9 @@ function toggleCompareZoom(side) {
   }
 }
 
-// Keyboard handler for compare overlay
+// Keyboard handler for compare overlay. The overlay element only exists while
+// the slideshow is on screen, so its absence is what keeps this from firing
+// when no slideshow is open.
 document.addEventListener('keydown', (e) => {
   const overlay = document.getElementById('compare-overlay');
   if (!overlay) return;
@@ -6229,6 +6231,25 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
     navigateCompare('next');
+  }
+});
+
+// Arrow keys navigate between PRs — the keyboard equivalent of the edge
+// arrows, going through the exact same prev/next functions so history and
+// list order behave identically. Skipped while typing in a field (arrows must
+// keep moving the caret) and while the compare slideshow is on screen (the
+// overlay element only exists while open, and it owns the arrows).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const target = e.target;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+  if (document.getElementById('compare-overlay')) return;
+  e.preventDefault();
+  if (e.key === 'ArrowLeft') {
+    gotoPrevPr();
+  } else {
+    gotoNextPr();
   }
 });
 

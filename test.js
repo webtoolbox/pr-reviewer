@@ -1697,6 +1697,74 @@ async function runTests() {
   `);
   assert('Cmd+Shift+A triggers approve button click', shortcutApprove === 'clicked', `result: ${shortcutApprove}`);
 
+  // TEST: Arrow keys navigate between PRs — the keyboard equivalent of the
+  // edge arrows. Must be ignored while typing and while the compare overlay
+  // owns the arrows.
+  const arrowNavNext = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const savedList = cachedPrList, savedHist = prNavHistory.slice(), savedIdx = prNavIndex, savedPr = currentPrNumber;
+      const origLoad = window.loadPrByNumber;
+      let loaded = null;
+      cachedPrList = [{ number: 41, repo: 'webtoolbox/Website-Toolbox' }, { number: 42, repo: 'webtoolbox/Website-Toolbox' }, { number: 43, repo: 'webtoolbox/Website-Toolbox' }];
+      prNavHistory.length = 0; prNavIndex = -1;
+      currentPrNumber = 42;
+      window.loadPrByNumber = (pr) => { loaded = pr; return Promise.resolve(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      window.loadPrByNumber = origLoad;
+      const rightResult = loaded;
+      loaded = null;
+      window.loadPrByNumber = (pr) => { loaded = pr; return Promise.resolve(); };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+      window.loadPrByNumber = origLoad;
+      const leftResult = loaded;
+      cachedPrList = savedList; prNavHistory.length = 0; savedHist.forEach(h => prNavHistory.push(h));
+      prNavIndex = savedIdx; currentPrNumber = savedPr;
+      return JSON.stringify({ right: rightResult, left: leftResult });
+    })()
+  `);
+  assert('ArrowRight/ArrowLeft navigate to next/previous PR',
+    arrowNavNext === JSON.stringify({ right: 43, left: 41 }), `result: ${arrowNavNext}`);
+
+  const arrowNavGuards = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const savedList = cachedPrList, savedHist = prNavHistory.slice(), savedIdx = prNavIndex, savedPr = currentPrNumber;
+      const origLoad = window.loadPrByNumber;
+      let loaded = null;
+      cachedPrList = [{ number: 41, repo: 'webtoolbox/Website-Toolbox' }, { number: 42, repo: 'webtoolbox/Website-Toolbox' }, { number: 43, repo: 'webtoolbox/Website-Toolbox' }];
+      prNavHistory.length = 0; prNavIndex = -1;
+      currentPrNumber = 42;
+      window.loadPrByNumber = (pr) => { loaded = pr; return Promise.resolve(); };
+
+      // Typing in a field: arrow keys must move the caret, not the PR
+      const tmp = document.createElement('input');
+      document.body.appendChild(tmp);
+      tmp.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      tmp.remove();
+      const typing = loaded;
+
+      // Compare slideshow on screen (the overlay element only exists while
+      // open): it keeps the arrows for slideshow navigation
+      let overlay = document.getElementById('compare-overlay');
+      let createdOverlay = false;
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'compare-overlay';
+        document.body.appendChild(overlay);
+        createdOverlay = true;
+      }
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      if (createdOverlay) overlay.remove();
+      const overlayOpen = loaded;
+
+      window.loadPrByNumber = origLoad;
+      cachedPrList = savedList; prNavHistory.length = 0; savedHist.forEach(h => prNavHistory.push(h));
+      prNavIndex = savedIdx; currentPrNumber = savedPr;
+      return JSON.stringify({ typing, overlayOpen });
+    })()
+  `);
+  assert('Arrow keys are ignored while typing and while the compare overlay is open',
+    arrowNavGuards === JSON.stringify({ typing: null, overlayOpen: null }), `result: ${arrowNavGuards}`);
+
   // TEST: Keyboard shortcut Cmd+Shift+A with lowercase key (macOS behavior)
   const shortcutApproveLower = await mainWindow.webContents.executeJavaScript(`
     (() => {

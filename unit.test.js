@@ -5512,3 +5512,51 @@ describe('PR merge target branch indicator', () => {
     expect(indexHtml).toMatch(/\.pr-base-branch \{ color: #57606a/);
   });
 });
+
+// ── Arrow key PR navigation ─────────────────────────────────────────────────
+
+describe('Arrow key PR navigation', () => {
+  let rendererSource, indexHtml;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  });
+
+  test('arrow keys route through the same prev/next functions as the edge arrows', () => {
+    const start = rendererSource.indexOf('Arrow keys navigate between PRs');
+    expect(start).toBeGreaterThan(-1);
+    const body = rendererSource.substring(start, rendererSource.indexOf('\n});', start));
+    expect(body).toContain('gotoPrevPr()');
+    expect(body).toContain('gotoNextPr()');
+    expect(body).toContain('e.preventDefault()');
+  });
+
+  test('arrow keys are ignored while typing and while the compare overlay is open', () => {
+    const start = rendererSource.indexOf('Arrow keys navigate between PRs');
+    const body = rendererSource.substring(start, rendererSource.indexOf('\n});', start));
+    // caret movement inside fields must keep working
+    expect(body).toContain("target.tagName === 'INPUT'");
+    expect(body).toContain("target.tagName === 'TEXTAREA'");
+    expect(body).toContain('target.isContentEditable');
+    // the slideshow keeps the arrows for itself (its element only exists on screen)
+    expect(body).toContain("if (document.getElementById('compare-overlay')) return;");
+    // modifier combos are left alone (they belong to other shortcuts)
+    expect(body).toContain('e.metaKey || e.ctrlKey || e.altKey');
+  });
+
+  test('compare overlay keydown handler only fires while the overlay is visible', () => {
+    const start = rendererSource.indexOf('Keyboard handler for compare overlay');
+    expect(start).toBeGreaterThan(-1);
+    const body = rendererSource.substring(start, rendererSource.indexOf('\n});', start));
+    expect(body).toContain('if (!overlay) return;');
+    expect(body).toContain('navigateCompare(');
+  });
+
+  test('shortcuts dialog lists the arrow key navigation', () => {
+    expect(indexHtml).toContain('Previous / next PR');
+    const row = indexHtml.match(/<div class="shortcut-row">[^<]*<kbd>←<\/kbd>[\s\S]*?<\/div>/);
+    expect(row).toBeTruthy();
+    expect(row[0]).toContain('Previous / next PR');
+  });
+});
