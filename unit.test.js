@@ -2848,6 +2848,23 @@ describe('Auto-advance after approve', () => {
     expect(errorBlock).toContain('showBodyError(');
   });
 
+  test('loadPrByNumber clears the previous PR body error when switching PRs', () => {
+    const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey, force = false)');
+    expect(loadPrStart).toBeGreaterThan(-1);
+    // Everything from the function start up to the first showDiffLoading call
+    // is the "switching PR" prologue — the stale error must be dropped there,
+    // before the loading indicator is shown.
+    const loadingIdx = rendererSource.indexOf('showDiffLoading(', loadPrStart);
+    expect(loadingIdx).toBeGreaterThan(-1);
+    const prologue = rendererSource.substring(loadPrStart, loadingIdx);
+    expect(prologue).toContain('clearBodyError()');
+    // And clearBodyError must actually hide the box (it was never called at all).
+    const clearStart = rendererSource.indexOf('function clearBodyError()');
+    expect(clearStart).toBeGreaterThan(-1);
+    const clearSrc = rendererSource.substring(clearStart, rendererSource.indexOf('\n}', clearStart));
+    expect(clearSrc).toContain("bodyError.style.display = 'none'");
+  });
+
   test('loadPrByNumber calls resetButtons() in catch block', () => {
     const loadPrStart = rendererSource.indexOf('async function loadPrByNumber(prNumber, repoKey, force = false)');
     // Find the function's own catch block — it's the outermost one after all the logic.

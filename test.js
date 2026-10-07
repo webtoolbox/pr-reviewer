@@ -2704,6 +2704,24 @@ async function runTests() {
   `);
   assert('loadPrByNumber routes errors to showBodyError (resets buttons)', loadPrResetsOnError === 'ok', `result: ${loadPrResetsOnError}`);
 
+  // TEST: An error from one PR must not stay on screen after switching to the
+  // next PR. loadPrByNumber is the single entry point for every navigation path
+  // (arrows, PR number input, retry, auto-advance), so it clears #body-error
+  // before anything else — otherwise a failed PR's message survives a
+  // successful load of the next one.
+  const bodyErrorClears = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      showBodyError('boom from the previous PR');
+      const before = getComputedStyle(document.getElementById('body-error')).display;
+      await loadPrByNumber('42');
+      const after = getComputedStyle(document.getElementById('body-error')).display;
+      return { before, after };
+    })()
+  `);
+  assert('Switching to another PR clears the previous PR body error',
+    bodyErrorClears && bodyErrorClears.before === 'block' && bodyErrorClears.after === 'none',
+    JSON.stringify(bodyErrorClears));
+
   // Close PR dropdown
   await mainWindow.webContents.executeJavaScript(`
     if (typeof closePrDropdown === 'function') closePrDropdown();

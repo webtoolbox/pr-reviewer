@@ -4006,6 +4006,10 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
     prInfoState = null;
   }
   clearAiChat(); // Reset AI chat for the new PR — stale branch/PR context shouldn't linger
+  // Drop the previous PR's error before anything else: showBodyError() is only
+  // ever cleared here, so a failed PR's message otherwise stays on screen while
+  // the next PR loads (and even after it loads successfully).
+  clearBodyError();
   // Show the loading indicator immediately so the previous PR's diff doesn't
   // linger while the next one loads (the title bar changes before the diff).
   showDiffLoading('Loading PR #' + prNumber + '…');
