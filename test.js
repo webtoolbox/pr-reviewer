@@ -2601,10 +2601,10 @@ async function runTests() {
   const autoAdvanceForward = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const src = submitReview.toString();
-      // Must capture the reviewed PR's index BEFORE removal and pick the PR
-      // that shifted into its slot — not restart at the first pending PR.
+      // Must capture the reviewed PR's index BEFORE removal and hand it to the
+      // shared picker — not restart at the first pending PR.
       return (src.includes('reviewedPrIndex = cachedPrList.findIndex')
-              && src.includes('advanceNext = cachedPrList[reviewedPrIndex]'))
+              && src.includes('pickNextPendingPr(reviewedPrIndex)'))
         ? 'ok' : 'missing';
     })()
   `);
@@ -2620,6 +2620,48 @@ async function runTests() {
     })()
   `);
   assert('submitReview no-more-PRs shows all-done screen', autoAdvanceShowsAllDone === 'ok', `result: ${autoAdvanceShowsAllDone}`);
+
+  // TEST: closing a PR continues FORWARD from its slot in the pending list.
+  // The old close rule jumped to list[0], re-opening a PR the reviewer had
+  // already skipped with the right arrow.
+  const closeForwardTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const saved = cachedPrList;
+      // Closing #7872: the index is taken BEFORE the removal, and the picker
+      // runs on the list AFTER it — exactly what closePullRequest does.
+      cachedPrList = [{ number: 7874 }, { number: 7873 }, { number: 7872 }, { number: 7871 }];
+      const closedIndex = cachedPrList.findIndex(pr => pr.number === 7872);
+      cachedPrList = cachedPrList.filter(pr => pr.number !== 7872);
+      const out = {
+        forward: pickNextPendingPr(closedIndex) ? pickNextPendingPr(closedIndex).number : null,
+        wasLast: pickNextPendingPr(4),
+        notInList: pickNextPendingPr(-1) ? pickNextPendingPr(-1).number : null,
+        emptyList: (cachedPrList = [], pickNextPendingPr(0))
+      };
+      cachedPrList = saved;
+      return out;
+    })()
+  `);
+  assert('Close advances to the PR after the closed one',
+    closeForwardTest && closeForwardTest.forward === 7871, JSON.stringify(closeForwardTest));
+  assert('Close of the last PR lands nowhere (no wrap to the start)',
+    closeForwardTest && closeForwardTest.wasLast === null, JSON.stringify(closeForwardTest));
+  assert('Close of an off-list PR falls back to the first pending PR',
+    closeForwardTest && closeForwardTest.notInList === 7874, JSON.stringify(closeForwardTest));
+  assert('Close with an empty pending list lands nowhere',
+    closeForwardTest && closeForwardTest.emptyList === null, JSON.stringify(closeForwardTest));
+
+  // TEST: closePullRequest itself must use that rule, not list[0]
+  const closeUsesHelper = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const s = closePullRequest.toString();
+      const usesHelper = s.includes('pickNextPendingPr(closedPrIndex)') &&
+        s.includes('closedPrIndex = cachedPrList.findIndex');
+      const noListZero = !/cachedPrList\\[0\\]\\s*;/.test(s);
+      return usesHelper && noListZero ? 'ok' : 'missing';
+    })()
+  `);
+  assert('closePullRequest uses the forward rule (not list[0])', closeUsesHelper === 'ok', `result: ${closeUsesHelper}`);
 
   // TEST: next-arrow advances forward and stops at the last PR (no wrap)
   const nextArrowForward = await mainWindow.webContents.executeJavaScript(`
@@ -3496,6 +3538,34 @@ async function runTests() {
   `);
   assert('Info bar shows bot author', contributorBarTest && contributorBarTest.hasBot, JSON.stringify(contributorBarTest));
   assert('Info bar lists contributor authors', contributorBarTest && contributorBarTest.hasContributors, JSON.stringify(contributorBarTest));
+
+  // ===== MERGE TARGET BRANCH PILL =====
+  // Only non-default bases get the "into <branch>" pill — PRs into master/main
+  // (and PRs whose base is unknown) must stay clean.
+  const baseBadgeTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const seen = {};
+      const bases = ['develop', 'release/2.4', 'master', 'main', '', undefined];
+      for (const base of bases) {
+        updatePrInfoBar(4242, 'Merge target test', { prAuthor: 'me', baseRefName: base });
+        const el = document.querySelector('.pr-base-branch');
+        seen[String(base)] = el ? el.textContent.replace(/\\s+/g, ' ').trim() : null;
+      }
+      // leave the bar in a normal state for later tests
+      updatePrInfoBar(4242, 'Merge target test', { prAuthor: 'me' });
+      return seen;
+    })()
+  `);
+  assert('Info bar shows "into <branch>" for a non-default base',
+    baseBadgeTest && baseBadgeTest['develop'] === 'into develop',
+    JSON.stringify(baseBadgeTest));
+  assert('Info bar keeps the pill text for a slashed branch name',
+    baseBadgeTest && baseBadgeTest['release/2.4'] === 'into release/2.4',
+    JSON.stringify(baseBadgeTest));
+  assert('Info bar hides the pill for master/main/unknown base',
+    baseBadgeTest && !baseBadgeTest['master'] && !baseBadgeTest['main'] &&
+      !baseBadgeTest[''] && !baseBadgeTest['undefined'],
+    JSON.stringify(baseBadgeTest));
 
   // Bot commit authors must be filtered out (no [bot] / app/ logins)
   const botFilterTest = await mainWindow.webContents.executeJavaScript(`

@@ -1166,7 +1166,7 @@ async function generateDiff(prNumber, repoKey) {
   // result carries the PR facts a later freshness check compares against
   // (see prEntryStaleReason). One gh call, four extra fields.
   const prViewPromise = execPromise(
-    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,baseRefOid,state,reviewDecision,updatedAt,title,author,assignees,body --jq '{headRefOid: .headRefOid, baseRefOid: .baseRefOid, state: .state, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
+    `gh pr view ${prNumber} --repo ${owner}/${repo} --json headRefOid,baseRefOid,baseRefName,state,reviewDecision,updatedAt,title,author,assignees,body --jq '{headRefOid: .headRefOid, baseRefOid: .baseRefOid, baseRefName: (.baseRefName // ""), state: .state, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt, title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // "")}'`
   );
   const prDiffPromise = execPromise(
     `gh pr diff ${prNumber} --repo ${owner}/${repo}`,
@@ -1972,6 +1972,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     baseSha: result.baseSha || null,
     headSha: result.headSha || null,
     baseRefOid: prData.baseRefOid || null,
+    baseRefName: prData.baseRefName || '',
     state: prData.state || 'OPEN',
     reviewDecision: prData.reviewDecision || '',
     updatedAt: prData.updatedAt || '',
@@ -2020,7 +2021,8 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
       state: '',
       filesChanged: viewed.filesChanged || 0,
       headSha: viewed.headSha || '',
-      baseSha: viewed.baseSha || ''
+      baseSha: viewed.baseSha || '',
+      baseRefName: viewed.baseRefName || ''
     };
   }
   const prefetched = getPrefetchEntry(cacheKey);
@@ -2035,7 +2037,8 @@ ipcMain.handle('get-pr-info', async (event, { prNumber, repo } = {}) => {
       state: prefetched.state || '',
       filesChanged: prefetched.filesChanged || 0,
       headSha: prefetched.headSha || '',
-      baseSha: prefetched.baseSha || ''
+      baseSha: prefetched.baseSha || '',
+      baseRefName: prefetched.baseRefName || ''
     };
   }
 
@@ -2073,7 +2076,7 @@ async function fetchPrMetadata(prNumber, repo) {
   }
   const [prJson, authorInfo] = await Promise.all([
     execPromise(
-      `gh pr view ${prNumber} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,changedFiles,reviewDecision,updatedAt --jq '{title: .title, author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt}'`,
+      `gh pr view ${prNumber} --repo ${owner}/${repoName} --json title,author,assignees,body,state,headRefOid,baseRefOid,baseRefName,changedFiles,reviewDecision,updatedAt --jq '{title: .title, baseRefName: (.baseRefName // ""), author: (.author.login // ""), assignees: [.assignees[].login], body: (.body // ""), state: .state, headRefOid: .headRefOid, baseRefOid: .baseRefOid, changedFiles: .changedFiles, reviewDecision: (.reviewDecision // ""), updatedAt: .updatedAt}'`,
       { timeout: 15000 }
     ),
     fetchPrCommitAuthors(owner, repoName, prNumber).catch((err) => {
@@ -2095,7 +2098,8 @@ async function fetchPrMetadata(prNumber, repo) {
     baseSha: prData.baseRefOid || '',
     baseRefOid: prData.baseRefOid || '',
     reviewDecision: prData.reviewDecision || '',
-    updatedAt: prData.updatedAt || ''
+    updatedAt: prData.updatedAt || '',
+    baseRefName: prData.baseRefName || ''
   };
   return { meta, authorInfo };
 }
@@ -2333,6 +2337,7 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       baseSha: result.baseSha || null,
       headSha: result.headSha || null,
       baseRefOid: prData.baseRefOid || null,
+      baseRefName: prData.baseRefName || '',
       state: prData.state || 'OPEN',
       reviewDecision: prData.reviewDecision || '',
       updatedAt: prData.updatedAt || '',
@@ -2567,7 +2572,7 @@ ipcMain.handle('list-all-prs', async (event, { repos, filter }) => {
         let repoPrs = [];
         while (true) {
           const stdout = await execGh(
-            `api 'repos/${owner}/${name}/pulls?state=open&per_page=100&page=${page}' --jq '[.[] | {number, title, author: .user.login, created: .created_at, reviewers: [.requested_reviewers[].login], assignees: [.assignees[].login], draft}]'`,
+            `api 'repos/${owner}/${name}/pulls?state=open&per_page=100&page=${page}' --jq '[.[] | {number, title, author: .user.login, created: .created_at, base: .base.ref, reviewers: [.requested_reviewers[].login], assignees: [.assignees[].login], draft}]'`,
             { timeout: 30000 }
           );
           let batch = [];

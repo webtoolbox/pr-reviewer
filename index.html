@@ -963,6 +963,14 @@
       cursor: pointer; transition: color 0.15s;
     }
     .pr-title-text:hover { text-decoration: underline; }
+    /* Merge-target pill: rendered only for PRs targeting a non-default branch */
+    .pr-base-branch {
+      font-size: 11px; color: #8b949e; background: #21262d;
+      border: 1px solid #30363d; border-radius: 10px;
+      padding: 1px 8px; margin-left: 8px; white-space: nowrap;
+      vertical-align: middle; position: relative; top: -1px;
+    }
+    .pr-base-branch strong { color: #58a6ff; font-weight: 600; }
     .pr-desc-toggle {
       color: #c9d1d9; cursor: pointer; margin-left: 4px;
       transition: color 0.15s; display: inline-flex; align-items: center;
@@ -1916,6 +1924,8 @@
       .pr-title-line .pr-desc-toggle:hover,
       .pr-title-line .pr-new-window-inline:hover,
       .pr-title-line .pr-compare-toggle:hover { color: #24292f; }
+      .pr-base-branch { color: #57606a; background: #f6f8fa; border-color: #d0d7de; }
+      .pr-base-branch strong { color: #0969da; }
 
       /* File list */
       .d2h-file-list-wrapper { background: #f6f8fa; border: 1px solid #d0d7de; }

@@ -2584,6 +2584,24 @@ function computeDiffPositions() {
   return map;
 }
 
+// Where auto-advance goes after a PR leaves the pending list. Used by both
+// submitReview and closePullRequest so the two can never disagree.
+// indexBeforeRemoval is the slot the PR occupied BEFORE it was filtered out:
+// once it is gone the PR that followed it sits at that same index, so picking
+// that slot moves FORWARD. Picking list[0] instead (the old close-PR rule)
+// snapped back to the top of the list, re-opening PRs the reviewer had already
+// skipped with the right arrow.
+function pickNextPendingPr(indexBeforeRemoval) {
+  if (!cachedPrList || cachedPrList.length === 0) return null;
+  if (indexBeforeRemoval >= 0 && indexBeforeRemoval < cachedPrList.length) {
+    return cachedPrList[indexBeforeRemoval];
+  }
+  if (indexBeforeRemoval >= cachedPrList.length) {
+    return null; // the PR was the last one — nothing after it
+  }
+  return cachedPrList[0] || null; // not in the pending list (opened from search)
+}
+
 async function submitReview(eventType) {
   const prNumber = prNumberInput.value.trim();
   const review = {
@@ -2756,25 +2774,10 @@ async function submitReview(eventType) {
           })();
         }
 
-        // Auto-advance to next PR after successful review
+        // Auto-advance to next PR after successful review.
         // reviewedPrIndex is the index the reviewed PR was at BEFORE removal
-        // (captured above). After removal, the next PR is at that same index.
-        let advanceNext = null;
-        if (cachedPrList && cachedPrList.length > 0) {
-          if (reviewedPrIndex >= 0 && reviewedPrIndex < cachedPrList.length) {
-            // The reviewed PR was in the middle/start of the list — the next
-            // PR shifted into its old slot. Advance FORWARD to it.
-            advanceNext = cachedPrList[reviewedPrIndex];
-          } else if (reviewedPrIndex >= cachedPrList.length) {
-            // The reviewed PR was the LAST one — there is nothing after it.
-            // Show the all-done screen.
-            advanceNext = null;
-          } else {
-            // The reviewed PR was NOT in the pending list (chosen via a
-            // recent/search entry). Pick the first pending PR to keep going.
-            advanceNext = cachedPrList[0] || null;
-          }
-        }
+        // (captured above); after removal the next PR sits in that slot.
+        const advanceNext = pickNextPendingPr(reviewedPrIndex);
 
         if (advanceNext) {
           console.log('[auto-advance] Moving to PR #' + advanceNext.number, 'repo:', advanceNext.repo || 'default', 'list size:', cachedPrList.length);
@@ -4031,7 +4034,8 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
         prAuthor: pendingPr.author,
         prAssignees: (pendingPr.assignees || []).filter(a => a !== pendingPr.author),
         filesChanged: 0,
-        reviewInfo: null
+        reviewInfo: null,
+        baseRefName: pendingPr.base || ''
       });
       console.log('[loadPr] Title shown instantly from pending list for PR #' + prNumber + ':', currentPrTitle);
     }
@@ -5751,6 +5755,16 @@ function applyRefinedPrAuthors(data) {
 }
 
 // Update PR info bar — just the title, subtitle removed (PR# is in the text box)
+// The merge target only matters when it is NOT the default branch: PRs into
+// master/main are the everyday case, anything else is a release/hotfix branch
+// the reviewer needs to notice. Returns '' (no pill) for the default case.
+const DEFAULT_BASE_BRANCHES = ['master', 'main'];
+function baseBranchBadge(result) {
+  const base = ((result && result.baseRefName) || '').trim();
+  if (!base || DEFAULT_BASE_BRANCHES.includes(base.toLowerCase())) return '';
+  return `<span class="pr-base-branch" title="This PR merges into ${escapeHtml(base)}">into <strong>${escapeHtml(base)}</strong></span>`;
+}
+
 function updatePrInfoBar(prNumber, prTitle, result) {
   prInfoState = { prNumber, prTitle, result };
   // Title line + author/assignees line
@@ -5760,7 +5774,7 @@ function updatePrInfoBar(prNumber, prTitle, result) {
     if (beforeAfterPairs && beforeAfterPairs.length > 0) {
       compareIcon = '<span class="pr-compare-toggle" title="View before/after screenshots"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M2 17l5-5 3 3 4-5 8 7"/><circle cx="8" cy="9" r="1.5" fill="currentColor"/></svg></span>';
     }
-    html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span><span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
+    html += `<div class="pr-title-line"><span class="pr-title-text" title="Click to show PR description">${escapeHtml(prTitle)}</span>${baseBranchBadge(result)}<span class="pr-desc-toggle" title="Show PR description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span><span class="pr-new-window-inline" title="Open PR in new window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></span>${compareIcon}</div>`;
   }
   // Second line: author (+ contributing authors when the PR author is a bot) + assignees
   if (result) {
@@ -7671,7 +7685,12 @@ async function closePullRequest() {
 
       // Remove closed PR from cached list and re-render dropdown if open
       const prNum = parseInt(prNumber, 10);
+      let closedPrIndex = -1;
       if (cachedPrList) {
+        // Index BEFORE removal — after removal the next PR sits in this slot,
+        // so closing continues FORWARD through the list instead of jumping
+        // back to list[0] (a PR the reviewer may already have skipped).
+        closedPrIndex = cachedPrList.findIndex(pr => pr.number === prNum);
         cachedPrList = cachedPrList.filter(pr => pr.number !== prNum);
       }
       if (prDropdownOpen) {
@@ -7679,9 +7698,9 @@ async function closePullRequest() {
         renderPrList(cachedPrList, searchInput ? searchInput.value : '');
       }
 
-      // Auto-load next available PR from the list
-      if (cachedPrList && cachedPrList.length > 0) {
-        const nextPr = cachedPrList[0];
+      // Auto-load the PR after the closed one (same rule as submit review)
+      const nextPr = pickNextPendingPr(closedPrIndex);
+      if (nextPr) {
         reviewBody.value = '';
         try {
           await loadPrByNumber(nextPr.number, nextPr.repo);

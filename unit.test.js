@@ -2895,16 +2895,25 @@ describe('Auto-advance after approve', () => {
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
     const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
     // The auto-advance block must capture the reviewed PR's index BEFORE
-    // removal and advance to the PR after it — NOT restart at the first
+    // removal and hand it to the shared picker — NOT restart at the first
     // pending PR.
     expect(submitSrc).toContain('reviewedPrIndex = cachedPrList.findIndex');
-    expect(submitSrc).toContain('advanceNext = cachedPrList[reviewedPrIndex]');
     expect(submitSrc).toContain('cachedPrList = cachedPrList.filter(pr => pr.number !== review.prNumber)');
-    // When the reviewed PR was the LAST one, don't jump to the start — stay
-    // on the last awaiting PR. The `cachedPrList[0]` line is only the fallback
-    // for a PR chosen OUTSIDE the pending list (correct), so verify the
-    // last-PR branch explicitly sets advanceNext to null.
-    expect(submitSrc).toContain('advanceNext = null');
+    expect(submitSrc).toContain('pickNextPendingPr(reviewedPrIndex)');
+  });
+
+  test('pickNextPendingPr advances forward, stops at the last PR, falls back off-list', () => {
+    const start = rendererSource.indexOf('function pickNextPendingPr(');
+    expect(start).toBeGreaterThan(-1);
+    const body = rendererSource.substring(start, rendererSource.indexOf('\n}', start));
+    // Forward: the slot the removed PR occupied now holds the PR after it.
+    expect(body).toMatch(/indexBeforeRemoval >= 0 && indexBeforeRemoval < cachedPrList\.length/);
+    expect(body).toContain('return cachedPrList[indexBeforeRemoval]');
+    // Last PR in the list → nothing after it (never wrap back to list[0]).
+    expect(body).toMatch(/indexBeforeRemoval >= cachedPrList\.length/);
+    expect(body).toContain('return null;');
+    // Only a PR that was never in the list falls back to the first pending PR.
+    expect(body).toContain('return cachedPrList[0] || null;');
   });
 
   test('submitReview auto-advance has try/catch around loadPrByNumber', () => {
@@ -2930,12 +2939,16 @@ describe('Auto-advance after approve', () => {
   });
 
   test('closePullRequest auto-advance clears reviewBody and has error handling', () => {
-    const closeSrc = rendererSource.substring(
-      rendererSource.indexOf('async function closePullRequest()'),
-      rendererSource.indexOf('async function closePullRequest()') + 2000
-    );
+    const closeStart = rendererSource.indexOf('async function closePullRequest()');
+    const closeSrc = rendererSource.substring(closeStart, rendererSource.indexOf('\n}', closeStart));
     // Should clear reviewBody before loading next PR
     expect(closeSrc).toContain("reviewBody.value = ''");
+    // Closing must continue FORWARD: record the index before removal and pick
+    // with the shared helper — never jump back to list[0].
+    expect(closeSrc).toContain('closedPrIndex = cachedPrList.findIndex');
+    expect(closeSrc).toContain('cachedPrList = cachedPrList.filter(pr => pr.number !== prNum)');
+    expect(closeSrc).toContain('pickNextPendingPr(closedPrIndex)');
+    expect(closeSrc).not.toMatch(/cachedPrList\[0\]\s*;/);
     // Should have try/catch around loadPrByNumber
     expect(closeSrc).toContain('catch (advanceErr)');
     // "No more PRs" path should reset buttons
@@ -5114,7 +5127,7 @@ describe('PR freshness and header prefetch', () => {
 
   test('cached results carry the freshness facts', () => {
     // generateDiff's gh pr view must ask for them...
-    expect(mainSource).toContain('--json headRefOid,baseRefOid,state,reviewDecision,updatedAt,title,author,assignees,body');
+    expect(mainSource).toContain('--json headRefOid,baseRefOid,baseRefName,state,reviewDecision,updatedAt,title,author,assignees,body');
     // ...and both cache writers must store them
     expect(mainSource).toMatch(/baseRefOid: prData\.baseRefOid \|\| null/);
     expect(mainSource).toMatch(/state: prData\.state \|\| 'OPEN'/);
@@ -5398,5 +5411,55 @@ describe('All Comments panel delete button and Cmd+Enter edit', () => {
     expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-delete:hover \{ color: #f85149/);
     // light theme override
     expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-delete \{ color: #656d76; \}/);
+  });
+});
+
+// ── Merge-target branch indicator ────────────────────────────────────────────
+
+describe('PR merge target branch indicator', () => {
+  let mainSource, rendererSource, indexHtml;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  });
+
+  test('both gh pr view calls request the base branch name', () => {
+    // generateDiff (feeds load-pr + prefetch) and fetchPrMetadata (feeds
+    // get-pr-info) are the only two PR reads in main.js — without baseRefName
+    // in both, the indicator would appear on some paths and vanish on others.
+    expect(mainSource).toMatch(/--json headRefOid,baseRefOid,baseRefName,/);
+    expect(mainSource).toMatch(/--json title,author,assignees,body,state,headRefOid,baseRefOid,baseRefName,/);
+    expect(mainSource).toMatch(/baseRefName: \(\.baseRefName \/\/ ""\)/);
+  });
+
+  test('every metadata carrier passes baseRefName through', () => {
+    // generateDiff -> meta (get-pr-info), load-pr result, prefetch entry
+    expect((mainSource.match(/baseRefName: prData\.baseRefName \|\| ''/g) || []).length).toBeGreaterThanOrEqual(3);
+    // get-pr-info serves it from both of its caches
+    expect(mainSource).toContain('baseRefName: viewed.baseRefName');
+    expect(mainSource).toContain('baseRefName: prefetched.baseRefName');
+    // PR list ships the raw base so the header can paint it instantly
+    expect(mainSource).toContain('base: .base.ref');
+  });
+
+  test('badge renders for a non-default branch and nothing else', () => {
+    const start = rendererSource.indexOf('const DEFAULT_BASE_BRANCHES');
+    expect(start).toBeGreaterThan(-1);
+    const fnStart = rendererSource.indexOf('function baseBranchBadge');
+    expect(fnStart).toBeGreaterThan(start);
+    const body = rendererSource.substring(start, rendererSource.indexOf('\n}', fnStart));
+    expect(body).toContain("['master', 'main']");
+    expect(body).toContain('class="pr-base-branch"');
+    expect(body).toContain('escapeHtml(base)');
+    // The title line actually renders the badge.
+    expect(rendererSource).toMatch(/class="pr-title-text"[\s\S]{0,220}\$\{baseBranchBadge\(result\)\}/);
+  });
+
+  test('badge has styles in both themes', () => {
+    expect(indexHtml).toMatch(/\.pr-base-branch \{[\s\S]*?border-radius/);
+    expect(indexHtml).toMatch(/\.pr-base-branch strong \{ color: #58a6ff/);
+    expect(indexHtml).toMatch(/\.pr-base-branch \{ color: #57606a/);
   });
 });
