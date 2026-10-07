@@ -2883,12 +2883,18 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Cmd+Enter — submit current comment form
+  // Cmd+Enter — submit the open comment form. Click the form's own Save
+  // button instead of calling submitComment() directly: during an EDIT the
+  // form's handler saves in place, while submitComment() would push a brand-new
+  // comment and leave the old one behind (duplicate rows in the All Comments
+  // panel).
   if (e.key === 'Enter' && isMeta && !e.shiftKey) {
     const form = document.getElementById('active-comment-form');
     if (form) {
       e.preventDefault();
-      submitComment();
+      const submitBtn = form.querySelector('#comment-submit');
+      if (submitBtn) submitBtn.click();
+      else submitComment();
       return;
     }
   }
@@ -5534,10 +5540,19 @@ function renderCommentsList() {
       : item.kind === 'ai' ? '<span class="c-badge pending ai">AI</span>'
       : '';
     const loc = item.location ? `<span class="c-location">${escapeHtml(item.location)}</span>` : '';
+    // Only the user's own (local) comments carry a uid and can be deleted from
+    // here. Rows for comments already submitted to GitHub are read-only.
+    const canDelete = item.uid !== null && item.uid !== undefined && item.uid !== '';
+    const deleteBtn = canDelete ? `<button class="c-delete" title="Delete comment" aria-label="Delete comment">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h11M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4 4.5l.7 8.2a1.5 1.5 0 0 0 1.5 1.3h3.6a1.5 1.5 0 0 0 1.5-1.3l.7-8.2M6.5 7v4M9.5 7v4"/></svg>
+      </button>` : '';
     html += `
       <div class="comment-list-item" data-comment-loc="${escapeHtml(item.location || '')}" data-comment-uid="${item.uid !== null && item.uid !== undefined ? item.uid : ''}">
-        <span class="c-author">${escapeHtml(item.author)}</span>${loc}${badge}
-        <div class="c-text">${escapeHtml(item.text)}</div>
+        <div class="c-main">
+          <span class="c-author">${escapeHtml(item.author)}</span>${loc}${badge}
+          <div class="c-text">${escapeHtml(item.text)}</div>
+        </div>
+        ${deleteBtn}
       </div>`;
   }
   commentsPanel.innerHTML = html;
@@ -5554,6 +5569,41 @@ function renderCommentsList() {
       scrollToCommentLocation(filePart, linePart, uid);
     });
   });
+
+  // Click the trash icon to delete a local comment (row click must not fire)
+  commentsPanel.querySelectorAll('.c-delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const row = btn.closest('.comment-list-item');
+      if (!row) return;
+      const uidRaw = row.dataset.commentUid || '';
+      if (uidRaw === '') return;
+      deleteCommentFromPanel(parseInt(uidRaw, 10));
+    });
+  });
+}
+
+// Delete a local comment straight from the All Comments panel. Reuses
+// deleteComment() when the comment still has a marker in the diff (it handles
+// the splice, the marker removal and the counts); falls back to splicing by
+// uid when the marker is not on screen (line hidden by a filter, comment
+// restored without a marker, etc.).
+function deleteCommentFromPanel(uid) {
+  if (uid === null || uid === undefined || isNaN(uid)) return;
+  const marker = Array.from(document.querySelectorAll('.line-comment-marker, .file-comment-marker'))
+    .find(el => parseInt(el.dataset.commentUid, 10) === uid);
+  if (marker) {
+    deleteComment(marker);
+  } else {
+    const idx = comments.findIndex(c => c._uid === uid);
+    if (idx < 0) return;
+    const deleted = comments.splice(idx, 1)[0];
+    if (deleted && deleted.file) updateFileCommentCount(deleted.file);
+    updateCommentCount();
+    updateCommentNav();
+    autoSaveDraft();
+  }
+  renderCommentsList();
 }
 
 function scrollToCommentLocation(filePath, lineNum, commentUid) {

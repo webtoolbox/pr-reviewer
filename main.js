@@ -2109,6 +2109,11 @@ async function fetchPrMetadata(prNumber, repo) {
 // PR_CACHE_MAX_AGE_MS is only a hoarding backstop for a long-running app, and
 // lines up with the 24h since-review ref retention. It is not a freshness rule.
 const PR_CACHE_MAX_AGE_MS = ttlMinutesToMs(appConfig.cache && appConfig.cache.maxAgeMinutes, 1440);
+// An in-progress prefetch that never resolved (crashed gh call, etc.) must not
+// block future prefetches of the same PR forever. Without this definition the
+// two reads below throw a ReferenceError and load-pr reports
+// "PREFETCH_STUCK_MS is not defined".
+const PREFETCH_STUCK_MS = 2 * 60 * 1000;
 // Live `gh pr view` metadata (title/author/description) kept warm so the next
 // header paints instantly. Short-lived on purpose: a title edit should show up,
 // while a stale title must never cost us 10-30s of diff regeneration.

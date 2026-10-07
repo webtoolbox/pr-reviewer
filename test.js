@@ -3367,6 +3367,95 @@ async function runTests() {
     commentsScrollTest && commentsScrollTest.ok,
     JSON.stringify(commentsScrollTest));
 
+  // ===== ALL-COMMENTS PANEL: DELETE BUTTON =====
+  // Local pending comments get a trash button; rows for comments already
+  // submitted to GitHub stay read-only. Clicking it removes the comment from
+  // `comments` and re-renders the list.
+  const panelDeleteTest = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const panel = document.getElementById('comments-panel');
+      comments = [
+        { _uid: 99991, file: 'src/App.js', line: 12, side: 'RIGHT', text: 'local one', isAiTagged: false, level: 'line' },
+        { _uid: 99992, file: 'src/util.js', line: 5, side: 'RIGHT', text: 'local two', isAiTagged: false, level: 'line' }
+      ];
+      inlineReviewComments = [
+        { id: 1, path: 'src/App.js', line: 12, side: 'RIGHT', body: 'submitted github comment', author: 'octocat' }
+      ];
+      renderCommentsList();
+      const rows = panel.querySelectorAll('.comment-list-item');
+      const deletes = panel.querySelectorAll('.c-delete');
+      const submittedRow = Array.from(rows).find(r => r.textContent.includes('octocat'));
+      const before = {
+        rows: rows.length,
+        deletes: deletes.length,
+        submittedHasDelete: !!(submittedRow && submittedRow.querySelector('.c-delete'))
+      };
+      if (deletes.length > 0) deletes[0].click();
+      return Object.assign(before, {
+        commentsAfter: comments.length,
+        rowsAfter: panel.querySelectorAll('.comment-list-item').length,
+        deletesAfter: panel.querySelectorAll('.c-delete').length
+      });
+    })()
+  `);
+  assert('Comments panel rows for local comments show a delete button',
+    !!panelDeleteTest && panelDeleteTest.deletes === 2,
+    JSON.stringify(panelDeleteTest));
+  assert('Comments panel rows for submitted GitHub comments have no delete button',
+    !!panelDeleteTest && panelDeleteTest.submittedHasDelete === false && panelDeleteTest.rows === 3,
+    JSON.stringify(panelDeleteTest));
+  assert('Deleting from the comments panel removes the comment and the row',
+    !!panelDeleteTest && panelDeleteTest.commentsAfter === 1 &&
+      panelDeleteTest.rowsAfter === 2 && panelDeleteTest.deletesAfter === 1,
+    JSON.stringify(panelDeleteTest));
+
+  // ===== CMD+ENTER WHILE EDITING SAVES IN PLACE =====
+  // Cmd+Enter used to call submitComment() directly, which pushed a NEW
+  // comment during an edit and left the old one behind — duplicate rows in the
+  // All Comments panel. It must click the open form's own Save button instead.
+  const editCmdEnterTest = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      // Fresh state: one real comment on a real diff line
+      comments = [];
+      document.querySelectorAll('.line-comment-marker, .file-comment-marker').forEach(el => el.remove());
+      const btn = document.querySelector('.line-comment-btn');
+      if (!btn) return { ok: false, error: 'no comment button in diff' };
+      btn.click();
+      const ta = document.querySelector('#active-comment-form textarea');
+      if (!ta) return { ok: false, error: 'comment form did not open' };
+      ta.value = 'original text';
+      submitComment();
+      const before = comments.length;
+      const marker = document.querySelector('.line-comment-marker, .file-comment-marker');
+      if (!marker) return { ok: false, error: 'no marker rendered' };
+
+      editComment(marker);
+      const editTa = document.querySelector('#active-comment-form textarea');
+      if (!editTa) return { ok: false, error: 'edit form did not open' };
+      editTa.value = 'edited text';
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      return {
+        ok: true,
+        before,
+        after: comments.length,
+        text: comments[0] ? comments[0].text : null,
+        formStillOpen: !!document.getElementById('active-comment-form'),
+        markers: document.querySelectorAll('.line-comment-marker, .file-comment-marker').length
+      };
+    })()
+  `);
+  assert('Cmd+Enter while editing updates the comment instead of adding a second one',
+    !!editCmdEnterTest && editCmdEnterTest.ok && editCmdEnterTest.before === 1 &&
+      editCmdEnterTest.after === 1 && editCmdEnterTest.text === 'edited text',
+    JSON.stringify(editCmdEnterTest));
+  assert('Cmd+Enter while editing closes the edit form and keeps one marker',
+    !!editCmdEnterTest && editCmdEnterTest.ok && !editCmdEnterTest.formStillOpen &&
+      editCmdEnterTest.markers === 1,
+    JSON.stringify(editCmdEnterTest));
+
   // ===== CONTRIBUTOR AUTHORS TEST =====
   // updatePrInfoBar should render "· contributor-1, contributor-2" after the author
   const contributorBarTest = await mainWindow.webContents.executeJavaScript(`

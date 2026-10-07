@@ -3103,9 +3103,19 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(mainSource).not.toContain('VIEWED_PR_CACHE_TTL_MS');
     expect(mainSource).not.toContain('PREFETCH_TTL_MS');
     expect(mainSource).toMatch(/Date\.now\(\) - entry\.cachedAt > PR_CACHE_MAX_AGE_MS/);
-    // A stuck in-progress prefetch can't block re-prefetching the PR forever
-    expect(mainSource).toContain('PREFETCH_STUCK_MS');
+    // A stuck in-progress prefetch can't block re-prefetching the PR forever.
+    // The constant must be DEFINED: a bare reference throws a ReferenceError
+    // that load-pr reports as "PREFETCH_STUCK_MS is not defined" and the PR
+    // never opens.
+    expect(mainSource).toMatch(/const PREFETCH_STUCK_MS\s*=/);
     expect(mainSource).toMatch(/now - entry\.startedAt > PREFETCH_STUCK_MS/);
+    // Same guard for every *_MS constant main.js reads — a deleted definition
+    // with a surviving use is exactly how PREFETCH_STUCK_MS broke.
+    const msConstants = [...new Set(mainSource.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+_MS\b/g) || [])];
+    expect(msConstants.length).toBeGreaterThan(0);
+    for (const name of msConstants) {
+      expect(mainSource).toMatch(new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=`));
+    }
     // Periodic sweep keeps a long-running app from hoarding diffs
     expect(mainSource).toMatch(/setInterval\(\(\) => \{[\s\S]{0,1200}viewedPrCache\.delete\(key\)/);
     // Force reload drops both caches for the PR instead of only bypassing reads
@@ -5300,5 +5310,76 @@ describe('load-pr freshness gate against the real handler code', () => {
     expect(info.prTitle).toBe('A title');
     expect(info.filesChanged).toBe(7);
     expect(info.headSha).toBe('h3');
+  });
+});
+
+// ── All Comments panel: delete button, and Cmd+Enter while editing ──
+
+describe('All Comments panel delete button and Cmd+Enter edit', () => {
+  let rendererSource;
+  let indexHtml;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  });
+
+  test('only local comments (rows with a uid) get a delete button', () => {
+    const start = rendererSource.indexOf('function renderCommentsList');
+    const end = rendererSource.indexOf('function deleteCommentFromPanel');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const fn = rendererSource.substring(start, end);
+
+    expect(fn).toMatch(/const canDelete = item\.uid !== null && item\.uid !== undefined && item\.uid !== ''/);
+    expect(fn).toContain('class="c-delete"');
+    expect(fn).toContain('deleteCommentFromPanel(parseInt(uidRaw, 10))');
+    // The button click must not also fire the row's scroll-to-comment handler.
+    expect(fn).toMatch(/\.c-delete[\s\S]{0,300}e\.stopPropagation\(\)/);
+  });
+
+  test('submitted GitHub rows are built without a uid, so they stay read-only', () => {
+    const start = rendererSource.indexOf('function getCombinedCommentList');
+    const end = rendererSource.indexOf('function renderCommentsList');
+    const list = rendererSource.substring(start, end);
+    expect(list).toMatch(/kind: 'submitted',[\s\S]{0,400}target:/);
+    // no uid key on the submitted entry — that is what makes it undeletable
+    expect(list).not.toMatch(/kind: 'submitted',[\s\S]{0,400}\buid:/);
+    expect(list).toMatch(/uid: c\._uid \|\| null/);
+  });
+
+  test('deleting from the panel reuses deleteComment when the marker exists', () => {
+    const start = rendererSource.indexOf('function deleteCommentFromPanel');
+    const end = rendererSource.indexOf('function scrollToCommentLocation');
+    expect(start).toBeGreaterThan(-1);
+    const fn = rendererSource.substring(start, end);
+    expect(fn).toContain('deleteComment(marker)');
+    expect(fn).toMatch(/comments\.findIndex\(c => c\._uid === uid\)/);
+    expect(fn).toMatch(/comments\.splice\(idx, 1\)/);
+    expect(fn).toContain('updateCommentCount()');
+    expect(fn).toContain('updateCommentNav()');
+    expect(fn).toContain('autoSaveDraft()');
+    expect(fn).toContain('renderCommentsList()');
+  });
+
+  test('Cmd+Enter clicks the open form Save button, never submitComment directly', () => {
+    const start = rendererSource.indexOf('// Cmd+Enter');
+    expect(start).toBeGreaterThan(-1);
+    const chunk = rendererSource.substring(start, rendererSource.indexOf('return;', start));
+    expect(chunk).toContain("e.key === 'Enter' && isMeta");
+    expect(chunk).toContain("form.querySelector('#comment-submit')");
+    expect(chunk).toContain('submitBtn.click()');
+    // Calling submitComment() here is the duplicate-comment bug: during an
+    // edit that pushes a second comment and leaves the old one behind.
+    expect(chunk).not.toMatch(/^\s*submitComment\(\);\s*$/m);
+  });
+
+  test('delete button is styled in dark and light themes', () => {
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \{[^}]*display: flex/);
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-main \{ flex: 1/);
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-delete \{/);
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-delete:hover \{ color: #f85149/);
+    // light theme override
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-delete \{ color: #656d76; \}/);
   });
 });
