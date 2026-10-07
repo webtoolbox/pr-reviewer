@@ -2704,6 +2704,11 @@ async function submitReview(eventType) {
           showToast(`⚠ ${result.skippedComments.length} comment(s) skipped — file(s) not in PR diff: ${skippedFiles}`, 'warning', 15000);
         }
 
+        // Surface what happened to comments GitHub could not take inline
+        if (result.notes && result.notes.length > 0) {
+          for (const note of result.notes) showToast(`⚠ ${note}`, 'warning', 15000);
+        }
+
         // Clear persisted comments after successful submission
 
         // Delete PR draft after successful GitHub submission

@@ -2787,6 +2787,19 @@ function computePositionsFromDiff(diffContent) {
   return map;
 }
 
+// Comments on lines GitHub's diff does not contain cannot be posted inline.
+// Fold them into the review body so the feedback still reaches GitHub —
+// otherwise a review holding only such comments is rejected as empty and
+// everything the reviewer wrote is silently lost.
+function foldUnplaceableComments(body, comments) {
+  if (!comments || comments.length === 0) return body || '';
+  const folded = comments
+    .map(c => `**${c.file}:${c.line}**\n\n> ${String(c.text || '').split('\n').join('\n> ')}`)
+    .join('\n\n');
+  const section = `### Could not attach these as inline comments\n\n${folded}`;
+  return body ? `${body}\n\n${section}` : section;
+}
+
 ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType, comments, repo: repoKey }) => {
   prNumber = safePrNumber(prNumber);
   if (!prNumber) return { error: 'Valid PR number is required' };
@@ -2814,6 +2827,13 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
   let ghComments = [];
   let skippedCommentsInfo = [];
   let fileCommentsPosted = 0;
+  // Inline comments GitHub's unified diff cannot place: either the whole file
+  // has no net change, or the line is outside every hunk (it changed since the
+  // last review but matches the PR base now). They get folded into the review
+  // body instead of being dropped — see foldUnplaceableComments().
+  const notInDiffComments = [];
+  const unmappedComments = [];
+  const reviewNotes = [];
   if (comments && comments.length > 0) {
     // Separate file-level comments (no line/position needed) from inline comments
     const fileComments = comments.filter(c => c.file && c.text && c.level === 'file');
@@ -2870,6 +2890,7 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
         for (const c of inlineComments) {
           if (!diffFiles.has(c.file)) {
             skippedFiles.push(c.file);
+            notInDiffComments.push(c);
             log('WARN', `[github-review] Skipping comment on ${c.file} — file not in unified diff (likely reverted)`);
           } else {
             validComments.push(c);
@@ -2896,6 +2917,8 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
             if (altPosition) {
               log('INFO', `[github-review] Found position via alternate side for ${key} -> ${altKey}`);
               mapped.push({ path: c.file, position: altPosition, body: c.text });
+            } else {
+              unmappedComments.push(c);
             }
           }
         }
@@ -2930,6 +2953,16 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
   const payload = { body: body || '', event: ghEvent };
   if (ghComments.length > 0) {
     payload.comments = ghComments;
+  }
+
+  // Comments that could not be placed inline go into the review body. This has
+  // to happen BEFORE the empty-review validation below, otherwise a review
+  // containing only such comments is rejected with "empty review".
+  const unplaceable = [...notInDiffComments, ...unmappedComments];
+  if (unplaceable.length > 0) {
+    payload.body = foldUnplaceableComments(payload.body, unplaceable);
+    log('WARN', `[github-review] ${unplaceable.length} comment(s) outside GitHub's diff — folded into the review body`);
+    reviewNotes.push(`${unplaceable.length} comment${unplaceable.length > 1 ? 's' : ''} could not be attached inline and ${unplaceable.length > 1 ? 'were' : 'was'} included in the review summary`);
   }
 
   // Validate: REQUEST_CHANGES and COMMENT require something meaningful
@@ -2987,6 +3020,9 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
     const response = { success: true, reviewId: result.id, htmlUrl: result.html_url };
     if (skippedCommentsInfo.length > 0) {
       response.skippedComments = skippedCommentsInfo;
+    }
+    if (reviewNotes.length > 0) {
+      response.notes = reviewNotes;
     }
     return response;
   } catch (err) {

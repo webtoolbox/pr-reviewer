@@ -3216,6 +3216,55 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(mainSource).toMatch(/async function getFreshPrInfo[\s\S]{0,300}getPrMeta\(cacheKey\)/);
   });
 
+  test('foldUnplaceableComments moves unmappable comments into the review body', () => {
+    // Exercise the REAL helper from main.js (main.js is not module-exported,
+    // so pull its source out and eval the declaration).
+    const start = mainSource.indexOf('function foldUnplaceableComments');
+    expect(start).toBeGreaterThan(-1);
+    const fnSrc = mainSource.substring(start, mainSource.indexOf('\n}', start) + 2);
+    const fold = eval(`(${fnSrc})`);
+
+    // No review body: the folded section becomes the body, so the review is
+    // never rejected as "empty" while comments are waiting to be sent.
+    const solo = fold('', [{ file: 'data/js/forum1_global/backArrow.js', line: 66, text: 'line one\nline two' }]);
+    expect(solo).toContain('data/js/forum1_global/backArrow.js:66');
+    expect(solo).toContain('> line one');
+    expect(solo).toContain('> line two');
+    expect(solo).toMatch(/^### Could not attach these as inline comments/);
+
+    // Existing body: the section is appended, never replaces what was written.
+    const appended = fold('LGTM, one nit.', [{ file: 'a.pm', line: 5, text: 'nit here' }]);
+    expect(appended.startsWith('LGTM, one nit.')).toBe(true);
+    expect(appended).toContain('a.pm:5');
+
+    // Nothing to fold: body untouched (empty stays empty for the validation).
+    expect(fold('', [])).toBe('');
+    expect(fold('LGTM', [])).toBe('LGTM');
+  });
+
+  test('submit-github-review folds unplaceable comments before rejecting empty reviews', () => {
+    const sIdx = mainSource.indexOf("ipcMain.handle('submit-github-review'");
+    expect(sIdx).toBeGreaterThan(-1);
+    const sEnd = mainSource.indexOf("ipcMain.handle('auto-fix-with-ai'", sIdx);
+    const sSrc = mainSource.substring(sIdx, sEnd > 0 ? sEnd : sIdx + 20000);
+
+    // Both ways a comment can fail placement keep the full comment object.
+    expect(sSrc).toContain('notInDiffComments.push(c)');
+    expect(sSrc).toContain('unmappedComments.push(c)');
+
+    // The fold must run BEFORE the empty-review check, otherwise the error
+    // still fires for a review that only has unmappable comments.
+    const foldIdx = sSrc.indexOf('const unplaceable =');
+    const validateIdx = sSrc.indexOf('Cannot submit an empty review');
+    expect(foldIdx).toBeGreaterThan(-1);
+    expect(validateIdx).toBeGreaterThan(foldIdx);
+
+    // The renderer is told what happened so it can show a toast.
+    expect(sSrc).toContain('response.notes = reviewNotes');
+    const rendererSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    expect(rendererSrc).toContain('result.notes && result.notes.length > 0');
+  });
+
   test('submit-github-review invalidates the processed PR cache', () => {
     const sIdx = mainSource.indexOf("ipcMain.handle('submit-github-review'");
     expect(sIdx).toBeGreaterThan(-1);
