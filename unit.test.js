@@ -4143,31 +4143,54 @@ describe('AI Chat and Hermes profile', () => {
   test('ai-chat uses -t hermes-cli toolset and NO killing wall-clock timeout', () => {
     const fn = mainSource.substring(
       mainSource.indexOf("ipcMain.handle('ai-chat'"),
-      mainSource.indexOf('function extractHermesSteps')
+      mainSource.indexOf('function newHermesStreamState')
     );
     expect(fn).toContain("'-t', 'hermes-cli'");
+    // Streamed as raw markdown events — the -q box re-renders markdown for the
+    // terminal and strips ``` fences, so code blocks never rendered as blocks.
+    expect(fn).toContain("'--format', 'stream-json'");
+    expect(fn).toContain('applyHermesStreamLine(line, state)');
     // The app must NOT kill the agent on a wall-clock timer (that was the bug:
     // SIGTERM mid-answer was silently shipped as a complete response).
     expect(fn).toContain("spawn(appConfig.aiCommand, args);");
     expect(fn).not.toContain('timeout: 300000');
     expect(fn).not.toContain("signal === 'SIGTERM'");
     // Hermes is trusted to finish; incomplete results are detected by exit
-    // status/signal instead of by wall-clock.
-    expect(fn).toContain('const truncated = code !== 0 || signal || clean.length === 0;');
+    // status/signal (and a missing result event) instead of by wall-clock.
+    expect(fn).toContain('const truncated = code !== 0 || signal || !state.done || clean.length === 0;');
     // Liveness heartbeat keeps the UI honest about long runs.
     expect(fn).toContain('heartbeat');
   });
 
-  test('extractHermesSteps surfaces agent activity before the box opens', () => {
+  test('stream-json feed keeps markdown code fences and builds the activity feed', () => {
     const fn = mainSource.substring(
-      mainSource.indexOf('function extractHermesSteps'),
-      mainSource.indexOf('function cleanHermesStreaming')
+      mainSource.indexOf('function newHermesStreamState'),
+      mainSource.indexOf('function expandPath')
     );
-    // Captures "┊" spinner lines (tool prep + runs)
-    expect(fn).toContain("t.startsWith('┊')");
-    expect(fn).toContain('steps.push(step)');
-    // Ignores CLI chrome / prompts
-    expect(fn).toContain('/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|Title:)/i');
+    const { newHermesStreamState, applyHermesStreamLine } = new Function(
+      fn + '\nreturn { newHermesStreamState, applyHermesStreamLine };'
+    )();
+    const state = newHermesStreamState();
+    // Non-JSON chrome (session footer, blank lines) never reaches the bubble.
+    expect(applyHermesStreamLine('Session: 20261008_124100_x', state)).toBe(false);
+    expect(applyHermesStreamLine('not json {', state)).toBe(false);
+    // Text deltas accumulate with the fences intact — this is what makes
+    // perl/html code render as code blocks instead of loose paragraphs.
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'text', text: 'Here:\n\n```perl\nmy $n = 42;\n' }), state)).toBe(true);
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'text', text: '\n```\n' }), state)).toBe(true);
+    expect(state.answer).toContain('```perl');
+    expect(state.answer.trim().endsWith('```')).toBe(true);
+    // Tool calls become activity rows; repeats de-duplicate.
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'tool_use', name: 'terminal', input: { command: 'ls /tmp' } }), state)).toBe(true);
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'tool_use', name: 'terminal', input: { command: 'ls /tmp' } }), state)).toBe(false);
+    expect(state.steps).toEqual(['running terminal: ls /tmp…']);
+    // tool_result and system init are not user-visible.
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'tool_result', name: 'terminal', output: 'x' }), state)).toBe(false);
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'system', subtype: 'init' }), state)).toBe(false);
+    // The result event is the authoritative finished answer.
+    expect(applyHermesStreamLine(JSON.stringify({ type: 'result', text: 'Done.\n\n```html\n<b>hi</b>\n```', exit_code: 0 }), state)).toBe(true);
+    expect(state.done).toBe(true);
+    expect(state.answer).toBe('Done.\n\n```html\n<b>hi</b>\n```');
   });
 
   test('buildChatPrompt instructs the agent to prefer fd/rg', () => {
@@ -4322,6 +4345,11 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain('function renderAiMarkdown(el, text)');
     expect(rendererSource).toContain('<div class="ai-md md-body">');
     expect(rendererSource).toContain("if (role === 'assistant') renderAiMarkdown(el, text)");
+    // Code blocks in a reply get syntax colors (hljs is already bundled for diffs)
+    expect(rendererSource).toContain('function highlightMarkdownCode(root)');
+    expect(rendererSource).toContain('highlightMarkdownCode(el);');
+    expect(rendererSource).toContain("root.querySelectorAll('pre code')");
+    expect(rendererSource).toContain('window.hljs.getLanguage(lang)');
     const sendSrc = rendererSource.substring(rendererSource.indexOf('async function sendAiChat'));
     // error partial text, final done (steps + no-steps), streaming (steps + no-steps), fallback
     expect((sendSrc.match(/renderAiMarkdown\(/g) || []).length).toBeGreaterThanOrEqual(5);

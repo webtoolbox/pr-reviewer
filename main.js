@@ -278,10 +278,14 @@ function cleanHermesResponse(stdout) {
 // 'ai-chat-stream' channel, and a final 'done' event carries the cleaned reply.
 ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history }) => {
   const prompt = buildChatPrompt(await getPrChatContext(prNumber, repoKey), history, message || '', getLocalRepoPath(repoKey || ''));
-  // NOTE: `-q` (boxed streaming) is REQUIRED here — `-Q` suppresses the box and
-  // would break the live "thinking" bubble stream. `-t hermes-cli` slims the
-  // toolset so the agent spends far less time loading tools before first token.
-  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-t', 'hermes-cli', '-q', prompt];
+  // `--format stream-json` streams newline-delimited JSON events instead of the
+  // boxed terminal rendering that `-q` uses. The box re-renders markdown for the
+  // terminal and strips the ``` fences, so perl/html/json code reached the bubble
+  // as loose paragraphs instead of code blocks; stream-json hands the raw
+  // markdown over untouched (`text` deltas, finalized by the `result` event).
+  // `-t hermes-cli` slims the toolset so the agent spends far less time loading
+  // tools before first token.
+  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-t', 'hermes-cli', '--format', 'stream-json', '-q', prompt];
   log('INFO', `[ai-chat] Sending (first 100): ${prompt.substring(0, 100)}`);
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
@@ -297,7 +301,8 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
     // keeps the UI honest about long runs instead of killing them.
     const child = spawn(appConfig.aiCommand, args);
     const sender = event.sender;
-    let stdout = '';
+    const state = newHermesStreamState(); // answer text + activity steps from the JSON feed
+    let lineBuf = ''; // partial stdout line waiting for its newline
     let stderrText = '';
     let lastEmit = 0;
     let lastChunkAt = Date.now();
@@ -329,25 +334,34 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
       if (!force && now - lastEmit < 80) return;
       lastEmit = now;
       lastChunkAt = now;
-      // Send the accumulated activity feed (steps) plus any partial answer,
-      // so the dialog always shows what the agent is doing right now.
-      const steps = extractHermesSteps(stdout + stderrText);
-      const partial = cleanHermesStreaming(stdout);
+      // Send the accumulated activity feed (steps) plus the partial answer so
+      // the dialog always shows what the agent is doing right now.
       try {
-        sender.send('ai-chat-stream', { text: partial, steps, done: false });
+        sender.send('ai-chat-stream', { text: state.answer, steps: state.steps, done: false });
       } catch {}
     };
 
+    // One complete line of the JSON feed -> state; emit whenever it changed.
+    const feedLine = (line) => {
+      if (applyHermesStreamLine(line, state)) emitStream(false);
+    };
+
+    // Newline-delimited JSON: buffer until each line is complete, then hand it
+    // to the parser (chunks split mid-line are the common case).
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      emitStream(false);
+      lineBuf += chunk.toString();
+      let nl;
+      while ((nl = lineBuf.indexOf('\n')) !== -1) {
+        feedLine(lineBuf.slice(0, nl));
+        lineBuf = lineBuf.slice(nl + 1);
+      }
     });
 
-    // Capture stderr too so warnings/config issues can appear in the activity
-    // feed instead of being silently lost.
+    // In stream-json mode stderr carries CLI warnings only — log them instead of    // letting them leak into the reply bubble.
     child.stderr.on('data', (chunk) => {
       stderrText += chunk.toString();
-      emitStream(false);
+      const warn = chunk.toString().trim();
+      if (warn) log('WARN', `[ai-chat] stderr: ${warn.substring(0, 300)}`);
     });
 
     child.on('error', (err) => {
@@ -361,13 +375,17 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
       // (hermes converts SIGTERM into SIGINT internally, so checking both is
       // required; previously only SIGTERM was checked and truncated answers
       // were silently shipped as complete.)
-      const clean = cleanHermesResponse(stdout);
-      const truncated = code !== 0 || signal || clean.length === 0;
+      if (lineBuf.trim()) feedLine(lineBuf); // flush a final event with no trailing newline
+      const clean = state.answer;
+      const truncated = code !== 0 || signal || !state.done || clean.length === 0;
       if (truncated) {
         const why = signal
           ? `process ended by ${signal}`
-          : (code !== 0 ? `process exited with code ${code}` : 'no output produced');
+          : (code !== 0
+            ? `process exited with code ${code}`
+            : (!state.done ? 'agent never sent a result event' : 'no output produced'));
         log('WARN', `[ai-chat] Hermes result may be INCOMPLETE (${why}) — ${clean.length} chars.`);
+        if (stderrText.trim()) log('WARN', `[ai-chat] stderr: ${stderrText.trim().slice(-300)}`);
         const msg = `Answer may be incomplete (${why}). Here's what was produced so far; re-send to continue.`;
         try { sender.send('ai-chat-stream', { text: clean, status: '', error: msg, timedOut: true, done: true }); } catch {}
         finish({ error: msg, response: clean });
@@ -380,63 +398,58 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
   });
 });
 
-// Pull the agent's activity feed from hermes's pre-box output (skill loading,
-// tool preparation, tool runs with timing). Every "┊" line hermes prints
-// before/around the answer box is surfaced so the dialog shows what the agent
-// is doing right now — instead of a static "Thinking…".
-function extractHermesSteps(text) {
-  if (!text) return [];
-  const lines = text.split('\n');
-  const steps = [];
-  for (const raw of lines) {
-    const t = raw.trim();
-    if (!t) continue;
-    // Skip CLI chrome and the box itself; keep only real activity lines.
-    if (/^(Warning:|Query:|User:|Assistant:|Initializing|Preparing|Resume |Session:|Duration:|Messages:|Title:)/i.test(t)) continue;
-    if (/^[─╭╰│]+$/.test(t)) continue;
-    // Tool lines come with a "┊" spinner pipe and an icon like 🔎, 🛠, 📖.
-    if (t.startsWith('┊')) {
-      const step = t.replace(/^┊\s*/, '').replace(/\s+$/, '').replace(/\s{2,}/g, ' ');
-      if (step && step.length <= 140) steps.push(step);
-      continue;
-    }
-    // Ansi/plain status like "preparing search_files…" without the pipe.
-    if (/^(preparing|running|loading)\s/i.test(t) && t.length <= 140) {
-      steps.push(t.replace(/\s{2,}/g, ' '));
-    }
-  }
-  // De-duplicate consecutive repeats (hermes reprints "preparing X…" per run).
-  const seen = new Set();
-  const unique = [];
-  for (const s of steps) {
-    if (!seen.has(s)) { seen.add(s); unique.push(s); }
-  }
-  return unique;
+// --- stream-json answer feed -------------------------------------------------
+// `hermes chat --format stream-json` prints one JSON object per line:
+//   {"type":"text","text":"..."}      raw markdown deltas (code fences intact)
+//   {"type":"tool_use","name":...}    a tool call started -> activity feed row
+//   {"type":"tool_result","name":...} the tool call finished
+//   {"type":"result","text":"..."}    the finished answer (authoritative)
+// Everything else — system init, the session footer, blank lines — is chrome.
+function newHermesStreamState() {
+  return { answer: '', steps: [], seen: new Set(), done: false };
 }
 
-// Lightweight chrome-stripper for PARTIAL (in-flight) hermes output. It only
-// returns lines INSIDE the final answer box (between the ╭…╮ top border and the
-// ╰…╯ bottom border), stripping the │ border pipes. Thinking text, tool-call
-// progress, warnings, and the session footer are all outside the box, so they
-// never reach the reply bubble. Before the box opens (or after it closes) it
-// returns empty — the renderer keeps showing the loading indicator until the
-// real answer begins streaming.
-function cleanHermesStreaming(text) {
-  if (!text) return '';
-  const lines = text.split('\n');
-  const out = [];
-  let inBox = false;
-  for (const raw of lines) {
-    const t = raw;
-    if (/^╭/.test(t)) { inBox = true; continue; }
-    if (/^╰/.test(t)) { inBox = false; continue; }
-    if (inBox) {
-      // Strip the left border pipe and trailing whitespace from box content lines.
-      const content = t.replace(/^│\s*/, '').replace(/\s*│$/, '').trim();
-      if (content) out.push(content);
-    }
+// Apply one line of the feed to the state. Returns true when the payload
+// changed (answer text or a new step) so the caller knows when to emit.
+function applyHermesStreamLine(line, state) {
+  const t = (line || '').trim();
+  if (!t || t.charAt(0) !== '{') return false; // CLI chrome / session footer
+  let ev;
+  try { ev = JSON.parse(t); } catch (e) { return false; }
+  if (!ev || typeof ev.type !== 'string') return false;
+  if (ev.type === 'text') {
+    state.answer += typeof ev.text === 'string' ? ev.text : '';
+    return true;
   }
-  return out.join('\n').trim();
+  if (ev.type === 'tool_use') return addHermesStep(state, formatHermesToolStep(ev));
+  if (ev.type === 'result') {
+    if (typeof ev.text === 'string') state.answer = ev.text; // final: replaces deltas
+    state.done = true;
+    return true;
+  }
+  return false; // system/init, tool_result, anything unknown
+}
+
+// Activity-feed row for a tool call: "running terminal: ls -la…". Carrying the
+// command makes the feed tell the reviewer what the agent actually did.
+function formatHermesToolStep(ev) {
+  const name = String((ev && ev.name) || '').trim();
+  if (!name) return '';
+  const input = (ev && typeof ev.input === 'object' && ev.input) || {};
+  let detail = '';
+  for (const key of ['command', 'query', 'pattern', 'path', 'url', 'file_path']) {
+    const v = input[key];
+    if (typeof v === 'string' && v.trim()) { detail = v.trim().split('\n')[0]; break; }
+  }
+  const step = detail ? `${name}: ${detail}` : name;
+  return `running ${step.length > 120 ? step.slice(0, 117) + '\u2026' : step}\u2026`;
+}
+
+function addHermesStep(state, step) {
+  if (!step || state.seen.has(step)) return false;
+  state.seen.add(step);
+  state.steps.push(step);
+  return true;
 }
 
 function expandPath(p) {

@@ -7490,6 +7490,21 @@ function positionAiChatPanel() {
 function renderAiMarkdown(el, text) {
   if (!el) return;
   el.innerHTML = '<div class="ai-md md-body">' + renderMarkdownHtml(text || '') + '</div>';
+  highlightMarkdownCode(el);
+}
+
+// Color the fenced code blocks in an agent reply. hljs is already loaded for
+// the diff view; only languages it actually knows are highlighted (asking for
+// an unregistered language throws), anything else stays plain monospace.
+function highlightMarkdownCode(root) {
+  if (!window.hljs) return;
+  const blocks = root.querySelectorAll('pre code');
+  for (const block of blocks) {
+    if (block.dataset.highlighted) continue;
+    const lang = ((block.className.match(/language-([\w+#.-]+)/) || [])[1] || '').toLowerCase();
+    if (!lang || !window.hljs.getLanguage(lang)) continue;
+    try { window.hljs.highlightElement(block); } catch (e) { /* leave it plain */ }
+  }
 }
 
 function appendAiChatMsg(role, text) {
