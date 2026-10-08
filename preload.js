@@ -40,8 +40,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAgentRules: () => ipcRenderer.invoke('get-agent-rules'),
   proposeRules: (data) => ipcRenderer.invoke('propose-rules', data),
   aiChat: (data) => ipcRenderer.invoke('ai-chat', data),
-  onAiChatStream: (callback) => ipcRenderer.on('ai-chat-stream', (event, data) => callback(data)),
-  removeAiChatStreamListener: (callback) => ipcRenderer.removeListener('ai-chat-stream', callback),
+  // Registration hands back the EXACT listener passed to ipcRenderer.on, so the
+  // caller can remove it again. removeListener matches by reference: passing the
+  // original callback (which was wrapped in an inline arrow) never matched, so
+  // every request left its listener attached — old listeners kept re-pushing
+  // duplicate turns into the history sent back to the model.
+  onAiChatStream: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('ai-chat-stream', listener);
+    return listener;
+  },
+  removeAiChatStreamListener: (listener) => ipcRenderer.removeListener('ai-chat-stream', listener),
   saveAgentRules: (data) => ipcRenderer.invoke('save-agent-rules', data),
   deletePrFiles: (prNumber) => ipcRenderer.invoke('delete-pr-files', prNumber),
   getSavedAgentRules: () => ipcRenderer.invoke('get-saved-agent-rules'),

@@ -5886,7 +5886,14 @@ function updatePrInfoBar(prNumber, prTitle, result) {
   // Inject review info into the diff2html file list area (right-aligned, same row as files changed)
   if (result) {
     let reviewInfoText = '';
-    if (result.reviewInfo) {
+    if (result.sinceReviewEmpty) {
+      // No commits since the last review: main.js fell back to the full PR
+      // diff, so "Changes since <date>" would be a lie.
+      const rdate = result.reviewInfo && result.reviewInfo.date
+        ? new Date(result.reviewInfo.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : '';
+      reviewInfoText = rdate ? `Full diff · no changes since ${rdate}` : 'Full diff';
+    } else if (result.reviewInfo) {
       const date = new Date(result.reviewInfo.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
       const state = result.reviewInfo.state.toLowerCase().replace('_', ' ');
       reviewInfoText = `Changes since ${date} (${state})`;
@@ -7551,6 +7558,13 @@ function appendAiChatMsg(role, text) {
   return el;
 }
 
+// Drop the "Still working…" heartbeat row once a reply or an error lands so it
+// never lingers under the final answer.
+function clearAiChatStatus(root) {
+  if (!root) return;
+  root.querySelectorAll('.ai-chat-status').forEach((node) => node.remove());
+}
+
 async function sendAiChat() {
   if (!aiChatInput || aiChatBusy) return;
   const text = aiChatInput.value.trim();
@@ -7578,18 +7592,33 @@ async function sendAiChat() {
     // this stale stream — the message element is gone and history was reset.
     if (myEpoch !== aiChatEpoch) return;
     if (data.heartbeat) {
-      // Agent is alive but quiet (main's liveness heartbeat). Keep the live
-      // bubble honest without interrupting it. Only touch the bubble while it
-      // is still the untouched placeholder — anything already rendered (step
-      // rows, markdown answer) must not be flattened back to plain text.
-      if (live.children.length === 0 && live.textContent !== 'Thinking…') {
-        live.textContent = live.textContent || 'Thinking…';
+      // Agent is alive but quiet (main's liveness heartbeat). Show how long it
+      // has been working instead of leaving a frozen bubble: the untouched
+      // placeholder is replaced outright, and once step rows or the streamed
+      // answer are on screen a status row is appended. Already-rendered content
+      // is never flattened — markdown must not collapse back to textContent.
+      const secs = data.elapsed || 0;
+      const label = secs >= 60
+        ? `Still working… ${Math.floor(secs / 60)}m ${secs % 60}s`
+        : `Still working… ${secs}s`;
+      if (live.children.length === 0) {
+        live.textContent = label;
+      } else {
+        let status = live.querySelector('.ai-chat-status');
+        if (!status) {
+          status = document.createElement('div');
+          status.className = 'ai-chat-step ai-chat-status';
+          live.appendChild(status);
+        }
+        status.textContent = label;
+        if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
       }
       return;
     }
     if (data.error) {
       // Surface the error AND the partial text produced before interruption,
       // so a truncated answer is never silently presented as complete.
+      clearAiChatStatus(live);
       live.classList.remove('assistant');
       live.classList.add('error');
       if (data.steps && data.steps.length > 0) renderSteps(live);
@@ -7622,6 +7651,7 @@ async function sendAiChat() {
       // text streams in live, the user reads it as it appears; no need to jump
       // to the top. Just push it into history so follow-ups have context.
       // If steps were shown, keep them above the final answer for context.
+      clearAiChatStatus(live);
       if (seenSteps && seenSteps.length > 0) {
         renderAiMarkdown(ensureAiAnswer(live), data.text || '(no response)');
       } else {
@@ -7646,7 +7676,7 @@ async function sendAiChat() {
       if (aiChatMessages) aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
     }
   };
-  window.electronAPI.onAiChatStream(handleStream);
+  const streamListener = window.electronAPI.onAiChatStream(handleStream);
 
   try {
     const result = await window.electronAPI.aiChat({
@@ -7672,7 +7702,7 @@ async function sendAiChat() {
     live.textContent = 'Error: ' + (err.message || err);
     aiChatHistory.push({ role: 'user', content: text });
   } finally {
-    window.electronAPI.removeAiChatStreamListener(handleStream);
+    window.electronAPI.removeAiChatStreamListener(streamListener);
     aiChatBusy = false;
     aiChatSend.disabled = false;
     aiChatInput.focus();

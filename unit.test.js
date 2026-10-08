@@ -3048,7 +3048,7 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
 
   test('generateDiff threads sinceReviewRef into its result', () => {
     expect(mainSource).toContain('sinceReviewRef = netResult.sinceReviewRef;');
-    expect(mainSource).toMatch(/filesChanged: changedFiles\.length, prData, sinceReviewRef\s*}/);
+    expect(mainSource).toMatch(/filesChanged: changedFiles\.length, prData, sinceReviewRef, sinceReviewEmpty\s*}/);
   });
 
   test('load-pr includes sinceReviewRef in its response', () => {
@@ -3057,6 +3057,18 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
 
   test('prefetch-pr cache includes sinceReviewRef', () => {
     expect(mainSource).toContain('sinceReviewRef: result.sinceReviewRef || null');
+  });
+
+  test('PRs with no commits since the last review fall back to the full PR diff', () => {
+    // Arrow-navigation back to an already-reviewed PR always lands on this path:
+    // the review commit IS the head, so the since-review range is empty. It must
+    // widen the range to the PR's base branch instead of erroring out.
+    expect(mainSource).toContain('sinceReviewEmpty = true');
+    expect(mainSource).toContain('falling back to the full PR diff');
+    expect(mainSource).toContain('sinceReviewEmpty: !!result.sinceReviewEmpty');
+    // The file-list header labels the view honestly instead of "Changes since".
+    const rendererSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    expect(rendererSrc).toContain('Full diff · no changes since');
   });
 
   test('get-pr-info serves cached metadata from prefetch cache', () => {
@@ -3621,7 +3633,7 @@ describe('PR head fetch resilience (Cannot fetch head commit regression)', () =>
 
   test('git-dependent steps are skipped when the clone cannot supply the PR', () => {
     const src = generateDiffSrc();
-    expect(src).toContain('if (localGitReady && reviewInfo && baseSha && headSha)');
+    expect(src).toContain('if (localGitReady && reviewInfo && baseSha && headSha && !sinceReviewEmpty)');
     expect(src).toContain('if (localGitReady && (!diffOut || !diffOut.trim()))');
     expect(src).toContain('if (localGitReady && !(await shaExists(baseSha)))');
   });

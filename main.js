@@ -301,23 +301,27 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
     // keeps the UI honest about long runs instead of killing them.
     const child = spawn(appConfig.aiCommand, args);
     const sender = event.sender;
+    const startedAt = Date.now();
     const state = newHermesStreamState(); // answer text + activity steps from the JSON feed
     let lineBuf = ''; // partial stdout line waiting for its newline
     let stderrText = '';
     let lastEmit = 0;
     let lastChunkAt = Date.now();
-    let heartbeatSent = false;
+    let lastHeartbeatAt = 0;
     let closed = false; // guards resolve() from firing twice
 
     // Liveness heartbeat: if the agent goes quiet for >120s but is still alive,
-    // nudge the UI ("still working…") — purely informational, never a kill.
+    // nudge the UI with elapsed time ("still working… 2m 13s") every 30s — purely
+    // informational, never a kill. The long gaps are the model thinking between
+    // tool calls, which can run minutes without emitting a single line.
     const heartbeat = setInterval(() => {
       if (closed) { clearInterval(heartbeat); return; }
       const quietFor = Date.now() - lastChunkAt;
-      if (quietFor > 120000 && !heartbeatSent) {
-        heartbeatSent = true;
-        log('INFO', `[ai-chat] No output for ${Math.round(quietFor / 1000)}s — heartbeat to keep UI honest (agent still alive).`);
-        try { sender.send('ai-chat-stream', { text: '', steps: [], heartbeat: true, done: false }); } catch {}
+      if (quietFor > 120000 && Date.now() - lastHeartbeatAt >= 30000) {
+        lastHeartbeatAt = Date.now();
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        log('INFO', `[ai-chat] No output for ${Math.round(quietFor / 1000)}s (elapsed ${elapsed}s) — heartbeat to keep UI honest (agent still alive).`);
+        try { sender.send('ai-chat-stream', { text: '', steps: [], heartbeat: true, elapsed, done: false }); } catch {}
       }
     }, 30000);
 
@@ -1221,13 +1225,29 @@ async function generateDiff(prNumber, repoKey) {
     throw new Error('Could not get PR HEAD SHA');
   }
 
-  const baseSha = baseResult.baseSha;
+  let baseSha = baseResult.baseSha;
   const reviewInfo = baseResult.reviewInfo;
+  // True when the PR head IS the commit your last review was on: the
+  // since-review range is empty because nobody has pushed since. Arrow-navigation
+  // back to an already-reviewed PR always lands here, so it falls back to the
+  // full PR diff (base re-resolved to the PR's base branch) instead of failing.
+  let sinceReviewEmpty = false;
 
   log('INFO', '[generateDiff] baseSha:', baseSha ? baseSha.substring(0,7) : 'null', 'headSha:', headSha ? headSha.substring(0,7) : 'null', 'reviewInfo:', reviewInfo ? JSON.stringify(reviewInfo) : 'null', 'diffMode:', diffMode);
 
   if (baseSha === headSha) {
-    throw new Error('No new commits since last review');
+    if (reviewInfo) {
+      const apiBase = (await execPromise(
+        `gh api repos/${owner}/${repo}/pulls/${prNumber} --jq '.base.sha'`,
+        { timeout: 20000 }
+      )).trim();
+      if (!apiBase) throw new Error('No new commits since last review');
+      log('INFO', `[generateDiff] No commits since the review of ${reviewInfo.date} — falling back to the full PR diff`);
+      baseSha = apiBase;
+      sinceReviewEmpty = true;
+    } else {
+      throw new Error('No new commits since last review');
+    }
   }
 
   // Fetch the PR branch and master in parallel (both independent network calls).
@@ -1355,8 +1375,9 @@ async function generateDiff(prNumber, repoKey) {
   // If reviewing since last review, build the net diff from ONLY the PR's own
   // commits after the review (see computeSinceReviewNetDiff). This matches
   // GitHub's "changes since your review" — placeholder states cancel out while
-  // master's merged-in changes are excluded.
-  if (localGitReady && reviewInfo && baseSha && headSha) {
+  // master's merged-in changes are excluded. Skipped when the review commit
+  // IS the head (no new commits): the full PR diff is being shown instead.
+  if (localGitReady && reviewInfo && baseSha && headSha && !sinceReviewEmpty) {
     try {
       // Get files changed by PR commits after the review (non-merge commits only).
       // allCommits was already fetched by getChangedFilesViaCommits (with
@@ -1479,7 +1500,7 @@ async function generateDiff(prNumber, repoKey) {
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);
   fs.writeFileSync(tmpPath, diffOut);
 
-  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData, sinceReviewRef };
+  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData, sinceReviewRef, sinceReviewEmpty };
 }
 
 // Clean up stale since-review temp refs (refs/tmp/pr-reviewer-since-review/*).
@@ -1980,6 +2001,7 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     prOtherAuthors,
     prBody,
     reviewInfo: result.reviewInfo,
+    sinceReviewEmpty: !!result.sinceReviewEmpty,
     filesChanged: result.filesChanged,
     repoPath: getLocalRepoPath(repo),
     baseSha: result.baseSha || null,
@@ -2345,6 +2367,7 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       prOtherAuthors: (prData.otherAuthors || []).filter(a => a !== prData.author),
       prBody: prData.body || '',
       reviewInfo: result.reviewInfo,
+      sinceReviewEmpty: !!result.sinceReviewEmpty,
       filesChanged: result.filesChanged,
       repoPath: getLocalRepoPath(repo),
       baseSha: result.baseSha || null,
