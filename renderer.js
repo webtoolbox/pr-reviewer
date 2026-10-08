@@ -56,7 +56,6 @@ const reviewBodyContainer = document.getElementById('review-body-container');
 const reviewBody = document.getElementById('review-body');
 const btnApprove = document.getElementById('btn-approve');
 const btnRequestChanges = document.getElementById('btn-request-changes');
-const btnComment = document.getElementById('btn-comment');
 const btnOpen = document.getElementById('btn-open');
 const commentNav = document.getElementById('comment-nav');
 const commentNavLabel = document.getElementById('comment-nav-label');
@@ -594,7 +593,6 @@ function loadDiff(content, filePath) {
   if (filePath) currentFilePath = filePath;
   comments = [];
   fileCommentCounts = {};
-  if (btnPrComment) btnPrComment.classList.remove('active'); // reset comment indicator for new PR
   parsedDiff = parseDiffLineNumbers(content);
 
   emptyState.style.display = 'none';
@@ -2494,13 +2492,10 @@ function showSafeToast(message, type = 'info', duration = 8000) {
 function resetButtons() {
   btnApprove.disabled = false;
   btnRequestChanges.disabled = false;
-  btnComment.disabled = false;
   btnApprove.style.opacity = '1';
   btnRequestChanges.style.opacity = '1';
-  btnComment.style.opacity = '1';
   btnApprove.textContent = 'Approve';
   btnRequestChanges.textContent = 'Request Changes';
-  btnComment.textContent = 'Comment';
 }
 
 function updateCommentCount() {
@@ -2508,10 +2503,8 @@ function updateCommentCount() {
   const count = comments.filter(c => !c.isAiTagged).length;
   if (count > 0) {
     btnRequestChanges.innerHTML = `Request Changes <span class="badge">${count}</span>`;
-    btnComment.innerHTML = `Comment <span class="badge">${count}</span>`;
   } else {
     btnRequestChanges.textContent = 'Request Changes';
-    btnComment.textContent = 'Comment';
   }
 }
 
@@ -2625,9 +2618,6 @@ async function submitReview(eventType) {
     if (askCount > 0) msg += ` (${askCount} AI responses received)`;
     showToast(msg, 'success', 6000);
 
-    // If a PR comment was submitted via the header comment button, mark it active
-    if (review.body && btnPrComment) btnPrComment.classList.add('active');
-
     // Toast for AI messages sent
     if (aiCount > 0) {
       showToast(`✓ ${aiCount} comment${aiCount > 1 ? 's' : ''} sent to AI agent`, 'info', 6000);
@@ -2651,10 +2641,8 @@ async function submitReview(eventType) {
 
     btnApprove.disabled = true;
     btnRequestChanges.disabled = true;
-    btnComment.disabled = true;
     btnApprove.style.opacity = '0.5';
     btnRequestChanges.style.opacity = '0.5';
-    btnComment.style.opacity = '0.5';
 
     // Submit directly to GitHub if PR number is available
     if (review.prNumber && window.electronAPI.submitGitHubReview) {
@@ -2827,18 +2815,14 @@ if (btnOpen) btnOpen.addEventListener('click', async () => {
 btnApprove.addEventListener('click', () => submitReview('approve'));
 
 btnRequestChanges.addEventListener('click', () => submitReview('request_changes'));
-// Comment lives in the ⋮ menu — dismiss the menu before posting so the
-// auto-advanced next PR doesn't open with the menu still on screen.
-btnComment.addEventListener('click', () => {
-  const menu = document.getElementById('more-menu');
-  if (menu) menu.style.display = 'none';
-  submitReview('comment');
-});
+// Submitting a review as "commented" now lives in the All Comments panel
+// (there is no toolbar comment icon and no Comment row in the ⋮ menu any more).
 
-// Auto-save on review body change + reflect active (blue) state while a comment is being written
+// Auto-save on review body change + keep the All Comments panel in sync while a
+// comment on the whole PR is being written in the dialog
 reviewBody.addEventListener('input', () => {
   autoSaveDraft();
-  if (btnPrComment) btnPrComment.classList.toggle('active', reviewBody.value.trim().length > 0);
+  if (commentsPanelOpen) renderCommentsList();
 });
 
 // Keyboard shortcuts
@@ -2939,17 +2923,17 @@ document.addEventListener('keydown', (e) => {
   // Cmd+Shift+C — Comment (submit review as comment, not line comment)
   if (key === 'C' && isMeta && e.shiftKey) {
     e.preventDefault();
-    if (!btnComment.disabled) btnComment.click();
+    if (!btnApprove.disabled) submitReview('comment');
     return;
   }
 
-  // Cmd+Shift+Enter — Submit review (uses whichever button is focused or last used type)
+  // Cmd+Shift+Enter — Submit review as comment (unless a line comment form is open)
   if (e.key === 'Enter' && isMeta && e.shiftKey) {
     e.preventDefault();
     const form = document.getElementById('active-comment-form');
     if (!form) {
       // No line comment open — submit review as comment
-      if (!btnComment.disabled) submitReview('comment');
+      if (!btnApprove.disabled) submitReview('comment');
     }
     return;
   }
@@ -3725,10 +3709,6 @@ async function exportAsMarkdown() {
 function showReviewButtons() {
   btnApprove.style.display = 'inline-block';
   btnRequestChanges.style.display = 'inline-block';
-  // Comment sits in the ⋮ menu, so it renders as a flex row there
-  btnComment.style.display = 'flex';
-  // The PR-wide comment icon only makes sense when a PR is loaded
-  if (btnPrComment) btnPrComment.style.display = 'inline-flex';
 }
 
 // ===================== PR LOADING =====================
@@ -3835,11 +3815,9 @@ function showAllDoneState() {
   if (fileSidebarList) fileSidebarList.innerHTML = '';
   // No more PRs → hide the files-changed sidebar entirely (nothing to list)
   if (fileSidebar) fileSidebar.style.display = 'none';
-  // Hide the review buttons + PR comment icon — there's no PR to act on
-  if (btnPrComment) btnPrComment.style.display = 'none';
+  // Hide the review buttons — there's no PR to act on
   if (btnApprove) btnApprove.style.display = 'none';
   if (btnRequestChanges) btnRequestChanges.style.display = 'none';
-  if (btnComment) btnComment.style.display = 'none';
   prInfo.innerHTML = '<strong style="color:#3fb950">All caught up!</strong>';
   resetButtons();
   closeReviewHistoryDropdown();
@@ -5506,9 +5484,24 @@ function openCommentsPanel() {
   renderCommentsList();
 }
 
-// Build the combined list: submitted (inlineReviewComments) + pending (comments).
+// Build the combined list: PR-level comment + submitted (inlineReviewComments)
+// + pending (comments).
 function getCombinedCommentList() {
   const items = [];
+
+  // Comment on the entire pull request (the review body — written in the
+  // "Add PR Comment" dialog). Shown first because it applies to the whole PR.
+  const prText = reviewBody ? reviewBody.value.trim() : '';
+  if (prText) {
+    items.push({
+      kind: 'pr-pending',
+      author: 'me',
+      location: 'PR',
+      text: prText,
+      uid: null,
+      pr: true
+    });
+  }
 
   // Submitted GitHub inline review comments
   for (const c of inlineReviewComments || []) {
@@ -5537,30 +5530,54 @@ function getCombinedCommentList() {
   return items;
 }
 
+// How many comments are waiting to go to GitHub: local pending comments that
+// aren't AI-tagged, plus a comment on the whole PR if one was written.
+function countPendingComments() {
+  const local = (comments || []).filter(c => !c.isAiTagged).length;
+  const prLevel = reviewBody && reviewBody.value.trim() ? 1 : 0;
+  return local + prLevel;
+}
+
+// Header: title + count, with the "+" that opens the Add PR Comment dialog.
+// The right-hand span wraps both so `.comments-panel-header span:last-child`
+// (used by tests) keeps pointing at the count group.
+function commentsPanelHeader(countText) {
+  return `<div class="comments-panel-header">
+      <span>All Comments</span>
+      <span class="c-header-right">
+        <span style="font-size:11px;color:#8b949e">${countText}</span>
+        <button class="c-add-pr" title="Add a comment to the entire pull request" aria-label="Add PR comment">+</button>
+      </span>
+    </div>`;
+}
+
 function renderCommentsList() {
   if (!commentsPanel) return;
   const items = getCombinedCommentList();
   const countText = `${items.length} comment${items.length !== 1 ? 's' : ''}`;
 
   if (items.length === 0) {
-    commentsPanel.innerHTML = `<div class="comments-panel-header"><span>All Comments</span><span style="font-size:11px;color:#8b949e">${countText}</span></div><div class="comments-empty">No comments yet.</div>`;
+    commentsPanel.innerHTML = commentsPanelHeader(countText) + `<div class="comments-empty">No comments yet.</div>`;
+    wireCommentsPanel();
     return;
   }
 
-  let html = `<div class="comments-panel-header"><span>All Comments</span><span style="font-size:11px;color:#8b949e">${countText}</span></div>`;
+  let html = commentsPanelHeader(countText);
   for (const item of items) {
-    const badge = item.kind === 'pending' ? '<span class="c-badge pending">pending</span>'
+    const badge = (item.kind === 'pending' || item.kind === 'pr-pending') ? '<span class="c-badge pending">pending</span>'
       : item.kind === 'ai' ? '<span class="c-badge pending ai">AI</span>'
       : '';
     const loc = item.location ? `<span class="c-location">${escapeHtml(item.location)}</span>` : '';
     // Only the user's own (local) comments carry a uid and can be deleted from
-    // here. Rows for comments already submitted to GitHub are read-only.
+    // here. Rows for comments already submitted to GitHub are read-only, and
+    // the PR-level row is edited by reopening the dialog (its text is the
+    // review body, not a deletable line comment).
     const canDelete = item.uid !== null && item.uid !== undefined && item.uid !== '';
     const deleteBtn = canDelete ? `<button class="c-delete" title="Delete comment" aria-label="Delete comment">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h11M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4 4.5l.7 8.2a1.5 1.5 0 0 0 1.5 1.3h3.6a1.5 1.5 0 0 0 1.5-1.3l.7-8.2M6.5 7v4M9.5 7v4"/></svg>
       </button>` : '';
     html += `
-      <div class="comment-list-item" data-comment-loc="${escapeHtml(item.location || '')}" data-comment-uid="${item.uid !== null && item.uid !== undefined ? item.uid : ''}">
+      <div class="comment-list-item" data-comment-loc="${escapeHtml(item.location || '')}" data-comment-uid="${item.uid !== null && item.uid !== undefined ? item.uid : ''}"${item.pr ? ' data-comment-pr="1" title="Click to edit"' : ''}>
         <div class="c-main">
           <span class="c-author">${escapeHtml(item.author)}</span>${loc}${badge}
           <div class="c-text">${escapeHtml(item.text)}</div>
@@ -5568,11 +5585,46 @@ function renderCommentsList() {
         ${deleteBtn}
       </div>`;
   }
-  commentsPanel.innerHTML = html;
 
-  // Click a comment to scroll to its line in the diff
+  // Submit button — only shown while something is waiting to be posted, and it
+  // posts the review as "commented" (the toolbar has no comment button).
+  if (countPendingComments() > 0) {
+    html += `<div class="comments-panel-footer">
+        <button class="c-submit-review" title="Post your pending comments to GitHub as a review comment">Submit Comment</button>
+      </div>`;
+  }
+
+  commentsPanel.innerHTML = html;
+  wireCommentsPanel();
+}
+
+// Click handlers for the freshly rendered panel contents.
+function wireCommentsPanel() {
+  // "+" — open the dialog that adds a comment on the entire PR
+  commentsPanel.querySelectorAll('.c-add-pr').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPrCommentDialog();
+    });
+  });
+
+  // Submit — posts the review as commented
+  commentsPanel.querySelectorAll('.c-submit-review').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeCommentsPanel();
+      submitReview('comment');
+    });
+  });
+
+  // Click a comment to scroll to its line in the diff (the PR-level row
+  // reopens the dialog so the comment can be edited)
   commentsPanel.querySelectorAll('.comment-list-item').forEach(el => {
     el.addEventListener('click', () => {
+      if (el.dataset.commentPr === '1') {
+        openPrCommentDialog();
+        return;
+      }
       const loc = el.dataset.commentLoc || '';
       // Find the matching marker (pending local comment marker or inline comment)
       const filePart = loc.split(':')[0];
@@ -5659,9 +5711,14 @@ function findFileWrapper(filePath) {
 
 // Close comments panel on outside click
 document.addEventListener('click', (e) => {
-  if (commentsPanelOpen && commentsPanel && !commentsPanel.contains(e.target) && e.target !== btnComments) {
-    closeCommentsPanel();
-  }
+  if (!commentsPanelOpen || !commentsPanel) return;
+  if (commentsPanel.contains(e.target) || e.target === btnComments) return;
+  // The click that dismisses the Add PR Comment dialog must not also close the
+  // dropdown the dialog hands the user back to (its buttons live outside the panel).
+  const dialog = document.getElementById('pr-comment-panel');
+  const backdrop = document.getElementById('pr-comment-backdrop');
+  if (dialog && (dialog.contains(e.target) || (backdrop && e.target === backdrop))) return;
+  closeCommentsPanel();
 });
 
 function renderCommitsList() {
@@ -7045,7 +7102,7 @@ function executeSingleVoiceAction(action) {
     }
 
     case 'submit_comment': {
-      if (!btnComment.disabled) btnComment.click();
+      if (!btnApprove.disabled) submitReview('comment');
       break;
     }
 
@@ -7612,36 +7669,56 @@ if (aiChatClear) {
   });
 }
 
-// ===================== OVERALL PR COMMENT PANEL =====================
+// ===================== ADD PR COMMENT DIALOG =====================
+// A comment on the whole pull request is written in a dialog opened from the
+// "+" in the All Comments panel — there is no toolbar comment icon any more.
+// The text lives in #review-body, which submitReview() sends as the review body.
 
-const btnPrComment = document.getElementById('btn-pr-comment');
 const prCommentPanel = document.getElementById('pr-comment-panel');
+const prCommentBackdrop = document.getElementById('pr-comment-backdrop');
+const prCommentAdd = document.getElementById('pr-comment-add');
+const prCommentCancel = document.getElementById('pr-comment-cancel');
+const prCommentClose = document.getElementById('pr-comment-close');
 
-function positionPrCommentPanel() {
-  if (!btnPrComment || !prCommentPanel) return;
-  const rect = btnPrComment.getBoundingClientRect();
-  if (!rect || !rect.width) return;
-  prCommentPanel.style.right = (window.innerWidth - rect.right) + 'px';
-  prCommentPanel.style.top = (rect.bottom + 4) + 'px';
+function openPrCommentDialog() {
+  if (!prCommentPanel) return;
+  // The comments list reopens when the dialog closes, so the user lands back
+  // on the dropdown they pressed "+" in.
+  closeCommentsPanel();
+  if (prCommentBackdrop) prCommentBackdrop.classList.add('open');
+  prCommentPanel.classList.add('open');
+  if (reviewBody) setTimeout(() => reviewBody.focus(), 0);
 }
 
-if (btnPrComment && prCommentPanel) {
-  // Enable @mention dropdown in the header PR comment box (same as line/file comments)
+function closePrCommentDialog() {
+  if (prCommentPanel) prCommentPanel.classList.remove('open');
+  if (prCommentBackdrop) prCommentBackdrop.classList.remove('open');
+  // Back to the comments dropdown (re-renders, so a just-added PR comment
+  // shows up as a pending row right away)
+  if (btnComments && btnComments.style.display !== 'none') openCommentsPanel();
+}
+
+if (prCommentPanel) {
+  // Enable @mention dropdown in the PR comment box (same as line/file comments)
   if (reviewBody) setupMentionHandling(reviewBody);
-  btnPrComment.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const isOpen = prCommentPanel.classList.contains('open');
-    if (!isOpen) {
-      positionPrCommentPanel();
-      setTimeout(() => { if (reviewBody) reviewBody.focus(); }, 0);
-    }
-    prCommentPanel.classList.toggle('open');
-  });
-  document.addEventListener('click', (e) => {
-    const inMentionDropdown = mentionState.dropdown && mentionState.dropdown.contains(e.target);
-    if (prCommentPanel.classList.contains('open') &&
-        !prCommentPanel.contains(e.target) && e.target !== btnPrComment && !inMentionDropdown) {
-      prCommentPanel.classList.remove('open');
+
+  if (prCommentCancel) prCommentCancel.addEventListener('click', closePrCommentDialog);
+  if (prCommentClose) prCommentClose.addEventListener('click', closePrCommentDialog);
+  if (prCommentBackdrop) prCommentBackdrop.addEventListener('click', closePrCommentDialog);
+  if (prCommentAdd) prCommentAdd.addEventListener('click', closePrCommentDialog);
+
+  // "Add Comment" stays disabled until there is something to add
+  const syncAddDisabled = () => {
+    if (prCommentAdd) prCommentAdd.disabled = !reviewBody.value.trim();
+  };
+  if (reviewBody) reviewBody.addEventListener('input', syncAddDisabled);
+  syncAddDisabled();
+
+  // Escape closes the dialog (the global handler only knows about the
+  // inline comment form)
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && prCommentPanel.classList.contains('open')) {
+      closePrCommentDialog();
     }
   });
 }

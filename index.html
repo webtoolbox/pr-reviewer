@@ -30,8 +30,6 @@
     #btn-approve:hover:not(:disabled) { background: #2ea043; }
     #btn-request-changes { background: #da3633; color: #fff; border-color: #da3633; border-radius: 9999px; }
     #btn-request-changes:hover:not(:disabled) { background: #f85149; }
-    #btn-comment { background: #21262d; color: #c9d1d9; border-radius: 9999px; }
-    #btn-comment:hover:not(:disabled) { background: #30363d; }
     #btn-open { background: #21262d; color: #c9d1d9; }
     #btn-open:hover { background: #30363d; }
 
@@ -53,7 +51,6 @@
     }
     #btn-approve .badge { background: rgba(255,255,255,0.25); color: #fff; }
     #btn-request-changes .badge { background: rgba(255,255,255,0.25); color: #fff; }
-    #btn-comment .badge { background: #58a6ff; color: #0d1117; }
 
     /* Voice mic button */
     #btn-voice {
@@ -82,19 +79,19 @@
       to { transform: rotate(360deg); }
     }
 
-    /* AI chat + PR comment icon buttons (match the voice/mic button) */
-    #btn-ai-chat, #btn-pr-comment {
+    /* AI chat icon button (match the voice/mic button) */
+    #btn-ai-chat {
       background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
       padding: 4px 6px; border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: all 0.15s;
     }
-    #btn-ai-chat:hover, #btn-pr-comment:hover { background: #30363d; }
-    #btn-ai-chat svg, #btn-pr-comment svg { width: 14px; height: 14px; fill: none; stroke: #c9d1d9; }
+    #btn-ai-chat:hover { background: #30363d; }
+    #btn-ai-chat svg { width: 14px; height: 14px; fill: none; stroke: #c9d1d9; }
 
-    /* Rows in the ⋮ "More actions" menu: Comment + Close Pull Request.
+    /* Rows in the ⋮ "More actions" menu: Close Pull Request.
        Scoped to #more-menu so #review-bar button (9999px radius, 6px 14px
-       padding) and #btn-comment's own pill colors can't round these rows. */
+       padding) can't round these rows. */
     #more-menu .more-menu-item {
       display: flex; align-items: center; gap: 8px;
       width: 100%; text-align: left; padding: 8px 16px;
@@ -107,11 +104,6 @@
     #more-menu .more-menu-item:disabled:hover { background: none; }
     #more-menu .more-menu-item svg { width: 14px; height: 14px; fill: none; stroke: currentColor; flex-shrink: 0; }
     #more-menu .more-menu-item span { white-space: nowrap; }
-
-    /* Blue "a PR comment is written" state on the PR comment icon */
-    #btn-pr-comment.active { background: #388bfd; color: #fff; border-color: #388bfd; }
-    #btn-pr-comment.active:hover { background: #316dca; }
-    #btn-pr-comment.active svg { stroke: #fff; }
 
     /* Voice transcript bar */
     #voice-transcript {
@@ -826,6 +818,9 @@
       border-bottom: 1px solid #21262d; position: sticky; top: 0;
       background: #161b22; display: flex; justify-content: space-between; align-items: center;
     }
+    #comments-panel .comments-panel-header .c-header-right {
+      display: flex; align-items: center; gap: 8px;
+    }
     #comments-panel .comment-list-item {
       padding: 8px 14px; border-bottom: 1px solid #21262d;
       transition: background 0.1s; cursor: pointer;
@@ -861,6 +856,27 @@
     #comments-panel .comments-empty {
       padding: 20px; text-align: center; color: #8b949e; font-size: 13px;
     }
+    /* "+" in the panel header — opens the dialog that adds a comment on the
+       whole pull request (there is no toolbar comment icon any more). */
+    #comments-panel .c-add-pr {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      width: 22px; height: 22px; border-radius: 6px; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 15px; line-height: 1; padding: 0; flex-shrink: 0;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    #comments-panel .c-add-pr:hover { background: #30363d; border-color: #58a6ff; color: #58a6ff; }
+    /* Footer holds the submit button, shown only while something is pending */
+    #comments-panel .comments-panel-footer {
+      position: sticky; bottom: 0; background: #161b22;
+      border-top: 1px solid #21262d; padding: 8px 14px;
+    }
+    #comments-panel .c-submit-review {
+      width: 100%; padding: 7px 12px; border-radius: 9999px; cursor: pointer;
+      background: #238636; border: 1px solid #238636; color: #fff;
+      font-size: 13px; font-weight: 500; transition: background 0.15s;
+    }
+    #comments-panel .c-submit-review:hover { background: #2ea043; }
 
     /* AI chat panel */
     #ai-chat-panel {
@@ -923,26 +939,54 @@
     #ai-chat-panel::-webkit-scrollbar { width: 6px; }
     #ai-chat-panel::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 
-    /* Overall PR comment panel */
+    /* Overall PR comment dialog — opened from the "+" in the All Comments panel */
+    #pr-comment-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 1099;
+      background: rgba(1, 4, 9, 0.65);
+    }
+    #pr-comment-backdrop.open { display: block; }
     #pr-comment-panel {
-      display: none; position: fixed; z-index: 1001;
+      display: none; position: fixed; z-index: 1100;
+      left: 50%; top: 50%; transform: translate(-50%, -50%);
       background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-      width: 440px; max-width: 90vw; flex-direction: column; overflow: hidden;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+      width: 560px; max-width: 90vw; flex-direction: column; overflow: hidden;
     }
     #pr-comment-panel.open { display: flex; }
     #pr-comment-panel .pr-comment-header {
       padding: 10px 14px; font-size: 13px; color: #c9d1d9; font-weight: 600;
       border-bottom: 1px solid #21262d; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
     }
+    #pr-comment-panel .pr-comment-close {
+      background: none; border: none; color: #8b949e; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 6px;
+    }
+    #pr-comment-panel .pr-comment-close:hover { color: #c9d1d9; background: #21262d; }
     #pr-comment-panel .shortcut-hint { color: #8b949e; font-weight: 400; font-size: 11px; }
     #pr-comment-panel #review-body {
-      width: 100%; box-sizing: border-box; min-height: 120px; max-height: 300px;
+      width: 100%; box-sizing: border-box; min-height: 140px; max-height: 40vh;
       resize: vertical; background: #0d1117; border: none; border-radius: 0;
       color: #c9d1d9; padding: 12px 14px; font-size: 13px; line-height: 1.5; outline: none;
     }
     #pr-comment-panel #review-body:focus { background: #0d1117; }
     #pr-comment-panel #review-body::placeholder { color: #484f58; }
+    #pr-comment-panel .pr-comment-footer {
+      display: flex; justify-content: flex-end; gap: 8px;
+      padding: 10px 14px; border-top: 1px solid #21262d; flex-shrink: 0;
+    }
+    #pr-comment-panel .pr-comment-footer button {
+      padding: 6px 14px; border-radius: 9999px; font-size: 13px; font-weight: 500;
+      cursor: pointer; border: 1px solid #30363d; background: #21262d; color: #c9d1d9;
+      transition: background 0.15s;
+    }
+    #pr-comment-panel .pr-comment-footer button:hover { background: #30363d; }
+    #pr-comment-panel .pr-comment-footer #pr-comment-add {
+      background: #238636; border-color: #238636; color: #fff;
+    }
+    #pr-comment-panel .pr-comment-footer #pr-comment-add:hover { background: #2ea043; }
+    #pr-comment-panel .pr-comment-footer #pr-comment-add:disabled {
+      background: #21262d; border-color: #30363d; color: #8b949e; cursor: not-allowed;
+    }
 
     /* Commit tooltip on line numbers */
     .commit-tooltip {
@@ -1982,8 +2026,6 @@
       #btn-approve:hover { background: #218838; }
       #btn-request-changes { background: #cf222e; color: #ffffff; }
       #btn-request-changes:hover { background: #a40e26; }
-      #btn-comment { background: #0969da; color: #ffffff; }
-      #btn-comment:hover { background: #0550ae; }
 
       /* Inline review comments */
       .inline-review-comments { background: #f6f8fa; border-left-color: #0969da; }
@@ -2020,6 +2062,11 @@
       #comments-panel .comment-list-item .c-badge.ai { background: #e5e6ff; color: #3730a3; border-color: #818cf8; }
       #comments-panel .comment-list-item .c-badge.file { background: #dafbe1; color: #0a6629; border-color: #238636; }
       #comments-panel .comments-empty { color: #656d76; }
+      #comments-panel .c-add-pr { background: #f6f8fa; border-color: #d0d7de; color: #57606a; }
+      #comments-panel .c-add-pr:hover { background: #ddf4ff; border-color: #0969da; color: #0969da; }
+      #comments-panel .comments-panel-footer { background: #ffffff; border-top-color: #d0d7de; }
+      #comments-panel .c-submit-review { background: #2da44e; border-color: #2da44e; color: #ffffff; }
+      #comments-panel .c-submit-review:hover { background: #218838; }
       #commits-panel .commit-author { color: #656d76; }
 
       /* AI chat panel */
@@ -2044,9 +2091,17 @@
 
       /* Overall PR comment panel */
       #pr-comment-panel { background: #f6f8fa; border: 1px solid #d0d7de; }
-      #pr-comment-panel .pr-comment-header { border-bottom-color: #d0d7de; }
+      #pr-comment-panel .pr-comment-header { border-bottom-color: #d0d7de; color: #24292f; }
+      #pr-comment-panel .pr-comment-close { color: #57606a; }
+      #pr-comment-panel .pr-comment-close:hover { color: #24292f; background: #eaeef2; }
       #pr-comment-panel #review-body { background: #ffffff; color: #24292f; }
       #pr-comment-panel #review-body::placeholder { color: #8c959f; }
+      #pr-comment-panel .pr-comment-footer { border-top-color: #d0d7de; background: #f6f8fa; }
+      #pr-comment-panel .pr-comment-footer button { background: #ffffff; border-color: #d0d7de; color: #24292f; }
+      #pr-comment-panel .pr-comment-footer button:hover { background: #f3f4f6; }
+      #pr-comment-panel .pr-comment-footer #pr-comment-add { background: #2da44e; border-color: #2da44e; color: #ffffff; }
+      #pr-comment-panel .pr-comment-footer #pr-comment-add:hover { background: #218838; }
+      #pr-comment-backdrop { background: rgba(140, 149, 159, 0.45); }
 
       /* Review buttons container */
       #review-body-container { background: #f6f8fa; border-top: 1px solid #d0d7de; }
@@ -2119,12 +2174,6 @@
     </div>
     <button id="btn-request-changes" style="display:none" title="Cmd+Shift+R">Request Changes</button>
     <button id="btn-approve" style="display:none" title="Cmd+Shift+A">Approve</button>
-    <button id="btn-pr-comment" style="display:none" title="Add PR comment" aria-label="Add PR comment">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-        <path d="M8 9h8"/><path d="M8 13h5"/>
-      </svg>
-    </button>
     <button id="btn-voice" title="Voice mode (Ctrl+B)" aria-label="Voice mode">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
@@ -2143,12 +2192,17 @@
         <path d="M8 16h8"/>
       </svg>
     </button>
+    <div id="pr-comment-backdrop"></div>
     <div id="pr-comment-panel">
       <div class="pr-comment-header">
-        <span>PR Comment</span>
-        <span class="shortcut-hint">(Cmd+Shift+Enter to submit)</span>
+        <span>Add PR Comment</span>
+        <button id="pr-comment-close" class="pr-comment-close" title="Close" aria-label="Close">×</button>
       </div>
-      <textarea id="review-body" placeholder="Add a review comment (optional)..."></textarea>
+      <textarea id="review-body" placeholder="Add a comment to the entire pull request..."></textarea>
+      <div class="pr-comment-footer">
+        <button id="pr-comment-cancel">Cancel</button>
+        <button id="pr-comment-add">Add Comment</button>
+      </div>
     </div>
     <span id="comment-nav" style="display:none">
       <button id="btn-prev-comment" title="Previous comment (Cmd+[)" aria-label="Previous comment">◀</button>
@@ -2157,7 +2211,6 @@
     </span>
     <button id="btn-more" title="More actions" aria-label="More actions">⋮</button>
     <div id="more-menu" style="display:none;position:absolute;right:20px;top:var(--review-bar-height, 52px);background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 0;z-index:1001;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
-      <button id="btn-comment" class="more-menu-item" style="display:none" title="Post review comment and move to the next PR (Cmd+Shift+C)">Comment</button>
       <button id="menu-close-pr" class="more-menu-item" style="display:block">Close Pull Request</button>
     </div>
 

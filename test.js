@@ -46,18 +46,20 @@ async function runTests() {
   `);
   assert('Diff container visible', diffContainerDisplay === 'block', `display="${diffContainerDisplay}"`);
 
-  // TEST 3: Review body lives in the header PR comment panel (not bottom container)
+  // TEST 3: Review body lives in the Add PR Comment dialog (not bottom container)
   const reviewBodyInPanel = await mainWindow.webContents.executeJavaScript(`
     !!document.getElementById('review-body') &&
-    !!document.getElementById('btn-pr-comment') &&
     !!document.getElementById('pr-comment-panel') &&
+    !!document.getElementById('pr-comment-backdrop') &&
+    !document.getElementById('btn-pr-comment') &&
     !document.getElementById('review-body-container')
   `);
-  assert('Review body in header comment panel', reviewBodyInPanel === true);
+  assert('Review body in Add PR Comment dialog (no toolbar icon)', reviewBodyInPanel === true);
   const prCommentPanelHidden = await mainWindow.webContents.executeJavaScript(`
-    document.getElementById('pr-comment-panel').classList.contains('open') === false
+    document.getElementById('pr-comment-panel').classList.contains('open') === false &&
+    document.getElementById('pr-comment-backdrop').classList.contains('open') === false
   `);
-  assert('PR comment panel hidden by default', prCommentPanelHidden === true);
+  assert('PR comment dialog hidden by default', prCommentPanelHidden === true);
 
   // TEST 4: PR info should show file count
   const prInfoText = await mainWindow.webContents.executeJavaScript(`
@@ -77,11 +79,12 @@ async function runTests() {
   `);
   assert('Request Changes button visible', requestChangesVisible === 'inline-block', `display="${requestChangesVisible}"`);
 
-  // TEST 7: Comment button should be visible (it lives in the ⋮ menu as a row)
-  const commentBtnVisible = await mainWindow.webContents.executeJavaScript(`
-    document.getElementById('btn-comment').style.display
+  // TEST 7: Comment submit moved out of the ⋮ menu into the All Comments panel
+  const commentMoved = await mainWindow.webContents.executeJavaScript(`
+    (!document.getElementById('btn-comment')) &&
+    !!document.getElementById('menu-close-pr')
   `);
-  assert('Comment button visible', commentBtnVisible === 'flex', `display="${commentBtnVisible}"`);
+  assert('Comment button removed from the ⋮ menu', commentMoved === true);
 
   // TEST 8: File list should show files
   const fileNames = await mainWindow.webContents.executeJavaScript(`
@@ -1820,41 +1823,38 @@ async function runTests() {
   `);
   assert('Cmd+Shift+R works with lowercase key (macOS)', shortcutRequestChangesLower === 'clicked', `result: ${shortcutRequestChangesLower}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+C triggers comment submit (uppercase key)
+  // TEST: Keyboard shortcut Cmd+Shift+C submits the review as comment
+  // (the ⋮ menu's Comment row is gone, so the shortcut calls submitReview directly)
   const shortcutComment = await mainWindow.webContents.executeJavaScript(`
     (() => {
-      const btn = document.getElementById('btn-comment');
-      if (!btn) return 'no-button';
-      btn.disabled = false;
-      let clicked = false;
-      const origClick = btn.click.bind(btn);
-      btn.click = () => { clicked = true; origClick(); };
+      const orig = window.submitReview;
+      let called = null;
+      window.submitReview = (type) => { called = type; };
+      document.getElementById('btn-approve').disabled = false;
       document.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'C', code: 'KeyC', metaKey: true, shiftKey: true, bubbles: true
       }));
-      btn.click = origClick;
-      return clicked ? 'clicked' : 'not-clicked';
+      window.submitReview = orig;
+      return called || 'not-called';
     })()
   `);
-  assert('Cmd+Shift+C triggers comment button click', shortcutComment === 'clicked', `result: ${shortcutComment}`);
+  assert('Cmd+Shift+C submits review as comment', shortcutComment === 'comment', `result: ${shortcutComment}`);
 
   // TEST: Keyboard shortcut Cmd+Shift+C with lowercase key (macOS behavior)
   const shortcutCommentLower = await mainWindow.webContents.executeJavaScript(`
     (() => {
-      const btn = document.getElementById('btn-comment');
-      if (!btn) return 'no-button';
-      btn.disabled = false;
-      let clicked = false;
-      const origClick = btn.click.bind(btn);
-      btn.click = () => { clicked = true; origClick(); };
+      const orig = window.submitReview;
+      let called = null;
+      window.submitReview = (type) => { called = type; };
+      document.getElementById('btn-approve').disabled = false;
       document.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'c', code: 'KeyC', metaKey: true, shiftKey: true, bubbles: true
       }));
-      btn.click = origClick;
-      return clicked ? 'clicked' : 'not-clicked';
+      window.submitReview = orig;
+      return called || 'not-called';
     })()
   `);
-  assert('Cmd+Shift+C works with lowercase key (macOS)', shortcutCommentLower === 'clicked', `result: ${shortcutCommentLower}`);
+  assert('Cmd+Shift+C works with lowercase key (macOS)', shortcutCommentLower === 'comment', `result: ${shortcutCommentLower}`);
 
   // TEST: Context expand buttons pass baseSha/headSha
   const contextExpandHasShas = await mainWindow.webContents.executeJavaScript(`
@@ -3414,6 +3414,9 @@ async function runTests() {
       const panel = document.getElementById('comments-panel');
       if (!btn) return { ok: false, error: 'no btn-comments' };
       if (!panel) return { ok: false, error: 'no comments-panel' };
+      // A comment on the whole PR may have been written by an earlier test —
+      // this list should show only the line/file comments set up below.
+      document.getElementById('review-body').value = '';
       // Simulate a pending local comment and a submitted inline comment
       comments = [
         { _uid: 99991, file: 'src/App.js', line: 12, side: 'RIGHT', text: '@Hermes check this', isAiTagged: true, level: 'line' },
@@ -3536,6 +3539,113 @@ async function runTests() {
     !!panelDeleteTest && panelDeleteTest.commentsAfter === 1 &&
       panelDeleteTest.rowsAfter === 2 && panelDeleteTest.deletesAfter === 1,
     JSON.stringify(panelDeleteTest));
+
+  // ===== "+" ADDS A COMMENT ON THE ENTIRE PR =====
+  // The toolbar has no comment icon: the "+" in the All Comments panel opens a
+  // dialog, and after adding, the panel comes back with the new pending row
+  // plus a button that submits the review as commented.
+  const prCommentDialogTest = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const panel = document.getElementById('comments-panel');
+      const dialog = document.getElementById('pr-comment-panel');
+      const backdrop = document.getElementById('pr-comment-backdrop');
+      const addBtn = panel.querySelector('.c-add-pr');
+      if (!addBtn) return { ok: false, error: 'no + button in panel header' };
+
+      addBtn.click();
+      const opened = dialog.classList.contains('open') && backdrop.classList.contains('open') &&
+        !panel.classList.contains('open');
+
+      // Empty dialog keeps "Add Comment" disabled
+      document.getElementById('review-body').value = '';
+      document.getElementById('review-body').dispatchEvent(new Event('input', { bubbles: true }));
+      const addDisabledEmpty = document.getElementById('pr-comment-add').disabled;
+
+      const ta = document.getElementById('review-body');
+      ta.value = 'Looks good overall';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      const addDisabledWithText = document.getElementById('pr-comment-add').disabled;
+
+      document.getElementById('pr-comment-add').click();
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const prRow = panel.querySelector('[data-comment-pr="1"]');
+      return {
+        ok: opened,
+        addDisabledEmpty,
+        addDisabledWithText,
+        dialogClosed: !dialog.classList.contains('open') && !backdrop.classList.contains('open'),
+        panelBackOpen: panel.classList.contains('open'),
+        prRow: !!prRow,
+        prText: (prRow && prRow.querySelector('.c-text') ? prRow.querySelector('.c-text').textContent : ''),
+        prBadgePending: !!(prRow && prRow.querySelector('.c-badge.pending')),
+        submitBtn: !!panel.querySelector('.c-submit-review')
+      };
+    })()
+  `);
+  assert('The "+" in the All Comments panel opens the Add PR Comment dialog',
+    !!prCommentDialogTest && prCommentDialogTest.ok === true,
+    JSON.stringify(prCommentDialogTest));
+  assert('"Add Comment" is disabled while the box is empty',
+    !!prCommentDialogTest && prCommentDialogTest.addDisabledEmpty === true &&
+      prCommentDialogTest.addDisabledWithText === false,
+    JSON.stringify(prCommentDialogTest));
+  assert('After adding, the dialog closes and the comments dropdown comes back',
+    !!prCommentDialogTest && prCommentDialogTest.dialogClosed === true &&
+      prCommentDialogTest.panelBackOpen === true,
+    JSON.stringify(prCommentDialogTest));
+  assert('The whole-PR comment is listed as a pending row',
+    !!prCommentDialogTest && prCommentDialogTest.prRow === true &&
+      prCommentDialogTest.prText === 'Looks good overall' && prCommentDialogTest.prBadgePending === true,
+    JSON.stringify(prCommentDialogTest));
+  assert('A submit button appears while a comment is pending',
+    !!prCommentDialogTest && prCommentDialogTest.submitBtn === true,
+    JSON.stringify(prCommentDialogTest));
+
+  // ===== SUBMIT BUTTON FROM THE PANEL POSTS THE REVIEW AS COMMENTED =====
+  const submitFromPanelTest = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const panel = document.getElementById('comments-panel');
+      const orig = window.submitReview;
+      let called = null;
+      window.submitReview = (type) => { called = type; };
+
+      // Pending comment → button shows and posts as "commented"
+      comments = [{ _uid: 99994, file: 'src/util.js', line: 5, side: 'RIGHT', text: 'pending note', isAiTagged: false, level: 'line' }];
+      renderCommentsList();
+      const btnWithPending = panel.querySelector('.c-submit-review');
+      if (btnWithPending) btnWithPending.click();
+      const calledWithPending = called;
+
+      // Nothing pending → no submit button (and no way to fire it)
+      called = null;
+      comments = [];
+      document.getElementById('review-body').value = '';
+      renderCommentsList();
+      const btnNoPending = panel.querySelector('.c-submit-review');
+
+      window.submitReview = orig;
+      document.getElementById('review-body').value = '';
+      comments = [];
+      renderCommentsList();
+      return {
+        hasButtonWithPending: !!btnWithPending,
+        calledWithPending,
+        hasButtonWithoutPending: !!btnNoPending,
+        panelStillHasAdd: !!panel.querySelector('.c-add-pr')
+      };
+    })()
+  `);
+  assert('Submit button posts the review as comment',
+    !!submitFromPanelTest && submitFromPanelTest.hasButtonWithPending === true &&
+      submitFromPanelTest.calledWithPending === 'comment',
+    JSON.stringify(submitFromPanelTest));
+  assert('Submit button is hidden when nothing is pending',
+    !!submitFromPanelTest && submitFromPanelTest.hasButtonWithoutPending === false,
+    JSON.stringify(submitFromPanelTest));
+  assert('The "+" stays available with an empty comment list',
+    !!submitFromPanelTest && submitFromPanelTest.panelStillHasAdd === true,
+    JSON.stringify(submitFromPanelTest));
 
   // ===== CMD+ENTER WHILE EDITING SAVES IN PLACE =====
   // Cmd+Enter used to call submitComment() directly, which pushed a NEW

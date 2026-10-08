@@ -4382,56 +4382,70 @@ describe('AI Chat and Hermes profile', () => {
     expect(indexHtml).toContain('id="pref-hermes-profile"');
   });
 
-  test('index.html has bot icon for AI chat and separate PR comment button', () => {
+  test('index.html has bot icon for AI chat and a PR comment dialog (no toolbar comment icon)', () => {
     expect(indexHtml).toContain('id="btn-ai-chat"');
-    expect(indexHtml).toContain('id="btn-pr-comment"');
     expect(indexHtml).toContain('id="pr-comment-panel"');
+    expect(indexHtml).toContain('id="pr-comment-backdrop"');
+    // The standalone toolbar comment icon is gone — PR comments are added
+    // from the "+" inside the All Comments panel
+    expect(indexHtml).not.toContain('id="btn-pr-comment"');
     // AI chat button uses a bot/robot icon (rect head + antenna), not a comment bubble
     expect(indexHtml).toContain('aria-label="Chat with AI"');
   });
 
-  test('review-body textarea moved into PR comment panel (bottom container removed)', () => {
-    // #review-body must live in #pr-comment-panel (the header dropdown)
+  test('review-body textarea lives in the Add PR Comment dialog (bottom container removed)', () => {
+    // #review-body must live in #pr-comment-panel (the centered dialog)
     const panelStart = indexHtml.indexOf('id="pr-comment-panel"');
     const panelEnd = indexHtml.indexOf('id="comment-nav"', panelStart);
     const panelBlock = indexHtml.substring(panelStart, panelEnd);
     expect(panelBlock).toContain('id="review-body"');
+    expect(panelBlock).toContain('id="pr-comment-add"');
+    expect(panelBlock).toContain('id="pr-comment-cancel"');
     // The old bottom-of-screen review body container should be gone
     expect(indexHtml).not.toContain('id="review-body-container"');
-    expect(rendererSource).toContain("const btnPrComment = document.getElementById('btn-pr-comment')");
-    expect(rendererSource).toContain('prCommentPanel.classList.toggle');
+    expect(rendererSource).toContain("const prCommentPanel = document.getElementById('pr-comment-panel')");
+    expect(rendererSource).toContain('function openPrCommentDialog()');
+    expect(rendererSource).toContain('function closePrCommentDialog()');
+    // Closing the dialog returns the user to the comments dropdown
+    expect(rendererSource).toMatch(/function closePrCommentDialog\(\) \{[\s\S]*?openCommentsPanel\(\)/);
   });
 
-  test('PR comment button turns blue after a comment is left and resets on new PR', () => {
-    expect(indexHtml).toContain('#btn-pr-comment.active { background: #388bfd');
-    expect(rendererSource).toContain("btnPrComment.classList.add('active')");
-    expect(rendererSource).toContain("btnPrComment.classList.remove('active')");
-    // Blue reflects a comment being written in the box, and resets on PR switch
-    expect(rendererSource).toContain("btnPrComment.classList.toggle('active', reviewBody.value.trim().length > 0)");
+  test('Add PR Comment is opened from a "+" in the All Comments panel', () => {
+    // The "+" button is rendered with the panel header (both the empty and the
+    // populated branch) and wired up after render
+    expect(rendererSource).toContain('class="c-add-pr"');
+    expect(rendererSource).toContain('openPrCommentDialog()');
+    expect(rendererSource).toContain('wireCommentsPanel()');
+    expect(indexHtml).toContain('#comments-panel .c-add-pr {');
+    expect(indexHtml).toContain('#pr-comment-backdrop.open { display: block; }');
   });
 
-  test('PR comment icon stays in the toolbar, Comment submit lives in the ⋮ menu', () => {
-    // The toolbar keeps the "add PR comment" icon; the menu that holds
-    // "Close Pull Request" holds the button that actually posts the review.
+  test('PR-level comment shows as a pending row and a submit button appears', () => {
+    // getCombinedCommentList() puts the whole-PR comment (the review body) first
+    expect(rendererSource).toContain("kind: 'pr-pending'");
+    expect(rendererSource).toContain('function countPendingComments()');
+    // Submit only renders while something is pending, and posts as "commented"
+    expect(rendererSource).toContain('countPendingComments() > 0');
+    expect(rendererSource).toContain('class="c-submit-review"');
+    expect(rendererSource).toMatch(/c-submit-review[\s\S]{0,200}submitReview\('comment'\)/);
+    expect(indexHtml).toContain('#comments-panel .c-submit-review {');
+  });
+
+  test('Comment row removed from the ⋮ menu, Close Pull Request stays', () => {
     const menuStart = indexHtml.indexOf('id="more-menu"');
     expect(menuStart).toBeGreaterThan(-1);
     const menuBlock = indexHtml.substring(menuStart, indexHtml.indexOf('</div>', menuStart));
-    expect(menuBlock).toContain('id="btn-comment"');
+    expect(menuBlock).not.toContain('id="btn-comment"');
     expect(menuBlock).toContain('id="menu-close-pr"');
     expect(menuBlock).toContain('class="more-menu-item"');
-    expect(menuBlock).not.toContain('id="btn-pr-comment"');
-    // The icon lives in the review bar, outside the menu
-    const iconPos = indexHtml.indexOf('id="btn-pr-comment"');
-    expect(iconPos).toBeGreaterThan(-1);
-    expect(iconPos).toBeLessThan(menuStart);
-    // Shared icon-button styling with the AI chat button
-    expect(indexHtml).toContain('#btn-ai-chat, #btn-pr-comment');
+    // No Comment button anywhere anymore (it became the panel submit button)
+    expect(indexHtml).not.toContain('id="btn-comment"');
+    expect(rendererSource).not.toContain("getElementById('btn-comment')");
     // Menu rows are scoped so #review-bar's pill radius can't round them
     expect(indexHtml).toContain('#more-menu .more-menu-item {');
     expect(indexHtml).not.toMatch(/^\s*\.more-menu-item \{/m);
-    // The comment box anchors to the toolbar icon, and posting closes the menu
-    expect(rendererSource).not.toContain('rect = btnMore ? btnMore.getBoundingClientRect() : null');
-    expect(rendererSource).toContain("document.getElementById('more-menu')");
+    // Posting a review as comment no longer routes through the menu
+    expect(rendererSource).not.toContain("const menu = document.getElementById('more-menu')");
   });
 
   test('renderer.js prefFields includes hermesProfile', () => {
