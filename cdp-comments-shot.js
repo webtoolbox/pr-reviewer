@@ -62,8 +62,15 @@ async function main() {
   const state = await ev(`(() => {
     const panel = document.getElementById('comments-panel');
     const foot = panel.querySelector('.comments-panel-footer');
+    const t = panel.querySelector('.comment-list-item .c-text');
+    const cs = t ? getComputedStyle(t) : null;
     return {
       open: panel.classList.contains('open'),
+      btnMoreGone: !document.getElementById('btn-more') && !document.getElementById('more-menu'),
+      whiteSpace: cs ? cs.whiteSpace : null,
+      clipped: t ? t.scrollHeight > t.clientHeight + 1 : null,
+      textHeight: t ? Math.round(t.getBoundingClientRect().height) : null,
+      firstText: t ? t.textContent.slice(0, 70) : null,
       buttons: foot ? [...foot.querySelectorAll('button')].map(b => ({ cls: b.className, text: b.textContent.trim() })) : null,
       rows: panel.querySelectorAll('.comment-list-item').length,
       footerHtml: foot ? foot.outerHTML.replace(/\\s+/g, ' ').slice(0, 400) : null
