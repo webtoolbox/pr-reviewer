@@ -5,6 +5,9 @@ const http = require('http');
 const fs = require('fs');
 
 const OUT = process.argv[2] || '/tmp/comments-footer.png';
+// Optional: a long demo comment, so wrapping can be checked visually.
+const TEXT = process.argv[3] ||
+  'Verified the footer: Close Pull Request sits beside Submit Comment.';
 
 function getTargets() {
   return new Promise((res, rej) => {
@@ -46,7 +49,7 @@ async function main() {
     if (!add) return 'no add button';
     add.click();
     const ta = document.getElementById('review-body');
-    ta.value = 'Verified the footer: Close Pull Request sits beside Submit Comment.';
+    ta.value = ${JSON.stringify(TEXT)};
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     const addBtn = document.getElementById('pr-comment-add');
     if (addBtn.disabled) return 'add still disabled';

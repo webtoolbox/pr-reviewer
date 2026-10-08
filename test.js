@@ -79,12 +79,14 @@ async function runTests() {
   `);
   assert('Request Changes button visible', requestChangesVisible === 'inline-block', `display="${requestChangesVisible}"`);
 
-  // TEST 7: Comment submit moved out of the ⋮ menu into the All Comments panel
+  // TEST 7: Comment submit moved into the All Comments panel, and the ⋮ menu
+  // (whose only row was Close Pull Request) went away with it.
   const commentMoved = await mainWindow.webContents.executeJavaScript(`
     (!document.getElementById('btn-comment')) &&
-    !!document.getElementById('menu-close-pr')
+    (!document.getElementById('btn-more')) &&
+    (!document.getElementById('more-menu'))
   `);
-  assert('Comment button removed from the ⋮ menu', commentMoved === true);
+  assert('Comment button removed and ⋮ menu dropped', commentMoved === true);
 
   // TEST 8: File list should show files
   const fileNames = await mainWindow.webContents.executeJavaScript(`

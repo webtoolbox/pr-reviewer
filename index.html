@@ -33,16 +33,6 @@
     #btn-open { background: #21262d; color: #c9d1d9; }
     #btn-open:hover { background: #30363d; }
 
-    /* Three-dot more menu */
-    #btn-more {
-      background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
-      padding: 4px 8px; border-radius: 9999px; cursor: pointer;
-      font-size: 16px; font-weight: bold; line-height: 1;
-      display: flex; align-items: center; justify-content: center;
-      transition: all 0.15s; letter-spacing: 1px;
-    }
-    #btn-more:hover { background: #30363d; }
-
     /* Badge — matches parent button color */
     .badge {
       display: inline-block; border-radius: 8px; padding: 0 5px;
@@ -88,22 +78,6 @@
     }
     #btn-ai-chat:hover { background: #30363d; }
     #btn-ai-chat svg { width: 14px; height: 14px; fill: none; stroke: #c9d1d9; }
-
-    /* Rows in the ⋮ "More actions" menu: Close Pull Request.
-       Scoped to #more-menu so #review-bar button (9999px radius, 6px 14px
-       padding) can't round these rows. */
-    #more-menu .more-menu-item {
-      display: flex; align-items: center; gap: 8px;
-      width: 100%; text-align: left; padding: 8px 16px;
-      background: none; border: none; color: #c9d1d9;
-      font-size: 13px; cursor: pointer; border-radius: 4px;
-      transition: background 0.15s;
-    }
-    #more-menu .more-menu-item:hover { background: #1c2128; }
-    #more-menu .more-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
-    #more-menu .more-menu-item:disabled:hover { background: none; }
-    #more-menu .more-menu-item svg { width: 14px; height: 14px; fill: none; stroke: currentColor; flex-shrink: 0; }
-    #more-menu .more-menu-item span { white-space: nowrap; }
 
     /* Voice transcript bar */
     #voice-transcript {
@@ -849,9 +823,13 @@
     #comments-panel .comment-list-item .c-badge.pending { background: #3a2d10; color: #e3b341; border: 1px solid #9e6a03; }
     #comments-panel .comment-list-item .c-badge.ai { background: #1f1b3a; color: #a5b4fc; border: 1px solid #3730a3; }
     #comments-panel .comment-list-item .c-badge.file { background: #0f2e1d; color: #3fb950; border: 1px solid #238636; }
+    /* Wrap instead of clipping: comments are often a sentence or two, and the
+       old single-line ellipsis hid everything past the first ~50 characters.
+       pre-wrap keeps the comment's own line breaks, break-word stops long
+       URLs/tokens from running past the panel edge. */
     #comments-panel .comment-list-item .c-text {
       color: #c9d1d9; font-size: 13px; margin-top: 3px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      white-space: pre-wrap; word-break: break-word;
     }
     #comments-panel .comments-empty {
       padding: 20px; text-align: center; color: #8b949e; font-size: 13px;
@@ -2220,11 +2198,6 @@
       <span id="comment-nav-label" style="font-size:12px;color:#8b949e;margin:0 4px"></span>
       <button id="btn-next-comment" title="Next comment (Cmd+])" aria-label="Next comment">▶</button>
     </span>
-    <button id="btn-more" title="More actions" aria-label="More actions">⋮</button>
-    <div id="more-menu" style="display:none;position:absolute;right:20px;top:var(--review-bar-height, 52px);background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 0;z-index:1001;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
-      <button id="menu-close-pr" class="more-menu-item" style="display:block">Close Pull Request</button>
-    </div>
-
     <div id="ai-chat-panel">
       <div class="ai-chat-header">
         <span class="ai-chat-title">Chat with AI</span>

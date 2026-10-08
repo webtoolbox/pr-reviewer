@@ -4471,21 +4471,23 @@ describe('AI Chat and Hermes profile', () => {
     expect(indexHtml).toMatch(/#comments-panel \.comments-panel-footer \{[^}]*display: flex/);
   });
 
-  test('Comment row removed from the ⋮ menu, Close Pull Request stays', () => {
-    const menuStart = indexHtml.indexOf('id="more-menu"');
-    expect(menuStart).toBeGreaterThan(-1);
-    const menuBlock = indexHtml.substring(menuStart, indexHtml.indexOf('</div>', menuStart));
-    expect(menuBlock).not.toContain('id="btn-comment"');
-    expect(menuBlock).toContain('id="menu-close-pr"');
-    expect(menuBlock).toContain('class="more-menu-item"');
+  test('The ⋮ menu is gone; Close Pull Request lives in the panel footer', () => {
+    // The menu's only remaining row was Close Pull Request, and that action now
+    // sits beside Submit Comment in the All Comments panel — so the button,
+    // the dropdown and its wiring were all removed with it.
+    expect(indexHtml).not.toContain('id="btn-more"');
+    expect(indexHtml).not.toContain('id="more-menu"');
+    expect(indexHtml).not.toContain('id="menu-close-pr"');
+    expect(indexHtml).not.toContain('#btn-more');
+    expect(indexHtml).not.toContain('#more-menu');
+    expect(rendererSource).not.toContain("getElementById('btn-more')");
+    expect(rendererSource).not.toContain("getElementById('more-menu')");
     // No Comment button anywhere anymore (it became the panel submit button)
     expect(indexHtml).not.toContain('id="btn-comment"');
     expect(rendererSource).not.toContain("getElementById('btn-comment')");
-    // Menu rows are scoped so #review-bar's pill radius can't round them
-    expect(indexHtml).toContain('#more-menu .more-menu-item {');
-    expect(indexHtml).not.toMatch(/^\s*\.more-menu-item \{/m);
-    // Posting a review as comment no longer routes through the menu
-    expect(rendererSource).not.toContain("const menu = document.getElementById('more-menu')");
+    // The action itself still exists, in the panel footer
+    expect(rendererSource).toContain('class="c-close-pr"');
+    expect(rendererSource).toMatch(/\.c-close-pr[\s\S]{0,300}closePullRequest\(\)/);
   });
 
   test('renderer.js prefFields includes hermesProfile', () => {
@@ -5505,6 +5507,13 @@ describe('All Comments panel delete button and Cmd+Enter edit', () => {
     // Calling submitComment() here is the duplicate-comment bug: during an
     // edit that pushes a second comment and leaves the old one behind.
     expect(chunk).not.toMatch(/^\s*submitComment\(\);\s*$/m);
+  });
+
+  test('comment text wraps instead of being clipped to one line', () => {
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-text \{[^}]*white-space: pre-wrap/);
+    expect(indexHtml).toMatch(/#comments-panel \.comment-list-item \.c-text \{[^}]*word-break: break-word/);
+    // The old single-line clip is gone
+    expect(indexHtml).not.toMatch(/#comments-panel \.comment-list-item \.c-text \{[^}]*text-overflow: ellipsis/);
   });
 
   test('delete button is styled in dark and light themes', () => {
