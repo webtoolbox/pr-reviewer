@@ -3647,6 +3647,51 @@ async function runTests() {
     !!submitFromPanelTest && submitFromPanelTest.panelStillHasAdd === true,
     JSON.stringify(submitFromPanelTest));
 
+  // ===== CLOSE PULL REQUEST BUTTON LIVES NEXT TO SUBMIT =====
+  const closeBtnTest = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const panel = document.getElementById('comments-panel');
+      const origClose = window.closePullRequest;
+      let closed = false;
+      window.closePullRequest = async () => { closed = true; };
+
+      // Pending comment -> Close and Submit sit side by side, Close fires the action
+      comments = [{ _uid: 99995, file: 'src/util.js', line: 7, side: 'RIGHT', text: 'note', isAiTagged: false, level: 'line' }];
+      renderCommentsList();
+      const closeWith = panel.querySelector('.c-close-pr');
+      const submitWith = panel.querySelector('.c-submit-review');
+      const siblings = !!(closeWith && submitWith && closeWith.parentElement === submitWith.parentElement);
+      if (closeWith) closeWith.click();
+      await new Promise(r => setTimeout(r, 50));
+      const closedWithPending = closed;
+      const panelClosed = !panel.classList.contains('open');
+
+      // Nothing pending -> Close is still offered, Submit is not
+      closed = false;
+      comments = [];
+      document.getElementById('review-body').value = '';
+      renderCommentsList();
+      const closeNoPending = panel.querySelector('.c-close-pr');
+      const submitNoPending = panel.querySelector('.c-submit-review');
+
+      // Empty list -> the footer still offers Close
+      if (origClose) window.closePullRequest = origClose;
+      renderCommentsList();
+      const emptyHasClose = !!panel.querySelector('.c-close-pr');
+      return { siblings, closedWithPending, panelClosed,
+        closeNoPending: !!closeNoPending, submitNoPending: !!submitNoPending, emptyHasClose };
+    })()
+  `);
+  assert('Close Pull Request button sits next to Submit Comment',
+    !!closeBtnTest && closeBtnTest.siblings === true && closeBtnTest.closedWithPending === true,
+    JSON.stringify(closeBtnTest));
+  assert('Close Pull Request stays available when nothing is pending',
+    !!closeBtnTest && closeBtnTest.closeNoPending === true && closeBtnTest.submitNoPending === false,
+    JSON.stringify(closeBtnTest));
+  assert('Close Pull Request shows even with no comments at all',
+    !!closeBtnTest && closeBtnTest.emptyHasClose === true,
+    JSON.stringify(closeBtnTest));
+
   // ===== CMD+ENTER WHILE EDITING SAVES IN PLACE =====
   // Cmd+Enter used to call submitComment() directly, which pushed a NEW
   // comment during an edit and left the old one behind — duplicate rows in the

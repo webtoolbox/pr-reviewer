@@ -866,17 +866,26 @@
       transition: background 0.15s, border-color 0.15s;
     }
     #comments-panel .c-add-pr:hover { background: #30363d; border-color: #58a6ff; color: #58a6ff; }
-    /* Footer holds the submit button, shown only while something is pending */
+    /* Footer: Close Pull Request is always offered; Submit sits next to it and
+       only shows while something is waiting to be posted. */
     #comments-panel .comments-panel-footer {
       position: sticky; bottom: 0; background: #161b22;
       border-top: 1px solid #21262d; padding: 8px 14px;
+      display: flex; gap: 8px;
     }
     #comments-panel .c-submit-review {
-      width: 100%; padding: 7px 12px; border-radius: 9999px; cursor: pointer;
+      flex: 1; padding: 7px 12px; border-radius: 9999px; cursor: pointer;
       background: #238636; border: 1px solid #238636; color: #fff;
       font-size: 13px; font-weight: 500; transition: background 0.15s;
     }
     #comments-panel .c-submit-review:hover { background: #2ea043; }
+    #comments-panel .c-close-pr {
+      flex: 1; padding: 7px 12px; border-radius: 9999px; cursor: pointer;
+      background: #21262d; border: 1px solid #30363d; color: #f85149;
+      font-size: 13px; font-weight: 500;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    #comments-panel .c-close-pr:hover { background: rgba(248, 81, 73, 0.15); border-color: #f85149; }
 
     /* AI chat panel */
     #ai-chat-panel {
@@ -2067,6 +2076,8 @@
       #comments-panel .comments-panel-footer { background: #ffffff; border-top-color: #d0d7de; }
       #comments-panel .c-submit-review { background: #2da44e; border-color: #2da44e; color: #ffffff; }
       #comments-panel .c-submit-review:hover { background: #218838; }
+      #comments-panel .c-close-pr { background: #f6f8fa; border-color: #d0d7de; color: #cf222e; }
+      #comments-panel .c-close-pr:hover { background: #ffebe9; border-color: #cf222e; }
       #commits-panel .commit-author { color: #656d76; }
 
       /* AI chat panel */

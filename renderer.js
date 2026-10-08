@@ -5551,13 +5551,26 @@ function commentsPanelHeader(countText) {
     </div>`;
 }
 
+// Footer of the panel: Close Pull Request is always offered (the same action
+// the ⋮ menu has), Submit sits next to it only while something is pending.
+function commentsPanelFooter() {
+  const submit = countPendingComments() > 0
+    ? `<button class="c-submit-review" title="Post your pending comments to GitHub as a review comment">Submit Comment</button>`
+    : '';
+  return `<div class="comments-panel-footer">
+      <button class="c-close-pr" title="Close this pull request">Close Pull Request</button>
+      ${submit}
+    </div>`;
+}
+
 function renderCommentsList() {
   if (!commentsPanel) return;
   const items = getCombinedCommentList();
   const countText = `${items.length} comment${items.length !== 1 ? 's' : ''}`;
 
   if (items.length === 0) {
-    commentsPanel.innerHTML = commentsPanelHeader(countText) + `<div class="comments-empty">No comments yet.</div>`;
+    commentsPanel.innerHTML = commentsPanelHeader(countText)
+      + `<div class="comments-empty">No comments yet.</div>` + commentsPanelFooter();
     wireCommentsPanel();
     return;
   }
@@ -5586,13 +5599,7 @@ function renderCommentsList() {
       </div>`;
   }
 
-  // Submit button — only shown while something is waiting to be posted, and it
-  // posts the review as "commented" (the toolbar has no comment button).
-  if (countPendingComments() > 0) {
-    html += `<div class="comments-panel-footer">
-        <button class="c-submit-review" title="Post your pending comments to GitHub as a review comment">Submit Comment</button>
-      </div>`;
-  }
+  html += commentsPanelFooter();
 
   commentsPanel.innerHTML = html;
   wireCommentsPanel();
@@ -5605,6 +5612,16 @@ function wireCommentsPanel() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       openPrCommentDialog();
+    });
+  });
+
+  // Close Pull Request — same action as the ⋮ menu, offered right where the
+  // reviewer decides what to do with the PR.
+  commentsPanel.querySelectorAll('.c-close-pr').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      closeCommentsPanel();
+      await closePullRequest();
     });
   });
 

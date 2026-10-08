@@ -4462,6 +4462,13 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain('class="c-submit-review"');
     expect(rendererSource).toMatch(/c-submit-review[\s\S]{0,200}submitReview\('comment'\)/);
     expect(indexHtml).toContain('#comments-panel .c-submit-review {');
+    // Close Pull Request sits beside Submit in the footer (always shown)
+    expect(rendererSource).toContain('function commentsPanelFooter()');
+    expect(rendererSource).toContain('class="c-close-pr"');
+    expect(rendererSource).toContain("querySelectorAll('.c-close-pr')");
+    expect(rendererSource).toMatch(/\.c-close-pr[\s\S]{0,300}closePullRequest\(\)/);
+    expect(indexHtml).toContain('#comments-panel .c-close-pr {');
+    expect(indexHtml).toMatch(/#comments-panel \.comments-panel-footer \{[^}]*display: flex/);
   });
 
   test('Comment row removed from the ⋮ menu, Close Pull Request stays', () => {
