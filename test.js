@@ -2220,7 +2220,7 @@ async function runTests() {
       const src = sendAiChat.toString();
       const checks = {
         doneRenders: src.includes("renderAiMarkdown(live, data.text || '(no response)')"),
-        answerRenders: src.includes("renderAiMarkdown(live.querySelector('.ai-chat-answer'), data.text)"),
+        answerRenders: src.includes("renderAiMarkdown(ensureAiAnswer(live), data.text)"),
         fallbackRenders: src.includes('renderAiMarkdown(live, result.response)'),
         plainErrorKept: src.includes("live.textContent = 'Error: ' + data.error")
       };

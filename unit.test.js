@@ -4347,6 +4347,11 @@ describe('AI Chat and Hermes profile', () => {
     expect(rendererSource).toContain("if (role === 'assistant') renderAiMarkdown(el, text)");
     // Code blocks in a reply get syntax colors (hljs is already bundled for diffs)
     expect(rendererSource).toContain('function highlightMarkdownCode(root)');
+    // The "Thinking…" placeholder must never survive above a rendered reply,
+    // and the activity feed must reset per request (dedup is per bubble).
+    expect(rendererSource).toContain('function ensureAiAnswer(live)');
+    expect(rendererSource).toContain("n.textContent.trim() === 'Thinking\\u2026'");
+    expect(rendererSource).toContain('seenSteps = []; // the activity feed belongs to one request, not the session');
     expect(rendererSource).toContain('highlightMarkdownCode(el);');
     expect(rendererSource).toContain("root.querySelectorAll('pre code')");
     expect(rendererSource).toContain('window.hljs.getLanguage(lang)');

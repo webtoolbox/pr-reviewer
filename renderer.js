@@ -7467,9 +7467,25 @@ function renderSteps(targetEl) {
 
 // Clear the AI chat conversation (history + messages panel). Called when a new
 // PR loads or auto-advance moves to the next PR, so stale PR context doesn't linger.
+// Create (once) the answer container inside a live bubble and drop the
+// "Thinking…" placeholder, which otherwise stays as plain text above the reply.
+function ensureAiAnswer(live) {
+  let answer = live.querySelector('.ai-chat-answer');
+  if (!answer) {
+    answer = document.createElement('div');
+    answer.className = 'ai-chat-answer';
+    live.appendChild(answer);
+  }
+  [...live.childNodes].forEach((n) => {
+    if (n.nodeType === Node.TEXT_NODE && n.textContent.trim() === 'Thinking\u2026') n.remove();
+  });
+  return answer;
+}
+
 function clearAiChat() {
   aiChatEpoch++;
   aiChatHistory = [];
+  seenSteps = []; // the activity feed belongs to one request, not the session
   if (aiChatMessages) aiChatMessages.innerHTML = '';
   if (aiChatBusy) {
     // An in-flight request belongs to the old PR — mark busy so its late response
@@ -7527,6 +7543,10 @@ async function sendAiChat() {
   aiChatBusy = true;
   aiChatSend.disabled = true;
   const myEpoch = aiChatEpoch;
+  // The activity feed is per request: reusing the previous request's rows would
+  // make the dedup think they were already rendered in THIS bubble, so the
+  // "Thinking…" placeholder never got replaced by the step rows.
+  seenSteps = [];
 
   // Live streaming message: created now, updated as chunks arrive via IPC.
   const live = document.createElement('div');
@@ -7557,13 +7577,11 @@ async function sendAiChat() {
       live.classList.add('error');
       if (data.steps && data.steps.length > 0) renderSteps(live);
       if (data.text && data.text.length > 0) {
-        const answer = document.createElement('div');
-        answer.className = 'ai-chat-answer';
+        const answer = ensureAiAnswer(live);
         renderAiMarkdown(answer, data.text);
         const note = document.createElement('div');
         note.className = 'ai-chat-error-note';
         note.textContent = data.error;
-        live.appendChild(answer);
         live.appendChild(note);
       } else {
         live.textContent = 'Error: ' + data.error;
@@ -7588,12 +7606,7 @@ async function sendAiChat() {
       // to the top. Just push it into history so follow-ups have context.
       // If steps were shown, keep them above the final answer for context.
       if (seenSteps && seenSteps.length > 0) {
-        if (!live.querySelector('.ai-chat-answer')) {
-          const answer = document.createElement('div');
-          answer.className = 'ai-chat-answer';
-          live.appendChild(answer);
-        }
-        renderAiMarkdown(live.querySelector('.ai-chat-answer'), data.text || '(no response)');
+        renderAiMarkdown(ensureAiAnswer(live), data.text || '(no response)');
       } else {
         renderAiMarkdown(live, data.text || '(no response)');
       }
@@ -7608,12 +7621,7 @@ async function sendAiChat() {
         const stepsChanged = JSON.stringify(data.steps) !== JSON.stringify(seenSteps);
         seenSteps = data.steps;
         if (stepsChanged) renderSteps(live);
-        if (!live.querySelector('.ai-chat-answer')) {
-          const answer = document.createElement('div');
-          answer.className = 'ai-chat-answer';
-          live.appendChild(answer);
-        }
-        renderAiMarkdown(live.querySelector('.ai-chat-answer'), data.text);
+        renderAiMarkdown(ensureAiAnswer(live), data.text);
       } else {
         renderAiMarkdown(live, data.text);
       }
