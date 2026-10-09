@@ -935,17 +935,48 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
         // an unrelated master feature, as a PR change). Taking the base version
         // keeps merge-borne master content out of the net diff; the PR's real
         // changes are re-applied by its later (non-conflicting) commits.
+        //
+        // Resolve PATH BY PATH. `git checkout --ours -- a b c` aborts the WHOLE
+        // command as soon as any one path has no ours stage (a file master
+        // merged in after the review has stages 1+3 only, "does not have our
+        // version"), and the abort was swallowed — so a single such path left
+        // the conflict markers of EVERY conflicted file in the tree, staged by
+        // the `git add -A` below and rendered as a diff (PR #6967 showed
+        // `<<<<<<< HEAD` / `>>>>>>> ...` blocks that GitHub has no trace of).
         const conflicted = await execPromise(
-          `git diff --name-only --diff-filter=U`,
+          `git diff --name-only -z --diff-filter=U`,
           { cwd: worktreePath }
         ).catch(() => '');
-        const files = conflicted.split('\n').filter(Boolean);
+        const files = String(conflicted || '').split('\0').filter(Boolean);
         if (files.length === 0) {
           // No conflicted paths reported but cherry-pick still failed (e.g.
           // a commit that deletes a file we also have). Take the base side.
           await execPromise(`git checkout --ours -- .`, { cwd: worktreePath }).catch(() => {});
         } else {
-          await execPromise(`git checkout --ours -- ${files.map(f => JSON.stringify(f)).join(' ')}`, { cwd: worktreePath }).catch(() => {});
+          const unmerged = await execPromise(`git ls-files -u -z`, { cwd: worktreePath }).catch(() => '');
+          // "<mode> <sha> <stage>\0<path>\0" — stage 2 is "ours".
+          const oursPaths = new Set();
+          for (const entry of String(unmerged || '').split('\0')) {
+            const m = entry.match(/^\S+ \S+ (\d)\t(.+)$/);
+            if (m && m[1] === '2') oursPaths.add(m[2]);
+          }
+          const kept = files.filter(f => oursPaths.has(f));
+          const absent = files.filter(f => !oursPaths.has(f));
+          if (kept.length > 0) {
+            await execPromise(
+              `git checkout --ours -- ${kept.map(f => JSON.stringify(f)).join(' ')}`,
+              { cwd: worktreePath }
+            ).catch(() => {});
+          }
+          // No review-base version of this path: "ours" there means the file
+          // does not exist at the review base (master merged it in later), so
+          // it stays out of the net diff instead of keeping its markers.
+          for (const file of absent) {
+            await execPromise(`git rm -f -- ${JSON.stringify(file)}`, { cwd: worktreePath }).catch(() =>
+              execPromise(`git update-index --force-remove -- ${JSON.stringify(file)}`, { cwd: worktreePath }).catch(() => {})
+            );
+          }
+          log('WARN', `[since-review] replay ${String(sha).slice(0, 8)} conflicted in ${files.length} file(s), kept the review base for ${kept.length} and dropped ${absent.length}: ${files.join(', ')}`);
         }
         await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
       }

@@ -2995,6 +2995,87 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(funcSrc).toContain('git add -A');
   });
 
+  test('conflict resolution runs per path, so one path without an ours stage cannot abort the rest', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    // PR #6967: `git checkout --ours -- a b c` fails for the WHOLE list when
+    // any path has no stage 2 ("does not have our version" — a file master
+    // merged in after the review), the failure was swallowed, and git add -A
+    // staged the conflict markers into the rendered diff.
+    expect(funcSrc).toContain('git diff --name-only -z --diff-filter=U');
+    // stage 2 is "ours" — paths are split on that before any checkout
+    expect(funcSrc).toContain('git ls-files -u -z');
+    expect(funcSrc).toContain("m[1] === '2'");
+    expect(funcSrc).toContain('const kept = files.filter(f => oursPaths.has(f))');
+    // the old one-shot checkout of EVERY conflicted path is gone
+    expect(funcSrc).not.toContain('git checkout --ours -- ${files.map');
+    expect(funcSrc).toContain('git checkout --ours -- ${kept.map');
+    // a path with no review-base version is dropped instead of keeping markers
+    expect(funcSrc).toContain('git rm -f --');
+    // conflicts are logged, not swallowed
+    expect(funcSrc).toContain('conflicted in ${files.length} file(s)');
+  });
+
+  test('REAL GIT: a conflicted replay leaves no conflict markers in the net diff', async () => {
+    const { exec, execSync } = require('child_process');
+    // Load the real function out of main.js (it only depends on execPromise,
+    // log, path, os and fs), then replay a conflict it must survive.
+    const execSrc = mainSource.substring(
+      mainSource.indexOf('function execPromise('),
+      mainSource.indexOf('\n// Helper: paginate')
+    );
+    const fnStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const fnSrc = mainSource.substring(fnStart, mainSource.indexOf('function changedFilesFromDiff(', fnStart));
+    const execPromise = new Function('exec', `return (${execSrc})`)(exec);
+    const logs = [];
+    const compute = new Function('execPromise', 'log', 'path', 'os', 'fs', `return (${fnSrc})`)(
+      execPromise, (...a) => logs.push(a.join(' ')), path, os, fs
+    );
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-reviewer-conflict-'));
+    const sh = (cmd) => execSync(cmd, { cwd: tmp, stdio: 'pipe' });
+    try {
+      sh('git init -q && git config user.email test@example.com && git config user.name Test && git config commit.gpgsign false');
+      fs.writeFileSync(path.join(tmp, 'keep.txt'), 'one\ntwo\n');
+      fs.writeFileSync(path.join(tmp, 'absent.txt'), 'alpha\n');
+      sh('git add -A && git commit -q -m base');
+      // Review base: edits keep.txt and drops absent.txt (the file master
+      // would only merge in later, so it has no stage 2 during the replay).
+      fs.writeFileSync(path.join(tmp, 'keep.txt'), 'one\ntwo-BASE\n');
+      fs.unlinkSync(path.join(tmp, 'absent.txt'));
+      sh('git add -A && git commit -q -m "review base"');
+      const baseSha = execSync('git rev-parse HEAD', { cwd: tmp, encoding: 'utf8' }).trim();
+      // The picked commit sits on top of the base's parent: it conflicts on
+      // both files, and also makes one clean change that must survive.
+      sh('git checkout -q -b picked HEAD~1');
+      fs.writeFileSync(path.join(tmp, 'keep.txt'), 'one\ntwo-PICKED\n');
+      fs.writeFileSync(path.join(tmp, 'absent.txt'), 'alpha\nPICKED-LINE\n');
+      fs.writeFileSync(path.join(tmp, 'clean.txt'), 'PICKED-CLEAN\n');
+      sh('git add -A && git commit -q -m "picked"');
+      const pickSha = execSync('git rev-parse HEAD', { cwd: tmp, encoding: 'utf8' }).trim();
+
+      const result = await compute(tmp, baseSha, [pickSha]);
+      const diff = result.diff || '';
+      // PR #6967 rendered `<<<<<<< HEAD` / `>>>>>>> ...` blocks GitHub does
+      // not have: one path without an ours stage aborted the whole checkout.
+      expect(diff).not.toMatch(/^<{7}/m);
+      expect(diff).not.toMatch(/^={7}/m);
+      expect(diff).not.toMatch(/^>{7}/m);
+      // conflicted file keeps the REVIEW BASE version, not the picked one
+      expect(diff).not.toContain('two-PICKED');
+      expect(diff).not.toContain('PICKED-LINE');
+      // the non-conflicting change in the very same commit still lands
+      expect(diff).toContain('PICKED-CLEAN');
+      // and the conflict is reported instead of being swallowed
+      expect(logs.join('\n')).toContain('conflicted in 2 file(s)');
+      expect(result.sinceReviewRef).toBeTruthy();
+    } finally {
+      try { execSync('git worktree prune --expire now', { cwd: tmp, stdio: 'pipe' }); } catch { /* nothing */ }
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60000);
+
   test('diffs the worktree against the review base', () => {
     const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
     const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
