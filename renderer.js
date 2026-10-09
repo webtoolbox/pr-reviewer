@@ -566,6 +566,47 @@ function getLineNumber(lineElement, isRight) {
 
 // ===================== LOAD DIFF =====================
 
+// GitHub shows a change as a block of removed lines followed by a block of
+// added lines. diff2html pairs them row by row (-, +, -, +), which reads like a
+// line-by-line comparison and hides the shape of the change. This re-groups
+// every contiguous run of changed rows so it reads the way GitHub does. Line
+// numbers, word highlights and comment buttons all travel with their own row,
+// so reordering keeps them intact. The split view is left alone: it already
+// shows the two sides side by side.
+function regroupChangedRows(scope) {
+  if (currentDiffViewMode === 'split') return;
+  const root = scope || diffContainer;
+  for (const tbody of root.querySelectorAll('tbody')) {
+    const rows = Array.from(tbody.rows);
+    let i = 0;
+    while (i < rows.length) {
+      if (!changedRowKind(rows[i])) { i++; continue; }
+      let j = i;
+      while (j < rows.length && changedRowKind(rows[j])) j++;
+      const run = rows.slice(i, j);
+      const removed = run.filter(r => changedRowKind(r) === 'del');
+      const added = run.filter(r => changedRowKind(r) === 'ins');
+      if (removed.length && added.length) {
+        const after = rows[j] || null;
+        run.forEach(r => tbody.removeChild(r));
+        removed.concat(added).forEach(r => tbody.insertBefore(r, after));
+      }
+      i = j;
+    }
+  }
+}
+
+// A row's kind lives on its line-number cell: d2h-del (removed), d2h-ins
+// (added). Context rows (d2h-cntx), hunk headers (d2h-info) and rows we add
+// ourselves (comment markers, comment form) return null and act as boundaries.
+function changedRowKind(row) {
+  const cell = row.cells && row.cells[0];
+  if (!cell) return null;
+  if (cell.classList.contains('d2h-del')) return 'del';
+  if (cell.classList.contains('d2h-ins')) return 'ins';
+  return null;
+}
+
 function loadDiff(content, filePath) {
   console.log('[loadDiff] Called with', content ? content.length : 0, 'chars, filePath:', filePath);
   hideDiffLoading(); // The new diff has arrived — remove the loading indicator
@@ -618,6 +659,7 @@ function loadDiff(content, filePath) {
   }, typeof window.hljs !== 'undefined' ? window.hljs : undefined);
   diff2htmlUi.draw();
   diff2htmlUi.fileListToggle(false);
+  regroupChangedRows(diffContainer);
   highlightUnrecognizedFiles();
 
   const fileCount = (content.match(/diff --git/g) || []).length;
@@ -1913,6 +1955,8 @@ function renderSingleFileInPlace(fileName, fileDiff) {
 
   // Swap in the new wrapper (keeps the same position in the container)
   oldWrapper.replaceWith(newWrapper);
+  // Same GitHub-style grouping as the full render (see regroupChangedRows)
+  regroupChangedRows(newWrapper);
 
   // Re-apply post-processing to the new wrapper only
   newWrapper.querySelectorAll('.context-expand-btn').forEach(b => b.remove());
@@ -4815,6 +4859,7 @@ function renderFilteredDiff() {
   }, typeof window.hljs !== 'undefined' ? window.hljs : undefined);
   diff2htmlUi.draw();
   diff2htmlUi.fileListToggle(false);
+  regroupChangedRows(document.getElementById('diff-container'));
 
   // Post-process: highlight Perl files that diff2html didn't recognize
   // (.cgi is mapped already, but extensionless Perl scripts need detection)

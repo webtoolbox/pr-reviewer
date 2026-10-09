@@ -3934,6 +3934,68 @@ async function runTests() {
     !/origin\/master --depth=1/.test(emptyDiffRetryInMain),
     'retry block present, no depth-1 re-shallow');
 
+  // ===== GITHUB-STYLE CHANGE GROUPS =====
+  // diff2html pairs removed/added lines row by row (-, +, -, + ...), which
+  // reads like a line-by-line comparison instead of a change. The renderer
+  // must regroup each run the way GitHub shows it: every removed line first,
+  // then every added line.
+  const blocksDiff = fs.readFileSync(path.join(__dirname, 'fixtures', 'blocks.diff'), 'utf8');
+  await mainWindow.webContents.executeJavaScript(`
+    loadDiff(${JSON.stringify(blocksDiff)});
+  `);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const blockGrouping = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const kind = (row) => {
+        const cell = row.cells && row.cells[0];
+        if (!cell) return null;
+        if (cell.classList.contains('d2h-del')) return 'del';
+        if (cell.classList.contains('d2h-ins')) return 'ins';
+        return null;
+      };
+      const orders = [];
+      let interleaved = 0;
+      for (const tbody of document.querySelectorAll('#diff-container tbody')) {
+        const rows = Array.from(tbody.rows);
+        let i = 0;
+        while (i < rows.length) {
+          if (!kind(rows[i])) { i++; continue; }
+          let j = i;
+          while (j < rows.length && kind(rows[j])) j++;
+          const seq = rows.slice(i, j).map(kind);
+          if (seq.includes('del') && seq.includes('ins')) {
+            orders.push(seq.join(','));
+            const firstIns = seq.indexOf('ins');
+            if (seq.slice(firstIns).includes('del')) interleaved++;
+          }
+          i = j;
+        }
+      }
+      return {
+        orders: orders.sort(),
+        interleaved,
+        delRows: document.querySelectorAll('#diff-container td.d2h-code-linenumber.d2h-del').length,
+        insRows: document.querySelectorAll('#diff-container td.d2h-code-linenumber.d2h-ins').length
+      };
+    })()
+  `);
+  assert('Changed lines group like GitHub (removed block, then added block)',
+    blockGrouping.interleaved === 0 &&
+      JSON.stringify(blockGrouping.orders) === JSON.stringify([
+        'del,del,del,ins,ins,ins,ins',
+        'del,del,ins,ins,ins,ins,ins,ins,ins'
+      ]),
+    JSON.stringify(blockGrouping));
+  assert('Every removed and added line still renders after regrouping',
+    blockGrouping.delRows === 5 && blockGrouping.insRows === 11,
+    JSON.stringify(blockGrouping));
+
+  // Leave the suite on the fixture diff, exactly as we found it
+  await mainWindow.webContents.executeJavaScript(`
+    loadDiff(${JSON.stringify(diffContent)});
+  `);
+  await new Promise(resolve => setTimeout(resolve, 500));
+
   // Summary
   log('');
   log('='.repeat(50));

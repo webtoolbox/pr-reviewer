@@ -1,0 +1,33 @@
+diff --git a/modules/Members/Themes.pm b/modules/Members/Themes.pm
+index 1111111..2222222 100644
+--- a/modules/Members/Themes.pm
++++ b/modules/Members/Themes.pm
+@@ -460,6 +460,11 @@ sub theme_css_is_stale {
+   my $skin = shift;
+   my $user_skin = $DB(mb)->selectrow_hashref("SELECT skin_id, edited, last_update, less_variables FROM user_skins WHERE uid='$global{uid}' AND skin_id= ?");
+-  my $stale = $user_skin->{edited} &&
+-    $user_skin->{last_update} < $skin->{last_update};
++  my $less_file = "/www/data/less/$skin->{skin_name}/main.less";
++  my $css_file  = "/www/data/users/tools/$settings{username}/main.css";
++  my $stale = (!-e $css_file ||
++    (stat($css_file))[9] < (stat($less_file))[9]);
++  if ($stale) {
++    compileLESS($skin, $user_skin);
++  }
+   return $stale;
+ }
+diff --git a/lib/themes.pm b/lib/themes.pm
+index aaaaaaa..bbbbbbb 100644
+--- a/lib/themes.pm
++++ b/lib/themes.pm
+@@ -10,6 +10,7 @@ sub compile_skin {
+   my $str = shift;
+-  $str =~ s/\s+/ /g;
+-  $str =~ s/^ +//;
+-  $str =~ s/ +$//;
++  $str =~ s/[ \t]+/ /g;
++  $str =~ s/^ +//mg;
++  $str =~ s/ +$//mg;
++  $str = trim($str);
+   return $str;
+ }

@@ -4556,6 +4556,25 @@ describe('AI Chat and Hermes profile', () => {
     expect(indexHtml).toContain('Submit open comment form / Add PR Comment');
   });
 
+  test('changed lines are regrouped GitHub-style after every render', () => {
+    // diff2html pairs removed/added rows one by one (-, +, -, +). The renderer
+    // must regroup each run: every removed line, then every added line.
+    expect(rendererSource).toContain('function regroupChangedRows(');
+    expect(rendererSource).toContain('function changedRowKind(');
+    // removed rows first, added rows after — the GitHub block order
+    expect(rendererSource).toContain('removed.concat(added).forEach(r => tbody.insertBefore(r, after));');
+    // a row's kind comes from the diff2html line-number cell
+    expect(rendererSource).toContain("cell.classList.contains('d2h-del')");
+    expect(rendererSource).toContain("cell.classList.contains('d2h-ins')");
+    // split view already shows both sides side by side
+    expect(rendererSource).toContain("if (currentDiffViewMode === 'split') return;");
+    // wired into every render path: loadDiff, renderFilteredDiff, in-place swap
+    expect(rendererSource.match(/regroupChangedRows\(/g).length).toBe(4); // 1 definition + 3 calls
+    expect(rendererSource).toContain('regroupChangedRows(diffContainer);');
+    expect(rendererSource).toContain('regroupChangedRows(document.getElementById(\'diff-container\'));');
+    expect(rendererSource).toContain('regroupChangedRows(newWrapper);');
+  });
+
   test('review shortcuts are single letters: Cmd+A approve, Cmd+R changes, Cmd+C comment', () => {
     // Approve / request changes / comment lost their Shift modifier
     expect(rendererSource).toMatch(/key === 'A' && isMeta && !e\.shiftKey && !isEditableTarget\(e\.target\)/);
