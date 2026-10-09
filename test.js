@@ -3604,6 +3604,52 @@ async function runTests() {
     !!prCommentDialogTest && prCommentDialogTest.submitBtn === true,
     JSON.stringify(prCommentDialogTest));
 
+  // ===== CMD+ENTER SUBMITS THE ADD PR COMMENT DIALOG =====
+  // Cmd+Enter in the dialog used to do nothing; it now clicks "Add Comment"
+  // (skipped while the box is empty, since the button is disabled there).
+  const cmdEnterDialogTest = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const dialog = document.getElementById('pr-comment-panel');
+      const backdrop = document.getElementById('pr-comment-backdrop');
+      const panel = document.getElementById('comments-panel');
+      const ta = document.getElementById('review-body');
+
+      // Fresh state — clear the PR comment left by the test above
+      ta.value = '';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      renderCommentsList();
+
+      openPrCommentDialog();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const opened = dialog.classList.contains('open');
+
+      // Empty box: Cmd+Enter must not submit
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const stillOpenEmpty = dialog.classList.contains('open');
+
+      ta.value = 'Sent with Cmd+Enter';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const prRow = panel.querySelector('[data-comment-pr="1"]');
+      return {
+        opened,
+        stillOpenEmpty,
+        closed: !dialog.classList.contains('open') && !backdrop.classList.contains('open'),
+        prText: prRow && prRow.querySelector('.c-text') ? prRow.querySelector('.c-text').textContent : ''
+      };
+    })()
+  `);
+  assert('Cmd+Enter opens nothing extra: dialog opens normally and empty box does not submit',
+    !!cmdEnterDialogTest && cmdEnterDialogTest.opened === true && cmdEnterDialogTest.stillOpenEmpty === true,
+    JSON.stringify(cmdEnterDialogTest));
+  assert('Cmd+Enter in the Add PR Comment dialog submits it',
+    !!cmdEnterDialogTest && cmdEnterDialogTest.closed === true &&
+      cmdEnterDialogTest.prText === 'Sent with Cmd+Enter',
+    JSON.stringify(cmdEnterDialogTest));
+
   // ===== SUBMIT BUTTON FROM THE PANEL POSTS THE REVIEW AS COMMENTED =====
   const submitFromPanelTest = await mainWindow.webContents.executeJavaScript(`
     (async () => {

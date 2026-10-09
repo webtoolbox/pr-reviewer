@@ -4465,6 +4465,19 @@ describe('AI Chat and Hermes profile', () => {
     expect(indexHtml).toContain('#pr-comment-backdrop.open { display: block; }');
   });
 
+  test('Cmd+Enter submits the Add PR Comment dialog', () => {
+    // The global shortcut handler checks the dialog first (it is modal), then
+    // falls back to the inline comment form
+    expect(rendererSource).toMatch(
+      /e\.key === 'Enter' && isMeta && !e\.shiftKey[\s\S]{0,400}?prCommentPanel\.classList\.contains\('open'\)/
+    );
+    // Empty box keeps the button disabled, so Cmd+Enter must not submit either
+    expect(rendererSource).toContain('if (prCommentAdd && !prCommentAdd.disabled) prCommentAdd.click();');
+    // The dialog and the shortcut list both advertise it
+    expect(indexHtml).toContain('title="Add Comment (Cmd+Enter)"');
+    expect(indexHtml).toContain('Submit open comment form / Add PR Comment');
+  });
+
   test('PR-level comment shows as a pending row and a submit button appears', () => {
     // getCombinedCommentList() puts the whole-PR comment (the review body) first
     expect(rendererSource).toContain("kind: 'pr-pending'");
@@ -5512,7 +5525,11 @@ describe('All Comments panel delete button and Cmd+Enter edit', () => {
   test('Cmd+Enter clicks the open form Save button, never submitComment directly', () => {
     const start = rendererSource.indexOf('// Cmd+Enter');
     expect(start).toBeGreaterThan(-1);
-    const chunk = rendererSource.substring(start, rendererSource.indexOf('return;', start));
+    // The branch ends at the first return AFTER the inline-form lookup — the
+    // Add PR Comment dialog branch above it has its own earlier return.
+    const formIdx = rendererSource.indexOf("const form = document.getElementById('active-comment-form')", start);
+    expect(formIdx).toBeGreaterThan(-1);
+    const chunk = rendererSource.substring(start, rendererSource.indexOf('return;', formIdx));
     expect(chunk).toContain("e.key === 'Enter' && isMeta");
     expect(chunk).toContain("form.querySelector('#comment-submit')");
     expect(chunk).toContain('submitBtn.click()');

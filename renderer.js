@@ -2881,6 +2881,13 @@ document.addEventListener('keydown', (e) => {
   // comment and leave the old one behind (duplicate rows in the All Comments
   // panel).
   if (e.key === 'Enter' && isMeta && !e.shiftKey) {
+    // Add PR Comment dialog is a modal — Cmd+Enter submits it ("Add Comment").
+    // Check it before the inline form so the dialog always wins while open.
+    if (prCommentPanel && prCommentPanel.classList.contains('open')) {
+      e.preventDefault();
+      if (prCommentAdd && !prCommentAdd.disabled) prCommentAdd.click();
+      return;
+    }
     const form = document.getElementById('active-comment-form');
     if (form) {
       e.preventDefault();
