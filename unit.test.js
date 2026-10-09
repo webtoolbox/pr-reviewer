@@ -5424,10 +5424,46 @@ describe('PR freshness and header prefetch', () => {
     expect(src).not.toMatch(/await\s+prefetchNextPrMeta/);
     // Same "next PR in the list" rule as the diff prefetch
     const fnSrc = extractFunctionBody(rendererSource, 'prefetchNextPrMeta');
-    expect(fnSrc).toContain('cachedPrList.find');
+    expect(fnSrc).toContain('nextPendingPrFor(currentPrNumber)');
     expect(fnSrc).toContain('prefetchPrMeta({ prNumber:');
     expect(fnSrc).toContain('.catch(err => console.warn');
     expect(preloadSource).toContain("prefetchPrMeta: (data) => ipcRenderer.invoke('prefetch-pr-meta', data)");
+  });
+
+  test('both prefetches warm the PR that actually follows, not the first pending one', () => {
+    // The old rule — "the first PR that isn't this one" — warmed an unrelated
+    // PR whenever the reviewer was not at the top of the list, so advancing
+    // waited 10-30s while the real next PR was built from scratch.
+    expect(rendererSource).not.toContain('cachedPrList.find(pr => pr.number !== currentPrNumber)');
+    expect(extractFunctionBody(rendererSource, 'prefetchNextPr'))
+      .toContain('nextPendingPrFor(currentPrNumber)');
+    expect(extractFunctionBody(rendererSource, 'prefetchNextPrMeta'))
+      .toContain('nextPendingPrFor(currentPrNumber)');
+    // The next arrow uses the same rule — one source of truth
+    const arrowSrc = rendererSource.substring(
+      rendererSource.indexOf('function gotoNextPr()'),
+      rendererSource.indexOf('function gotoPrevPr()'));
+    expect(arrowSrc).toContain('nextPendingPrFor(currentPrNumber)');
+    expect(arrowSrc).not.toContain('cachedPrList[idx + 1]');
+  });
+
+  test('nextPendingPrFor returns the PR after the current one in every position', () => {
+    // Exercise the real helper: extract its declaration and bind the pending
+    // list it reads from the renderer's global scope.
+    const fnSrc = extractFunctionBody(rendererSource, 'nextPendingPrFor');
+    expect(fnSrc).toContain('function nextPendingPrFor(');
+    const bind = eval('(function(cachedPrList){ const f = ' + fnSrc + '; return f; })');
+    const mkList = () => [{ number: 41 }, { number: 42 }, { number: 43 }];
+    const nextOf = bind(mkList());
+
+    expect(nextOf(41).number).toBe(42);          // first → the one after it
+    expect(nextOf(42).number).toBe(43);          // middle → the one after it
+    expect(nextOf(43)).toBe(null);               // last → nothing after it
+    expect(nextOf(99).number).toBe(41);          // not in the list → first pending
+    expect(nextOf('42').number).toBe(43);        // string/number still resolves
+    expect(bind(null)(41)).toBe(null);           // no list at all
+    expect(bind([])(41)).toBe(null);             // empty list
+    expect(bind([{ number: 7 }])(7)).toBe(null); // single pending PR
   });
 });
 

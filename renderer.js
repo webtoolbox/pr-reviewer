@@ -3931,6 +3931,22 @@ function currentIndexInList() {
   return cachedPrList.findIndex(pr => String(pr.number) === String(currentPrNumber));
 }
 
+// The PR the reviewer lands on next: the one AFTER `prNumber` in the pending
+// list. When `prNumber` is not in the list (opened from search or the PR number
+// box) the first pending PR is next; when it is the last pending PR there is
+// nothing after it. Shared by the next arrow and the background prefetches so
+// they can never disagree: the prefetch used to take "the first PR that isn't
+// this one", which warmed an unrelated PR whenever the reviewer was not on the
+// top of the list, so the real next PR still had to be built from scratch
+// (10-30s of git work) the moment they advanced.
+function nextPendingPrFor(prNumber) {
+  if (!cachedPrList || cachedPrList.length === 0) return null;
+  const idx = cachedPrList.findIndex(pr => String(pr.number) === String(prNumber));
+  if (idx < 0) return cachedPrList[0] || null; // not in the pending list
+  if (idx < cachedPrList.length - 1) return cachedPrList[idx + 1];
+  return null; // last pending PR — nothing after it
+}
+
 // Enable/disable arrows based on whether a prev/next PR actually exists.
 // Arrows still reveal on edge hover, but appear disabled when at the ends.
 // Consults BOTH navigation history (so back/forward work even after a PR was
@@ -3972,15 +3988,9 @@ function gotoNextPr() {
   // very first pending — the user asked to advance forward, and once there are
   // no more PRs after the current one, keep showing the last awaiting one).
   if (!cachedPrList || cachedPrList.length === 0) { showToast('No next PR', 'info'); return; }
-  const idx = currentIndexInList();
-  let nextPr = null;
-  if (idx >= 0 && idx < cachedPrList.length - 1) {
-    nextPr = cachedPrList[idx + 1];
-  } else if (idx < 0) {
-    nextPr = cachedPrList[0]; // current PR not in list → first pending
-  }
-  // If we're at the last PR in the list (idx === length-1), there is no PR
-  // after it — keep the current one on screen and don't wrap around.
+  const nextPr = nextPendingPrFor(currentPrNumber);
+  // If we're at the last PR in the list, there is no PR after it — keep the
+  // current one on screen and don't wrap around.
   if (!nextPr) { showToast('No next PR — you are on the last one', 'info'); return; }
   showDiffLoading('Loading next PR #' + nextPr.number + '…');
   loadPrByNumber(nextPr.number, nextPr.repo)
@@ -4214,10 +4224,12 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
   }
 }
 
-// Prefetch the next PR in the cached list so it loads instantly when auto-advancing
+// Prefetch the next PR in the cached list so it loads instantly when advancing
+// "next" must mean the SAME PR the next arrow and auto-advance go to — see
+// nextPendingPrFor. Warming any other PR (the old "first PR that isn't this
+// one" rule) left the real next PR unbuilt, so advancing waited 10-30s.
 function prefetchNextPr(currentPrNumber, currentRepoKey) {
-  if (!cachedPrList || cachedPrList.length === 0) return;
-  const nextPr = cachedPrList.find(pr => pr.number !== currentPrNumber);
+  const nextPr = nextPendingPrFor(currentPrNumber);
   if (!nextPr) return;
   if (!window.electronAPI.prefetchPr) return;
   console.log('[prefetch] Starting background fetch for next PR #' + nextPr.number);
@@ -4237,8 +4249,7 @@ function prefetchNextPr(currentPrNumber, currentRepoKey) {
 // and may still be running when the reviewer advances, while this finishes in
 // about half a second. Fire and forget.
 function prefetchNextPrMeta(currentPrNumber, currentRepoKey) {
-  if (!cachedPrList || cachedPrList.length === 0) return;
-  const nextPr = cachedPrList.find(pr => pr.number !== currentPrNumber);
+  const nextPr = nextPendingPrFor(currentPrNumber);
   if (!nextPr) return;
   if (!window.electronAPI.prefetchPrMeta) return;
   console.log('[prefetch] Warming metadata for next PR #' + nextPr.number);

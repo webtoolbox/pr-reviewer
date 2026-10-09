@@ -2799,21 +2799,25 @@ async function runTests() {
   `);
   assert('closePullRequest uses the forward rule (not list[0])', closeUsesHelper === 'ok', `result: ${closeUsesHelper}`);
 
-  // TEST: next-arrow advances forward and stops at the last PR (no wrap)
+  // TEST: next-arrow advances forward and stops at the last PR (no wrap).
+  // The forward rule lives in nextPendingPrFor — one source of truth shared
+  // with auto-advance and the background prefetches.
   const nextArrowForward = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const src = gotoNextPr.toString();
-      // Must advance to idx+1 when there is one.
-      const hasForward = src.includes('cachedPrList[idx + 1]');
+      // The arrow delegates to the shared rule instead of re-deriving it
+      const delegated = src.includes('nextPendingPrFor(currentPrNumber)');
       // Must stay on the last PR (no wrap-around to start): the last-PR case
       // leaves nextPr null and returns with a toast instead of resetting to 0.
       const staysLast = src.includes('No next PR — you are on the last one');
-      // The cachedPrList[0] line is allowed ONLY as the "not in list" fallback,
-      // not as a wrap-around. Verify it sits inside an idx<0 guard (i.e. the
-      // current PR was NOT in the pending list).
-      const zeroIdx = src.indexOf('cachedPrList[0]');
-      const zeroOk = zeroIdx === -1 || src.substring(Math.max(0, zeroIdx - 120), zeroIdx).includes('idx < 0');
-      return (hasForward && staysLast && zeroOk) ? 'ok' : 'missing';
+      // The shared rule must advance to idx+1 when there is one...
+      const helper = nextPendingPrFor.toString();
+      const hasForward = helper.includes('cachedPrList[idx + 1]');
+      // ...fall back to the first pending PR ONLY when the current PR is not
+      // in the list, and never wrap when it is the last one.
+      const zeroIdx = helper.indexOf('cachedPrList[0]');
+      const zeroOk = zeroIdx === -1 || helper.substring(Math.max(0, zeroIdx - 160), zeroIdx).includes('idx < 0');
+      return (delegated && staysLast && hasForward && zeroOk) ? 'ok' : 'missing';
     })()
   `);
   assert('next-arrow advances forward and stops at last PR', nextArrowForward === 'ok', `result: ${nextArrowForward}`);
@@ -3933,6 +3937,37 @@ async function runTests() {
     /git fetch origin master:refs\/remotes\/origin\/master --force/.test(emptyDiffRetryInMain) &&
     !/origin\/master --depth=1/.test(emptyDiffRetryInMain),
     'retry block present, no depth-1 re-shallow');
+
+  // ===== NEXT-PR PREFETCH TARGET =====
+  // The background prefetch must warm the PR that FOLLOWS the current one —
+  // the same PR the next arrow and auto-advance go to. It used to take the
+  // first PR in the pending list that wasn't the current one, so reviewing
+  // anything below the top of the list warmed the wrong PR and advancing sat
+  // on a loading spinner for 10-30s.
+  const nextPrRule = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const saved = cachedPrList;
+      cachedPrList = [{ number: 41, repo: 'webtoolbox/Website-Toolbox' },
+                      { number: 42, repo: 'webtoolbox/Website-Toolbox' },
+                      { number: 43, repo: 'webtoolbox/Website-Toolbox' }];
+      const num = (n) => { const p = nextPendingPrFor(n); return p ? p.number : null; };
+      const out = { first: num(41), middle: num(42), last: num(43),
+                    outside: num(99), asText: num('42') };
+      cachedPrList = saved;
+      return out;
+    })()
+  `);
+  assert('Prefetch target is the PR after the current one (all list positions)',
+    nextPrRule.first === 42 && nextPrRule.middle === 43 && nextPrRule.last === null &&
+      nextPrRule.outside === 41 && nextPrRule.asText === 43,
+    JSON.stringify(nextPrRule));
+  const prefetchUsesSharedRule = await mainWindow.webContents.executeJavaScript(`
+    (typeof nextPendingPrFor === 'function' &&
+      prefetchNextPr.toString().includes('nextPendingPrFor(') &&
+      prefetchNextPrMeta.toString().includes('nextPendingPrFor('))
+  `);
+  assert('Both prefetches share the next-PR rule',
+    prefetchUsesSharedRule === true, String(prefetchUsesSharedRule));
 
   // ===== GITHUB-STYLE CHANGE GROUPS =====
   // diff2html pairs removed/added lines row by row (-, +, -, + ...), which
