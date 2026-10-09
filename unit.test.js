@@ -4556,6 +4556,31 @@ describe('AI Chat and Hermes profile', () => {
     expect(indexHtml).toContain('Submit open comment form / Add PR Comment');
   });
 
+  test('review shortcuts are single letters: Cmd+A approve, Cmd+R changes, Cmd+C comment', () => {
+    // Approve / request changes / comment lost their Shift modifier
+    expect(rendererSource).toMatch(/key === 'A' && isMeta && !e\.shiftKey && !isEditableTarget\(e\.target\)/);
+    expect(rendererSource).toMatch(/key === 'R' && isMeta && !e\.shiftKey && !isEditableTarget\(e\.target\)/);
+    expect(rendererSource).toMatch(/key === 'C' && isMeta && !e\.altKey && !isEditableTarget\(e\.target\)/);
+    // Reload moved to Cmd+Shift+R and still re-checks when no PR is loaded
+    expect(rendererSource).toMatch(/key === 'R' && isMeta && e\.shiftKey[\s\S]{0,400}?recheckForNewPrs\(\)/);
+    // The old shifted bindings are gone
+    expect(rendererSource).not.toContain("// Cmd+Shift+A — Approve");
+    expect(rendererSource).not.toContain("// Cmd+Shift+C — Comment");
+    // Copy/select-all are protected while text is selected
+    expect(rendererSource).toContain('function selectedText()');
+    expect(rendererSource).toMatch(/!isEditableTarget\(e\.target\) && !selectedText\(\)/);
+
+    // Tooltips and the shortcuts dialog advertise the same keys
+    expect(indexHtml).toContain('title="Cmd+A"');
+    expect(indexHtml).toContain('title="Cmd+R"');
+    expect(indexHtml).not.toContain('title="Cmd+Shift+A"');
+    expect(indexHtml).not.toContain('title="Cmd+Shift+R">Request Changes');
+    expect(indexHtml).toContain('<kbd>⌘</kbd><kbd>A</kbd><span class="shortcut-desc">Approve PR</span>');
+    expect(indexHtml).toContain('<kbd>⌘</kbd><kbd>R</kbd><span class="shortcut-desc">Request changes</span>');
+    expect(indexHtml).toContain('<kbd>⌘</kbd><kbd>C</kbd><span class="shortcut-desc">Submit review as comment</span>');
+    expect(indexHtml).toContain('<kbd>⌘</kbd><kbd>Shift</kbd><kbd>R</kbd><span class="shortcut-desc">Reload current PR diff</span>');
+  });
+
   test('PR-level comment shows as a pending row and a submit button appears', () => {
     // getCombinedCommentList() puts the whole-PR comment (the review body) first
     expect(rendererSource).toContain("kind: 'pr-pending'");

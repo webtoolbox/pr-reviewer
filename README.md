@@ -318,6 +318,10 @@ When `since-review` mode is active:
 ### Navigation
 - **Cmd+[** / **Cmd+]**: Jump between comments
 - **Cmd+Shift+Enter**: Submit review
+- **Cmd+A**: Approve
+- **Cmd+R**: Request changes
+- **Cmd+C**: Submit review as comment (copy still works inside text boxes)
+- **Cmd+Shift+R**: Reload the PR diff
 - **Cmd+N**: New window
 - **Cmd+O**: Open diff file
 

@@ -1658,7 +1658,7 @@ async function runTests() {
   `);
   assert('Startup auto-load: first PR has required fields', autoLoadFirstPr === 'ok', `result: ${autoLoadFirstPr}`);
 
-  // TEST: Keyboard shortcut Cmd+R reloads current PR with BOTH a toast AND a
+  // TEST: Keyboard shortcut Cmd+Shift+R reloads current PR with BOTH a toast AND a
   // force flag — the force flag is what bypasses the viewed-PR cache, so a
   // reload must always pass force=true to loadPrByNumber.
   const shortcutReload = await mainWindow.webContents.executeJavaScript(`
@@ -1674,16 +1674,16 @@ async function runTests() {
       window.loadPrByNumber = (pr, repo, force) => { loadCalled = true; loadForce = force; return Promise.resolve(); };
       window.showToast = (msg) => { toastMsg = msg; };
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'r', code: 'KeyR', metaKey: true, shiftKey: false, bubbles: true
+        key: 'r', code: 'KeyR', metaKey: true, shiftKey: true, bubbles: true
       }));
       window.loadPrByNumber = origLoad;
       window.showToast = origToast;
       return (loadCalled && loadForce === true && toastMsg === 'Reloading PR…') ? 'ok' : JSON.stringify({loadCalled, loadForce, toastMsg});
     })()
   `);
-  assert('Cmd+R reloads current PR with toast + force flag', shortcutReload === 'ok', `result: ${shortcutReload}`);
+  assert('Cmd+Shift+R reloads current PR with toast + force flag', shortcutReload === 'ok', `result: ${shortcutReload}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+A triggers approve (uppercase key - Windows/Linux)
+  // TEST: Keyboard shortcut Cmd+A triggers approve (uppercase key - Windows/Linux)
   const shortcutApprove = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const btn = document.getElementById('btn-approve');
@@ -1694,13 +1694,13 @@ async function runTests() {
       const origClick = btn.click.bind(btn);
       btn.click = () => { clicked = true; origClick(); };
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'A', code: 'KeyA', metaKey: true, shiftKey: true, bubbles: true
+        key: 'A', code: 'KeyA', metaKey: true, shiftKey: false, bubbles: true
       }));
       btn.click = origClick;
       return clicked ? 'clicked' : 'not-clicked';
     })()
   `);
-  assert('Cmd+Shift+A triggers approve button click', shortcutApprove === 'clicked', `result: ${shortcutApprove}`);
+  assert('Cmd+A triggers approve button click', shortcutApprove === 'clicked', `result: ${shortcutApprove}`);
 
   // TEST: Arrow keys navigate between PRs — the keyboard equivalent of the
   // edge arrows. Must be ignored while typing and while the compare overlay
@@ -1770,7 +1770,7 @@ async function runTests() {
   assert('Arrow keys are ignored while typing and while the compare overlay is open',
     arrowNavGuards === JSON.stringify({ typing: null, overlayOpen: null }), `result: ${arrowNavGuards}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+A with lowercase key (macOS behavior)
+  // TEST: Keyboard shortcut Cmd+A with lowercase key (macOS behavior)
   const shortcutApproveLower = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const btn = document.getElementById('btn-approve');
@@ -1781,15 +1781,15 @@ async function runTests() {
       const origClick = btn.click.bind(btn);
       btn.click = () => { clicked = true; origClick(); };
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'a', code: 'KeyA', metaKey: true, shiftKey: true, bubbles: true
+        key: 'a', code: 'KeyA', metaKey: true, shiftKey: false, bubbles: true
       }));
       btn.click = origClick;
       return clicked ? 'clicked' : 'not-clicked';
     })()
   `);
-  assert('Cmd+Shift+A works with lowercase key (macOS)', shortcutApproveLower === 'clicked', `result: ${shortcutApproveLower}`);
+  assert('Cmd+A works with lowercase key (macOS)', shortcutApproveLower === 'clicked', `result: ${shortcutApproveLower}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+R triggers request changes (uppercase key)
+  // TEST: Keyboard shortcut Cmd+R triggers request changes (uppercase key)
   const shortcutRequestChanges = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const btn = document.getElementById('btn-request-changes');
@@ -1799,15 +1799,15 @@ async function runTests() {
       const origClick = btn.click.bind(btn);
       btn.click = () => { clicked = true; origClick(); };
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'R', code: 'KeyR', metaKey: true, shiftKey: true, bubbles: true
+        key: 'R', code: 'KeyR', metaKey: true, shiftKey: false, bubbles: true
       }));
       btn.click = origClick;
       return clicked ? 'clicked' : 'not-clicked';
     })()
   `);
-  assert('Cmd+Shift+R triggers request changes click', shortcutRequestChanges === 'clicked', `result: ${shortcutRequestChanges}`);
+  assert('Cmd+R triggers request changes click', shortcutRequestChanges === 'clicked', `result: ${shortcutRequestChanges}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+R with lowercase key (macOS behavior)
+  // TEST: Keyboard shortcut Cmd+R with lowercase key (macOS behavior)
   const shortcutRequestChangesLower = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const btn = document.getElementById('btn-request-changes');
@@ -1817,15 +1817,15 @@ async function runTests() {
       const origClick = btn.click.bind(btn);
       btn.click = () => { clicked = true; origClick(); };
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'r', code: 'KeyR', metaKey: true, shiftKey: true, bubbles: true
+        key: 'r', code: 'KeyR', metaKey: true, shiftKey: false, bubbles: true
       }));
       btn.click = origClick;
       return clicked ? 'clicked' : 'not-clicked';
     })()
   `);
-  assert('Cmd+Shift+R works with lowercase key (macOS)', shortcutRequestChangesLower === 'clicked', `result: ${shortcutRequestChangesLower}`);
+  assert('Cmd+R works with lowercase key (macOS)', shortcutRequestChangesLower === 'clicked', `result: ${shortcutRequestChangesLower}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+C submits the review as comment
+  // TEST: Keyboard shortcut Cmd+C submits the review as comment
   // (the ⋮ menu's Comment row is gone, so the shortcut calls submitReview directly)
   const shortcutComment = await mainWindow.webContents.executeJavaScript(`
     (() => {
@@ -1834,15 +1834,15 @@ async function runTests() {
       window.submitReview = (type) => { called = type; };
       document.getElementById('btn-approve').disabled = false;
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'C', code: 'KeyC', metaKey: true, shiftKey: true, bubbles: true
+        key: 'C', code: 'KeyC', metaKey: true, shiftKey: false, bubbles: true
       }));
       window.submitReview = orig;
       return called || 'not-called';
     })()
   `);
-  assert('Cmd+Shift+C submits review as comment', shortcutComment === 'comment', `result: ${shortcutComment}`);
+  assert('Cmd+C submits review as comment', shortcutComment === 'comment', `result: ${shortcutComment}`);
 
-  // TEST: Keyboard shortcut Cmd+Shift+C with lowercase key (macOS behavior)
+  // TEST: Keyboard shortcut Cmd+C with lowercase key (macOS behavior)
   const shortcutCommentLower = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const orig = window.submitReview;
@@ -1850,13 +1850,79 @@ async function runTests() {
       window.submitReview = (type) => { called = type; };
       document.getElementById('btn-approve').disabled = false;
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'c', code: 'KeyC', metaKey: true, shiftKey: true, bubbles: true
+        key: 'c', code: 'KeyC', metaKey: true, shiftKey: false, bubbles: true
       }));
       window.submitReview = orig;
       return called || 'not-called';
     })()
   `);
-  assert('Cmd+Shift+C works with lowercase key (macOS)', shortcutCommentLower === 'comment', `result: ${shortcutCommentLower}`);
+  assert('Cmd+C works with lowercase key (macOS)', shortcutCommentLower === 'comment', `result: ${shortcutCommentLower}`);
+
+  // TEST: The single-letter shortcuts stand down while typing and while text
+  // is selected — Cmd+A must stay select-all in a comment box and Cmd+C must
+  // copy what you highlighted, never submit a review.
+  const shortcutGuards = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const approve = document.getElementById('btn-approve');
+      const requestBtn = document.getElementById('btn-request-changes');
+      approve.disabled = false;
+      requestBtn.disabled = false;
+      const counts = { approveClicks: 0, requestClicks: 0, submitted: null };
+      const origApprove = approve.click.bind(approve);
+      const origRequest = requestBtn.click.bind(requestBtn);
+      const origSubmit = window.submitReview;
+      approve.click = () => { counts.approveClicks++; origApprove(); };
+      requestBtn.click = () => { counts.requestClicks++; origRequest(); };
+      window.submitReview = (t) => { counts.submitted = t; };
+      const snapshot = () => JSON.parse(JSON.stringify(counts));
+
+      // 1. Typing in the PR comment box: all three stay plain keystrokes
+      const ta = document.getElementById('review-body');
+      ta.focus();
+      for (const key of ['a', 'r', 'c']) {
+        ta.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true, cancelable: true }));
+      }
+      const typing = snapshot();
+
+      // 2. Text selected in the page: copy / select-all win over Cmd+A and Cmd+C
+      const span = document.createElement('span');
+      span.textContent = 'selected text for copying';
+      document.body.appendChild(span);
+      const range = document.createRange();
+      range.selectNodeContents(span);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true }));
+      const withSelection = snapshot();
+      sel.removeAllRanges();
+      span.remove();
+
+      // 3. Nothing typed, nothing selected: every shortcut fires
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', metaKey: true, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true }));
+      const idle = snapshot();
+
+      approve.click = origApprove;
+      requestBtn.click = origRequest;
+      window.submitReview = origSubmit;
+      window.getSelection().removeAllRanges();
+      ta.blur();
+      return JSON.stringify({ typing, withSelection, idle });
+    })()
+  `);
+  const guards = JSON.parse(shortcutGuards || '{}');
+  assert('Cmd+A/R/C do nothing while typing in a comment box',
+    guards.typing && guards.typing.approveClicks === 0 && guards.typing.requestClicks === 0 && guards.typing.submitted === null,
+    shortcutGuards);
+  assert('Cmd+A and Cmd+C stand down while text is selected (copy wins)',
+    guards.withSelection && guards.withSelection.approveClicks === 0 && guards.withSelection.submitted === null,
+    shortcutGuards);
+  assert('Cmd+A, Cmd+R and Cmd+C all fire with nothing typed or selected',
+    guards.idle && guards.idle.approveClicks === 1 && guards.idle.requestClicks === 1 && guards.idle.submitted === 'comment',
+    shortcutGuards);
 
   // TEST: Context expand buttons pass baseSha/headSha
   const contextExpandHasShas = await mainWindow.webContents.executeJavaScript(`
@@ -2610,18 +2676,18 @@ async function runTests() {
   `);
   assert('recheckForNewPrs refreshes list and loads first PR', recheckImplementation === 'ok', `result: ${recheckImplementation}`);
 
-  // TEST: Cmd+R re-checks for new PRs when on the all-caught-up screen (no current PR)
+  // TEST: Cmd+Shift+R re-checks for new PRs when on the all-caught-up screen (no current PR)
   const cmdRRechecksWhenNoPr = await mainWindow.webContents.executeJavaScript(`
     (() => {
       const src = ${JSON.stringify(fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8'))};
-      // In the Cmd+R branch, when there's no current PR it should call recheckForNewPrs
-      const match = src.match(/key === 'R' && isMeta && !e.shiftKey[\\s\\S]{0,400}/);
-      if (!match) return 'no-cmd-r';
+      // In the reload branch, when there's no current PR it should call recheckForNewPrs
+      const match = src.match(/key === 'R' && isMeta && e.shiftKey[\\s\\S]{0,400}/);
+      if (!match) return 'no-reload-branch';
       const branch = match[0];
       return (branch.includes('recheckForNewPrs()')) ? 'ok' : 'missing';
     })()
   `);
-  assert('Cmd+R re-checks for new PRs when no PR is loaded', cmdRRechecksWhenNoPr === 'ok', `result: ${cmdRRechecksWhenNoPr}`);
+  assert('Cmd+Shift+R re-checks for new PRs when no PR is loaded', cmdRRechecksWhenNoPr === 'ok', `result: ${cmdRRechecksWhenNoPr}`);
 
   // TEST: On reload with pending PRs, startup auto-loads the first pending PR.
   // The startup handler (config .then) calls loadPrByNumber(prs[0]) when no PR is

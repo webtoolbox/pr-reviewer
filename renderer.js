@@ -2898,11 +2898,11 @@ document.addEventListener('keydown', (e) => {
     }
   }
 
-  // Cmd+R — Reload current PR diff. If no PR is loaded (e.g. the "All caught
-  // up!" screen), re-check for new pending pull requests instead.
+  // Cmd+Shift+R — Reload current PR diff. If no PR is loaded (e.g. the "All
+  // caught up!" screen), re-check for new pending pull requests instead.
   // force:true bypasses the session viewed-PR cache so the diff is regenerated
   // fresh — new commits pushed to the PR appear even if it was loaded before.
-  if (key === 'R' && isMeta && !e.shiftKey) {
+  if (key === 'R' && isMeta && e.shiftKey) {
     e.preventDefault();
     if (currentPrNumber) {
       showToast('Reloading PR…');
@@ -2913,24 +2913,35 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Cmd+Shift+A — Approve
-  if (key === 'A' && isMeta && e.shiftKey) {
-    e.preventDefault();
-    if (!btnApprove.disabled) btnApprove.click();
+  // Cmd+A — Approve. Skipped while typing (select-all must keep working in a
+  // comment box) and while text is selected, so reading the diff never posts
+  // a review by accident.
+  if (key === 'A' && isMeta && !e.shiftKey && !isEditableTarget(e.target) && !selectedText()) {
+    if (!btnApprove.disabled) {
+      e.preventDefault();
+      btnApprove.click();
+    }
     return;
   }
 
-  // Cmd+Shift+R — Request Changes
-  if (key === 'R' && isMeta && e.shiftKey) {
-    e.preventDefault();
-    if (!btnRequestChanges.disabled) btnRequestChanges.click();
+  // Cmd+R — Request Changes. Never while typing: Cmd+R inside a comment box
+  // must stay a plain keystroke, not a submitted review.
+  if (key === 'R' && isMeta && !e.shiftKey && !isEditableTarget(e.target)) {
+    if (!btnRequestChanges.disabled) {
+      e.preventDefault();
+      btnRequestChanges.click();
+    }
     return;
   }
 
-  // Cmd+Shift+C — Comment (submit review as comment, not line comment)
-  if (key === 'C' && isMeta && e.shiftKey) {
-    e.preventDefault();
-    if (!btnApprove.disabled) submitReview('comment');
+  // Cmd+C — Comment (submit review as comment, not line comment). Cmd+Shift+C
+  // still works as an alias. Copy wins inside a text field or while text is
+  // selected, so the usual copy gesture is never stolen.
+  if (key === 'C' && isMeta && !e.altKey && !isEditableTarget(e.target) && !selectedText()) {
+    if (!btnApprove.disabled) {
+      e.preventDefault();
+      submitReview('comment');
+    }
     return;
   }
 
@@ -2978,6 +2989,18 @@ function isEditableTarget(target) {
     if (t) return true;
   }
   return target.isContentEditable === true;
+}
+
+// Non-empty text selected in the page. The single-letter review shortcuts
+// (Cmd+A/Cmd+C) stand down while a selection exists, so copying what you just
+// highlighted keeps working.
+function selectedText() {
+  try {
+    const sel = window.getSelection();
+    return sel ? String(sel).trim() : '';
+  } catch (err) {
+    return '';
+  }
 }
 
 // ===================== FIND-IN-PAGE (Cmd+F) =====================
