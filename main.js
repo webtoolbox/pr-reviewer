@@ -2823,6 +2823,79 @@ function computePositionsFromDiff(diffContent) {
   return map;
 }
 
+// `gh pr diff` reads GitHub's PullRequest.diff, which refuses PRs with more
+// than 300 changed files (HTTP 406, "diff exceeded the maximum number of
+// files"). GitHub's own suggestion is the list-files API: every file still
+// carries its unified `patch`, which is enough to know exactly which lines a
+// review comment may target.
+async function fetchPullFileLines(owner, repo, prNumber) {
+  const stdout = await execPromise(
+    `gh api --paginate --slurp "repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100"`,
+    { timeout: 60000 }
+  );
+  const pages = JSON.parse(stdout || '[]');
+  const files = Array.isArray(pages) && Array.isArray(pages[0])
+    ? [].concat(...pages)
+    : (Array.isArray(pages) ? pages : []);
+  const byFile = new Map();
+  for (const f of files) {
+    if (!f || !f.filename || typeof f.patch !== 'string') continue;
+    byFile.set(f.filename, linesInPatch(f.patch));
+  }
+  return byFile;
+}
+
+// Every line a review comment may legally target in one file's unified patch,
+// keyed "<line>:<side>". Context lines count for both sides.
+function linesInPatch(patch) {
+  const lines = new Set();
+  let left = 0;
+  let right = 0;
+  for (const line of String(patch).split('\n')) {
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      left = parseInt(hunk[1], 10);
+      right = parseInt(hunk[2], 10);
+      continue;
+    }
+    if (line.startsWith('+')) {
+      lines.add(`${right}:RIGHT`);
+      right++;
+    } else if (line.startsWith('-')) {
+      lines.add(`${left}:LEFT`);
+      left++;
+    } else if (line.startsWith('\\')) {
+      // "\ No newline at end of file" — not a line of the file
+    } else if (line.startsWith(' ')) {
+      lines.add(`${left}:LEFT`);
+      lines.add(`${right}:RIGHT`);
+      left++;
+      right++;
+    }
+  }
+  return lines;
+}
+
+// Which side of the diff the comment can live on: its own side first, then
+// the alternate (a context line exists on both sides). null = not in the diff.
+function sideForLine(lines, rawLine, rawSide) {
+  const line = Number(rawLine);
+  if (!Number.isFinite(line)) return null;
+  const side = rawSide === 'LEFT' ? 'LEFT' : 'RIGHT';
+  if (lines.has(`${line}:${side}`)) return { line, side };
+  const alt = side === 'RIGHT' ? 'LEFT' : 'RIGHT';
+  if (lines.has(`${line}:${alt}`)) return { line, side: alt };
+  return null;
+}
+
+// First line of a gh error that says something useful (skip the
+// "Command failed: gh ..." wrapper), for toasts.
+function ghErrorSummary(text) {
+  const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const useful = lines.find(l => !l.startsWith('Command failed:')) || lines[0] || 'unknown error';
+  return useful.slice(0, 300);
+}
+
 // Comments on lines GitHub's diff does not contain cannot be posted inline.
 // Fold them into the review body so the feedback still reaches GitHub —
 // otherwise a review holding only such comments is rejected as empty and
@@ -2870,6 +2943,9 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
   const notInDiffComments = [];
   const unmappedComments = [];
   const reviewNotes = [];
+  // Why the PR diff could not be fetched, if it could not — reported to the
+  // reviewer instead of the misleading "empty review" line.
+  let diffFetchError = '';
   if (comments && comments.length > 0) {
     // Separate file-level comments (no line/position needed) from inline comments
     const fileComments = comments.filter(c => c.file && c.text && c.level === 'file');
@@ -2904,6 +2980,7 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
       try {
         prDiff = await execPromise(`gh pr diff ${prNumber} --repo ${owner}/${repo}`, { timeout: 30000 });
       } catch (diffErr) {
+        diffFetchError = ghErrorSummary(diffErr.message);
         log('ERROR', '[github-review] Failed to fetch PR diff for position mapping:', diffErr.message);
       }
 
@@ -2980,8 +3057,32 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
           }));
         }
       } else {
-        // Diff fetch failed — can't map positions, can't submit inline comments
-        log('ERROR', '[github-review] PR diff empty — cannot submit inline comments');
+        // The full diff is unavailable (large PR, network, timeout). Fall back
+        // to the list-files API and place comments by line/side — GitHub
+        // accepts those without a position, so the review is not blocked.
+        log('ERROR', '[github-review] PR diff unavailable — falling back to line/side placement:', diffFetchError);
+        let fileLines = new Map();
+        try {
+          fileLines = await fetchPullFileLines(owner, repo, prNumber);
+          log('INFO', `[github-review] Fallback patches for ${fileLines.size} file(s) from the list-files API`);
+        } catch (filesErr) {
+          if (!diffFetchError) diffFetchError = ghErrorSummary(filesErr.message);
+          log('ERROR', '[github-review] List-files fallback failed:', filesErr.message);
+        }
+
+        for (const c of inlineComments) {
+          const lines = fileLines.get(c.file);
+          const target = lines ? sideForLine(lines, c.line, c.side) : null;
+          if (target) {
+            ghComments.push({ path: c.file, line: target.line, side: target.side, body: c.text });
+            log('INFO', `[github-review] Placed ${c.file}:${target.line} (${target.side}) without a position`);
+          } else {
+            // Nothing to attach to — fold into the review body instead of
+            // dropping it, so the reviewer's text always reaches GitHub.
+            notInDiffComments.push(c);
+            log('WARN', `[github-review] Cannot place ${c.file}:${c.line} — folding it into the review body`);
+          }
+        }
       }
     }
   }
@@ -3003,6 +3104,14 @@ ipcMain.handle('submit-github-review', async (event, { prNumber, body, eventType
 
   // Validate: REQUEST_CHANGES and COMMENT require something meaningful
   if ((ghEvent === 'REQUEST_CHANGES' || ghEvent === 'COMMENT') && !payload.body && ghComments.length === 0 && fileCommentsPosted === 0) {
+    // The reviewer had comments but none could be posted — report the real
+    // cause instead of blaming an "empty" review they never wrote.
+    if (comments && comments.length > 0) {
+      const why = diffFetchError
+        ? `GitHub's PR diff could not be fetched (${diffFetchError})`
+        : 'the comments had no file or line to attach to';
+      return { error: `None of your ${comments.length} comment(s) could be posted — ${why}. Nothing was submitted.` };
+    }
     return { error: 'Cannot submit an empty review. Write a review body or add inline comments.' };
   }
 

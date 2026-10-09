@@ -3277,6 +3277,84 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(rendererSrc).toContain('result.notes && result.notes.length > 0');
   });
 
+  test('large-PR fallback places comments by line/side when gh pr diff fails', () => {
+    const sIdx = mainSource.indexOf("ipcMain.handle('submit-github-review'");
+    expect(sIdx).toBeGreaterThan(-1);
+    const sEnd = mainSource.indexOf("ipcMain.handle('auto-fix-with-ai'", sIdx);
+    const sSrc = mainSource.substring(sIdx, sEnd > 0 ? sEnd : sIdx + 20000);
+
+    // gh pr diff reads PullRequest.diff, which refuses PRs with more than 300
+    // files (HTTP 406 too_large). GitHub's own suggestion is the list-files
+    // API, called here as the fallback source of truth.
+    expect(mainSource).toContain('async function fetchPullFileLines');
+    expect(mainSource).toContain('/files?per_page=100');
+    expect(mainSource).toContain('--paginate --slurp');
+    expect(sSrc).toContain('fetchPullFileLines(owner, repo, prNumber)');
+
+    // Comments are then placed WITHOUT a position: line + side is what the
+    // review API accepts when no unified diff was available to index into.
+    expect(sSrc).toContain('sideForLine(lines, c.line, c.side)');
+    expect(sSrc).toContain('ghComments.push({ path: c.file, line: target.line, side: target.side, body: c.text });');
+
+    // A comment the fallback cannot place is folded into the review body —
+    // never dropped, which is what made the review look empty before.
+    expect(sSrc).toContain('Cannot place ${c.file}:${c.line}');
+    expect(sSrc).toContain('notInDiffComments.push(c)');
+
+    // When nothing could be posted the toast names the real cause.
+    expect(sSrc).toContain('diffFetchError = ghErrorSummary(diffErr.message)');
+    expect(sSrc).toContain('None of your ${comments.length} comment(s) could be posted');
+    expect(sSrc).toContain("GitHub's PR diff could not be fetched");
+  });
+
+  test('linesInPatch lists every line a review comment may target', () => {
+    const linesInPatch = eval('(' + extractFunctionBody(mainSource, 'linesInPatch') + ')');
+    const patch = [
+      '@@ -1,4 +1,4 @@',
+      ' context-1',
+      '-old line',
+      '+new line',
+      ' context-2',
+      '\\ No newline at end of file'
+    ].join('\n');
+    const set = linesInPatch(patch);
+    // Context lines are valid on both sides, deleted lines only on LEFT,
+    // added lines only on RIGHT — counted from their own hunk header.
+    expect(set.has('1:LEFT')).toBe(true);
+    expect(set.has('1:RIGHT')).toBe(true);
+    expect(set.has('2:LEFT')).toBe(true);
+    expect(set.has('2:RIGHT')).toBe(true);
+    expect(set.has('3:LEFT')).toBe(true);
+    expect(set.has('3:RIGHT')).toBe(true);
+    // Lines outside the hunk are not in the diff
+    expect(set.has('4:LEFT')).toBe(false);
+    expect(set.has('4:RIGHT')).toBe(false);
+
+    // A later hunk restarts from ITS header, not from where the first ended
+    const multi = linesInPatch(['@@ -10,2 +10,2 @@', ' ten', '-old', '+new'].join('\n'));
+    expect(multi.has('10:LEFT')).toBe(true);
+    expect(multi.has('10:RIGHT')).toBe(true);
+    expect(multi.has('11:LEFT')).toBe(true);
+    expect(multi.has('11:RIGHT')).toBe(true);
+    expect(multi.has('4:RIGHT')).toBe(false);
+  });
+
+  test('sideForLine picks the side the comment can live on', () => {
+    const sideForLine = eval('(' + extractFunctionBody(mainSource, 'sideForLine') + ')');
+    const lines = new Set(['5:RIGHT', '6:LEFT', '6:RIGHT']);
+    expect(sideForLine(lines, '5', 'RIGHT')).toEqual({ line: 5, side: 'RIGHT' });
+    // Line numbers arrive as strings from the renderer
+    expect(sideForLine(lines, 6, 'LEFT')).toEqual({ line: 6, side: 'LEFT' });
+    // Missing side defaults to RIGHT, as GitHub does
+    expect(sideForLine(lines, '5', undefined)).toEqual({ line: 5, side: 'RIGHT' });
+    // Context line: the alternate side is accepted when its own side is not
+    expect(sideForLine(lines, '5', 'LEFT')).toEqual({ line: 5, side: 'RIGHT' });
+    // Not in the diff (or not a line at all): null, so the caller folds it
+    expect(sideForLine(lines, '99', 'RIGHT')).toBe(null);
+    expect(sideForLine(lines, 'not-a-line', 'RIGHT')).toBe(null);
+    expect(sideForLine(lines, null, 'RIGHT')).toBe(null);
+  });
+
   test('submit-github-review invalidates the processed PR cache', () => {
     const sIdx = mainSource.indexOf("ipcMain.handle('submit-github-review'");
     expect(sIdx).toBeGreaterThan(-1);
