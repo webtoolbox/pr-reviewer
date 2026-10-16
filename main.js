@@ -905,7 +905,7 @@ function isMasterImportCommit(commit) {
   return /^merge\b/i.test(msg) && /\bmaster\b/i.test(msg);
 }
 
-async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
+async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas, headSha) {
   if (!repoPath || !baseSha || !afterReviewShas || afterReviewShas.length === 0) {
     return { diff: '', sinceReviewRef: null };
   }
@@ -923,24 +923,34 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
     created = true;
 
     // Replay the PR's own commits onto the review base.
+    // Paths that conflict during the replay are collected here; their final
+    // diff is rebuilt from the author's residue (see below), because the
+    // replayed file carries master content the branch had absorbed.
+    const conflictedPaths = new Set();
+    // Per-file diff ranges for conflicted files, which are shown as the
+    // author's residue against master rather than base..sinceReviewRef.
+    // Context expansion reads this so expanding a line uses the same range.
+    const residueRanges = {};
     for (const sha of afterReviewShas) {
       try {
         await execPromise(`git cherry-pick -n ${sha}`, { cwd: worktreePath, timeout: 30000 });
       } catch (err) {
-        // Conflict — resolve by taking the COMMIT BEING REPLAYED (--theirs),
-        // i.e. the PR author's own version of the file. This reproduces
-        // GitHub's "changes since your review" byte for byte, because GitHub
-        // renders the plain base..head diff.
+        // Conflict — take the COMMIT BEING REPLAYED (--theirs), i.e. the PR
+        // author's version. The old --ours (review base) rule silently
+        // DELETED the author's work whenever a later commit touching the same
+        // file also conflicted: PR #7692's thread.tpl conflicted in three
+        // consecutive replays (81343c92, 508e143ef6, ace50b3d66), each
+        // resetting it to the review base, so the author's change vanished
+        // from the diff AND the sidebar with no error while GitHub listed it.
         //
-        // The earlier --ours (review base) rule silently DELETED the author's
-        // work whenever the author's later commits conflicted on the same
-        // file. PR #7692: thread.tpl conflicted in three consecutive replays
-        // (81343c92, 508e143ef6, ace50b3d66), each one resetting the file to
-        // the review base, so the author's 15-insertion/40-deletion change
-        // vanished from the diff while GitHub listed the file. The rule also
-        // hid real work in #7359 (deploy_branch.cgi, 65 lines) by dropping the
-        // file outright. Verified: --theirs reproduces #7692's thread.tpl diff
-        // with an identical sha256 to GitHub's.
+        // --theirs alone is NOT the final answer for these files: the
+        // replayed file is the author's whole-tree version, which carries
+        // master content the branch absorbed via merges (#7359's
+        // deploy_branch.cgi showed master's autoAssignOnDeploy/setDeployStatus
+        // as PR work). Every path taken here is recorded so its diff can be
+        // rebuilt from the AUTHOR'S RESIDUE instead — what the branch changed
+        // relative to master — which excludes absorbed master content while
+        // keeping the author's real edits.
         //
         // Resolve PATH BY PATH. `git checkout --theirs -- a b c` aborts the
         // WHOLE command as soon as any one path has no theirs stage (a file
@@ -983,12 +993,61 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
           }
           log('WARN', `[since-review] replay ${String(sha).slice(0, 8)} conflicted in ${files.length} file(s), took the replayed version for ${kept.length} and dropped ${absent.length}: ${files.join(', ')}`);
         }
+        for (const f of files) conflictedPaths.add(f);
         await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
       }
     }
 
     // Net diff of the worktree (review base + PR commits) vs the review base.
-    const netDiff = await execPromise(`git diff ${baseSha}`, { cwd: worktreePath, timeout: 60000 }).catch(() => '');
+    let netDiff = await execPromise(`git diff ${baseSha}`, { cwd: worktreePath, timeout: 60000 }).catch(() => '');
+
+    // REBUILD CONFLICTED FILES FROM THE AUTHOR'S RESIDUE.
+    // A file taken via --theirs above is the author's whole-tree version, so
+    // its diff against the review base also contains every master change the
+    // branch absorbed through its merges. GitHub shows that too, but absorbed
+    // master content must never appear as PR work. Replace each conflicted
+    // file's diff with the residue — what the branch changed relative to
+    // master — which drops the absorbed content and keeps the author's edits.
+    //
+    // The comparison point is the PR head's merge-base with master, i.e. the
+    // last master state the branch actually absorbed. Verified on real cases:
+    //   #7692 thread.tpl        -> author's 15/39 (GitHub 15/40), file kept
+    //   #7359 deploy_branch.cgi -> author's 65/1  (GitHub 684/55, which was
+    //                              637 lines of master's autoAssignOnDeploy/
+    //                              setDeployStatus leaking in as PR work)
+    if (conflictedPaths.size > 0) {
+      const prHead = await execPromise(`git -C ${JSON.stringify(repoPath)} rev-parse ${JSON.stringify(headSha)}`, { cwd: worktreePath }).catch(() => '');
+      const masterBase = prHead
+        ? await execPromise(`git merge-base ${prHead} master`, { cwd: worktreePath }).catch(() => '')
+        : '';
+      if (masterBase) {
+        const rebuilt = [];
+        // Keep every non-conflicted file exactly as the replay produced it.
+        for (const chunk of splitPerFileDiff(netDiff)) {
+          if (!chunk.path || !conflictedPaths.has(chunk.path)) rebuilt.push(chunk.text);
+        }
+        // Re-derive conflicted files from the residue.
+        for (const file of conflictedPaths) {
+          const residue = await execPromise(
+            `git diff ${masterBase} ${prHead} -- ${JSON.stringify(file)}`,
+            { cwd: worktreePath, timeout: 60000 }
+          ).catch(() => '');
+          if (residue) {
+            rebuilt.push(residue);
+            // Context expansion must diff this file over the SAME range the
+            // display used (master merge-base -> PR head), not baseSha ->
+            // sinceReviewRef, or expanding a line would re-reveal every
+            // absorbed master change this residue just removed.
+            residueRanges[file] = { base: masterBase, head: prHead };
+          } else {
+            log('INFO', `[since-review] ${file} conflicted but the author's residue vs master is empty — absorbed master content only, left out`);
+          }
+        }
+        netDiff = rebuilt.join('');
+      } else {
+        log('WARN', '[since-review] could not resolve the PR head merge-base with master; keeping the replayed (--theirs) diff for conflicted files');
+      }
+    }
 
     // Persist the rebased state as a commit so it survives worktree removal
     // and can be referenced later (context expansion). Write it to the ref
@@ -1010,7 +1069,7 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
       await execPromise(`git update-ref ${sinceReviewRef} ${commitSha}`, { cwd: repoPath }).catch((e) => log('WARN', '[generateDiff] failed to write since-review ref:', e.message));
     }
 
-    return { diff: netDiff, sinceReviewRef: commitSha ? sinceReviewRef : null };
+    return { diff: netDiff, sinceReviewRef: commitSha ? sinceReviewRef : null, residueRanges };
   } catch (err) {
     log('ERROR', '[generateDiff] since-review net diff failed:', err.message);
     return { diff: '', sinceReviewRef: null };
@@ -1046,6 +1105,31 @@ function changedFilesFromDiff(diffText) {
     }
   }
   return files;
+}
+
+// Split a unified diff into one chunk per file, each carrying its path.
+// Used to rebuild the net diff per file: conflicted files are replaced by the
+// author's residue while every other file keeps the replayed diff verbatim.
+function splitPerFileDiff(diffText) {
+  const text = String(diffText || '');
+  if (!text) return [];
+  const chunks = [];
+  let current = null;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      if (current) chunks.push(current);
+      const m = line.match(/^diff --git "?a\/(.+?)"? "?b\/(.+?)"?\s*$/);
+      const raw = m && m[2] ? m[2] : line.slice('diff --git '.length);
+      current = {
+        path: raw.replace(/^"|"$/g, '').replace(/\\([ "\\])/g, '$1'),
+        text: line + '\n',
+      };
+    } else if (current) {
+      current.text += line + '\n';
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 // Changed files for a PR, computed WITHOUT the unbounded `git log base..head`
@@ -1252,6 +1336,10 @@ async function generateDiff(prNumber, repoKey) {
   // Set when a since-review net diff is produced; lets per-file operations
   // (context expansion) diff against the same rebased base as the display.
   let sinceReviewRef = null;
+  // Per-file ranges for conflicted files shown as residue-vs-master, so that
+  // per-file operations (context expansion) diff over the same range as the
+  // display rather than re-revealing absorbed master content.
+  let residueRanges = {};
 
   const prData = JSON.parse(prJson || '{}');
   prData.otherAuthors = prOtherAuthors;
@@ -1456,8 +1544,9 @@ async function generateDiff(prNumber, repoKey) {
           // placeholder states (added in one commit, removed in the next) while
           // excluding master's merged-in changes.
           const afterReviewShas = afterReview.map(c => c.sha).filter(Boolean);
-          const netResult = await computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas);
+          const netResult = await computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas, headSha);
           const netDiff = netResult.diff;
+          if (netResult.residueRanges) residueRanges = netResult.residueRanges;
           if (netDiff && netDiff.trim()) {
             diffOut = netDiff;
             sinceReviewRef = netResult.sinceReviewRef;
@@ -1536,7 +1625,7 @@ async function generateDiff(prNumber, repoKey) {
   const tmpPath = path.join(getGeneratedDir(), `pr-${prNumber}-clean.diff`);
   fs.writeFileSync(tmpPath, diffOut);
 
-  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData, sinceReviewRef, sinceReviewEmpty };
+  return { diffPath: tmpPath, baseSha, headSha, reviewInfo, filesChanged: changedFiles.length, prData, sinceReviewRef, sinceReviewEmpty, residueRanges };
 }
 
 // Clean up stale since-review temp refs (refs/tmp/pr-reviewer-since-review/*).
@@ -2047,7 +2136,8 @@ ipcMain.handle('load-pr', async (event, { prNumber, repo, force } = {}) => {
     state: prData.state || 'OPEN',
     reviewDecision: prData.reviewDecision || '',
     updatedAt: prData.updatedAt || '',
-    sinceReviewRef: result.sinceReviewRef || null
+    sinceReviewRef: result.sinceReviewRef || null,
+    residueRanges: result.residueRanges || {}
     };
     cacheViewedPr(cacheKey, out);
     return out;
@@ -2414,6 +2504,7 @@ ipcMain.handle('prefetch-pr', async (event, { prNumber, repo } = {}) => {
       reviewDecision: prData.reviewDecision || '',
       updatedAt: prData.updatedAt || '',
       sinceReviewRef: result.sinceReviewRef || null,
+      residueRanges: result.residueRanges || {},
       cachedAt: Date.now()
     };
     log('INFO', '[prefetch-pr] Cached PR #' + safePr + ':', content.length, 'chars');
@@ -4804,7 +4895,7 @@ ipcMain.handle('get-next-pr', async (event, { prNumber: currentPrNumber, repo: r
 });
 
 // Expand diff context for a single file
-ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha, sinceReviewRef } = {}) => {
+ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contextLines, baseSha, headSha, sinceReviewRef, residueRanges } = {}) => {
   try {
     // Validate inputs to prevent shell injection
     const ctxLines = parseInt(contextLines, 10);
@@ -4822,7 +4913,21 @@ ipcMain.handle('expand-diff-context', async (event, { repoPath, filePath, contex
     // screen. When no since-review ref exists, fall back to the historical
     // 3-dot (merge-base) then 2-dot ranges.
     let diffOut = '';
-    if (sinceReviewRef && baseSha) {
+    // Conflicted files are displayed as the author's residue (master
+    // merge-base -> PR head), never as base..sinceReviewRef, so expansion must
+    // use that same range or the extra context would re-reveal absorbed master
+    // content that the display deliberately excluded.
+    const residueRange = residueRanges && residueRanges[filePath];
+    if (residueRange && residueRange.base && residueRange.head) {
+      const cmdResidue = `git diff ${residueRange.base} ${residueRange.head} -U${ctxLines} -- "${filePath}"`;
+      log('INFO', '[expand-diff-context] Using author-residue range:', cmdResidue);
+      try {
+        diffOut = await execPromise(cmdResidue, { cwd: repoPath, timeout: 15000 });
+      } catch (e) {
+        log('WARN', '[expand-diff-context] author-residue range failed:', e.message);
+      }
+    }
+    if (!diffOut && sinceReviewRef && baseSha) {
       const cmdSince = `git diff ${baseSha} ${sinceReviewRef} -U${ctxLines} -- "${filePath}"`;
       log('INFO', '[expand-diff-context] Using since-review range:', cmdSince);
       try {

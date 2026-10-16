@@ -3019,6 +3019,41 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(funcSrc).toContain('conflicted in ${files.length} file(s)');
   });
 
+  test('a conflicted file is shown as the author-residue vs master, never as absorbed master content', () => {
+    const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
+    const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
+    const funcSrc = mainSource.substring(funcStart, funcEnd);
+    // A replayed file carries every master change the branch had absorbed, so
+    // taking --theirs wholesale would render that master content as PR work
+    // (PR #7359: 637 lines of master's deploy_branch.cgi). Rebuild conflicted
+    // files from the author's residue instead: diff(merge-base(head, master), head).
+    expect(funcSrc).toContain('const conflictedPaths = new Set()');
+    expect(funcSrc).toContain('git merge-base ${prHead} master');
+    expect(funcSrc).toContain('git diff ${masterBase} ${prHead} -- ${JSON.stringify(file)}');
+    // The replayed (--theirs) diff is the fallback, not the final word.
+    expect(funcSrc).toContain('rebuilt.push(residue)');
+    // A conflicted file whose residue is empty is absorbed master content only,
+    // so it must be left out of the net diff entirely.
+    expect(funcSrc).toContain("residueRanges[file] = { base: masterBase, head: prHead }");
+    expect(funcSrc).toContain('the author\'s residue vs master is empty');
+    // Non-conflicted files keep the replayed diff verbatim.
+    expect(funcSrc).toContain('!conflictedPaths.has(chunk.path)');
+  });
+
+  test('context expansion of an author-residue file uses the residue range, not base..sinceReviewRef', () => {
+    const hIdx = mainSource.indexOf("ipcMain.handle('expand-diff-context'");
+    const hSrc = mainSource.substring(hIdx, mainSource.indexOf('\n});', hIdx));
+    // Expanding a line must diff over the SAME range the display used, or the
+    // extra context re-reveals absorbed master content the display excluded.
+    expect(hSrc).toContain('const residueRange = residueRanges && residueRanges[filePath]');
+    expect(hSrc).toContain('git diff ${residueRange.base} ${residueRange.head} -U${ctxLines}');
+    expect(hSrc.indexOf('residueRange')).toBeLessThan(hSrc.indexOf('if (!diffOut && sinceReviewRef && baseSha)'));
+    // The renderer must carry the ranges through to the IPC call.
+    const rSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    expect(rSrc).toContain('currentResidueRanges = result.residueRanges || {}');
+    expect(rSrc).toContain('residueRanges: currentResidueRanges');
+  });
+
   test('REAL GIT: a conflicted replay leaves no conflict markers in the net diff', async () => {
     const { exec, execSync } = require('child_process');
     // Load the real function out of main.js (it only depends on execPromise,
@@ -3117,7 +3152,8 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
   });
 
   test('generateDiff calls it instead of the old net base..head diff', () => {
-    expect(mainSource).toContain('computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas)');
+    // headSha is threaded through so conflicted files can resolve the PR head.
+    expect(mainSource).toContain('computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas, headSha)');
     // The old implementation must be gone
     expect(mainSource).not.toContain('git diff ${baseSha}..${headSha} -- ${fileList}');
     expect(mainSource).not.toContain('Using net base..head diff');
@@ -3136,7 +3172,9 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
 
   test('generateDiff threads sinceReviewRef into its result', () => {
     expect(mainSource).toContain('sinceReviewRef = netResult.sinceReviewRef;');
-    expect(mainSource).toMatch(/filesChanged: changedFiles\.length, prData, sinceReviewRef, sinceReviewEmpty\s*}/);
+    expect(mainSource).toMatch(/filesChanged: changedFiles\.length, prData, sinceReviewRef, sinceReviewEmpty, residueRanges\s*}/);
+    // Conflicted files must carry their residue range out to the IPC layer.
+    expect(mainSource).toContain('residueRanges: result.residueRanges || {}');
   });
 
   test('load-pr includes sinceReviewRef in its response', () => {
@@ -3537,8 +3575,11 @@ describe('expand-diff-context uses since-review range when available', () => {
   test('diffs against the since-review ref first when present', () => {
     const hIdx = mainSource.indexOf("ipcMain.handle('expand-diff-context'");
     const hSrc = mainSource.substring(hIdx, mainSource.indexOf('\n});', hIdx));
-    expect(hSrc).toContain("if (sinceReviewRef && baseSha)");
+    expect(hSrc).toContain("if (!diffOut && sinceReviewRef && baseSha)");
     expect(hSrc).toMatch(/git diff \$\{baseSha\} \$\{sinceReviewRef\}/);
+    // The residue range (conflicted files) must come first so expansion of an
+    // author-residue file never falls back to a range that shows master.
+    expect(hSrc.indexOf('residueRange')).toBeLessThan(hSrc.indexOf('sinceReviewRef && baseSha'));
     // The since-review branch must come before the 3-dot fallback
     expect(hSrc.indexOf('sinceReviewRef && baseSha')).toBeLessThan(hSrc.indexOf('origin/master...'));
   });

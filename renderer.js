@@ -1885,7 +1885,8 @@ async function handleContextExpand(fileName) {
       contextLines: newContext,
       baseSha: currentBaseSha,
       headSha: currentHeadSha,
-      sinceReviewRef: currentSinceReviewRef
+      sinceReviewRef: currentSinceReviewRef,
+      residueRanges: currentResidueRanges
     });
 
     if (result.error) {
@@ -4163,6 +4164,7 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
     currentBaseSha = result.baseSha || null;
     currentHeadSha = result.headSha || null;
     currentSinceReviewRef = result.sinceReviewRef || null;
+    currentResidueRanges = result.residueRanges || {};
     allExtensionsInDiff = extractExtensionsFromDiff(result.content);
     loadDiff(result.content, result.filePath);
 
@@ -4699,6 +4701,7 @@ let currentRepoPath = null;
 let currentBaseSha = null;
 let currentHeadSha = null;
 let currentSinceReviewRef = null;
+let currentResidueRanges = {}; // file -> {base, head} for conflicted files shown as residue
 const fileContextLevels = new Map(); // filename -> current context lines count
 const collapsedFiles = new Set(); // filenames the user has collapsed via the header toggle
 
