@@ -927,18 +927,24 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
       try {
         await execPromise(`git cherry-pick -n ${sha}`, { cwd: worktreePath, timeout: 30000 });
       } catch (err) {
-        // Conflict — resolve by keeping the REVIEW BASE version of each file
-        // (--ours during cherry-pick = the current HEAD = the review base).
-        // NOT --theirs: --theirs is the commit being replayed, which for a
-        // file the PR inherited from master carries master's ENTIRE merged
-        // version (e.g. PR #7359's deploy_branch.cgi showed autoAssignOnDeploy,
-        // an unrelated master feature, as a PR change). Taking the base version
-        // keeps merge-borne master content out of the net diff; the PR's real
-        // changes are re-applied by its later (non-conflicting) commits.
+        // Conflict — resolve by taking the COMMIT BEING REPLAYED (--theirs),
+        // i.e. the PR author's own version of the file. This reproduces
+        // GitHub's "changes since your review" byte for byte, because GitHub
+        // renders the plain base..head diff.
         //
-        // Resolve PATH BY PATH. `git checkout --ours -- a b c` aborts the WHOLE
-        // command as soon as any one path has no ours stage (a file master
-        // merged in after the review has stages 1+3 only, "does not have our
+        // The earlier --ours (review base) rule silently DELETED the author's
+        // work whenever the author's later commits conflicted on the same
+        // file. PR #7692: thread.tpl conflicted in three consecutive replays
+        // (81343c92, 508e143ef6, ace50b3d66), each one resetting the file to
+        // the review base, so the author's 15-insertion/40-deletion change
+        // vanished from the diff while GitHub listed the file. The rule also
+        // hid real work in #7359 (deploy_branch.cgi, 65 lines) by dropping the
+        // file outright. Verified: --theirs reproduces #7692's thread.tpl diff
+        // with an identical sha256 to GitHub's.
+        //
+        // Resolve PATH BY PATH. `git checkout --theirs -- a b c` aborts the
+        // WHOLE command as soon as any one path has no theirs stage (a file
+        // the commit deleted has stages 1+2 only, "does not have their
         // version"), and the abort was swallowed — so a single such path left
         // the conflict markers of EVERY conflicted file in the tree, staged by
         // the `git add -A` below and rendered as a diff (PR #6967 showed
@@ -950,33 +956,32 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas) {
         const files = String(conflicted || '').split('\0').filter(Boolean);
         if (files.length === 0) {
           // No conflicted paths reported but cherry-pick still failed (e.g.
-          // a commit that deletes a file we also have). Take the base side.
-          await execPromise(`git checkout --ours -- .`, { cwd: worktreePath }).catch(() => {});
+          // a commit that deletes a file we also have). Take the replayed side.
+          await execPromise(`git checkout --theirs -- .`, { cwd: worktreePath }).catch(() => {});
         } else {
           const unmerged = await execPromise(`git ls-files -u -z`, { cwd: worktreePath }).catch(() => '');
-          // "<mode> <sha> <stage>\0<path>\0" — stage 2 is "ours".
-          const oursPaths = new Set();
+          // "<mode> <sha> <stage>\0<path>\0" — stage 3 is "theirs".
+          const theirsPaths = new Set();
           for (const entry of String(unmerged || '').split('\0')) {
             const m = entry.match(/^\S+ \S+ (\d)\t(.+)$/);
-            if (m && m[1] === '2') oursPaths.add(m[2]);
+            if (m && m[1] === '3') theirsPaths.add(m[2]);
           }
-          const kept = files.filter(f => oursPaths.has(f));
-          const absent = files.filter(f => !oursPaths.has(f));
+          const kept = files.filter(f => theirsPaths.has(f));
+          const absent = files.filter(f => !theirsPaths.has(f));
           if (kept.length > 0) {
             await execPromise(
-              `git checkout --ours -- ${kept.map(f => JSON.stringify(f)).join(' ')}`,
+              `git checkout --theirs -- ${kept.map(f => JSON.stringify(f)).join(' ')}`,
               { cwd: worktreePath }
             ).catch(() => {});
           }
-          // No review-base version of this path: "ours" there means the file
-          // does not exist at the review base (master merged it in later), so
-          // it stays out of the net diff instead of keeping its markers.
+          // No replayed version of this path: "theirs" there means the commit
+          // DELETED the file, so drop it rather than leaving conflict markers.
           for (const file of absent) {
             await execPromise(`git rm -f -- ${JSON.stringify(file)}`, { cwd: worktreePath }).catch(() =>
               execPromise(`git update-index --force-remove -- ${JSON.stringify(file)}`, { cwd: worktreePath }).catch(() => {})
             );
           }
-          log('WARN', `[since-review] replay ${String(sha).slice(0, 8)} conflicted in ${files.length} file(s), kept the review base for ${kept.length} and dropped ${absent.length}: ${files.join(', ')}`);
+          log('WARN', `[since-review] replay ${String(sha).slice(0, 8)} conflicted in ${files.length} file(s), took the replayed version for ${kept.length} and dropped ${absent.length}: ${files.join(', ')}`);
         }
         await execPromise(`git add -A`, { cwd: worktreePath }).catch(() => {});
       }

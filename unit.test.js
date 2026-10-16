@@ -2981,37 +2981,39 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(funcSrc).toContain('cherry-pick -n');
   });
 
-  test('resolves conflicts by taking the REVIEW BASE version (--ours), not --theirs', () => {
+  test('resolves conflicts by taking the REPLAYED version (--theirs), matching GitHub', () => {
     const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
     const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
     const funcSrc = mainSource.substring(funcStart, funcEnd);
     // During cherry-pick, ours = review base, theirs = replayed PR commit.
-    // --theirs would pull master's ENTIRE merged file into the net diff (e.g.
-    // PR #7359's deploy_branch.cgi showed autoAssignOnDeploy, an unrelated
-    // master feature). Taking --ours (the base version) keeps merge-borne
-    // master content out; the PR's real changes re-apply via later commits.
-    expect(funcSrc).toContain('git checkout --ours');
-    expect(funcSrc).not.toContain('git checkout --theirs');
+    // GitHub renders "changes since your review" as a plain base..head diff,
+    // so taking --theirs reproduces it exactly. The old --ours rule silently
+    // DELETED the author's work whenever a later commit conflicted on the
+    // same file: PR #7692's thread.tpl conflicted in three consecutive
+    // replays, each resetting it to the review base, so the author's
+    // 15-insertion/40-deletion change vanished while GitHub listed the file.
+    expect(funcSrc).toContain('git checkout --theirs');
+    expect(funcSrc).not.toContain('git checkout --ours');
     expect(funcSrc).toContain('git add -A');
   });
 
-  test('conflict resolution runs per path, so one path without an ours stage cannot abort the rest', () => {
+  test('conflict resolution runs per path, so one path without a theirs stage cannot abort the rest', () => {
     const funcStart = mainSource.indexOf('async function computeSinceReviewNetDiff(');
     const funcEnd = mainSource.indexOf('\n// Generate diff for a PR', funcStart);
     const funcSrc = mainSource.substring(funcStart, funcEnd);
-    // PR #6967: `git checkout --ours -- a b c` fails for the WHOLE list when
-    // any path has no stage 2 ("does not have our version" — a file master
-    // merged in after the review), the failure was swallowed, and git add -A
-    // staged the conflict markers into the rendered diff.
+    // PR #6967: `git checkout --theirs -- a b c` fails for the WHOLE list when
+    // any path has no stage 3 ("does not have their version" — a file the
+    // commit deleted), the failure was swallowed, and git add -A staged the
+    // conflict markers into the rendered diff.
     expect(funcSrc).toContain('git diff --name-only -z --diff-filter=U');
-    // stage 2 is "ours" — paths are split on that before any checkout
+    // stage 3 is "theirs" — paths are split on that before any checkout
     expect(funcSrc).toContain('git ls-files -u -z');
-    expect(funcSrc).toContain("m[1] === '2'");
-    expect(funcSrc).toContain('const kept = files.filter(f => oursPaths.has(f))');
+    expect(funcSrc).toContain("m[1] === '3'");
+    expect(funcSrc).toContain('const kept = files.filter(f => theirsPaths.has(f))');
     // the old one-shot checkout of EVERY conflicted path is gone
-    expect(funcSrc).not.toContain('git checkout --ours -- ${files.map');
-    expect(funcSrc).toContain('git checkout --ours -- ${kept.map');
-    // a path with no review-base version is dropped instead of keeping markers
+    expect(funcSrc).not.toContain('git checkout --theirs -- ${files.map');
+    expect(funcSrc).toContain('git checkout --theirs -- ${kept.map');
+    // a path the commit deleted is dropped instead of keeping markers
     expect(funcSrc).toContain('git rm -f --');
     // conflicts are logged, not swallowed
     expect(funcSrc).toContain('conflicted in ${files.length} file(s)');
@@ -3058,13 +3060,18 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
       const result = await compute(tmp, baseSha, [pickSha]);
       const diff = result.diff || '';
       // PR #6967 rendered `<<<<<<< HEAD` / `>>>>>>> ...` blocks GitHub does
-      // not have: one path without an ours stage aborted the whole checkout.
+      // not have: one path without a theirs stage aborted the whole checkout.
       expect(diff).not.toMatch(/^<{7}/m);
       expect(diff).not.toMatch(/^={7}/m);
       expect(diff).not.toMatch(/^>{7}/m);
-      // conflicted file keeps the REVIEW BASE version, not the picked one
-      expect(diff).not.toContain('two-PICKED');
-      expect(diff).not.toContain('PICKED-LINE');
+      // Conflicted files take the REPLAYED version, which is what GitHub's
+      // base..head diff shows (PR #7692's thread.tpl was losing the author's
+      // whole change under the old keep-the-review-base rule). The diff of
+      // base..picked necessarily shows the removed base line too.
+      expect(diff).toContain('two-PICKED');
+      // A file the review base deleted but the picked commit touched comes
+      // back as an addition instead of being dropped.
+      expect(diff).toContain('PICKED-LINE');
       // the non-conflicting change in the very same commit still lands
       expect(diff).toContain('PICKED-CLEAN');
       // and the conflict is reported instead of being swallowed
