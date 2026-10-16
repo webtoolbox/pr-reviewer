@@ -33,6 +33,20 @@
     #btn-open { background: #21262d; color: #c9d1d9; }
     #btn-open:hover { background: #30363d; }
 
+    /* Session review timer — total review time in the current session */
+    #session-timer {
+      display: inline-flex; align-items: center;
+      padding: 5px 11px; border: 1px solid #30363d; border-radius: 9999px;
+      background: #21262d; color: #8b949e;
+      font-size: 12px; font-weight: 500; line-height: 1.2;
+      white-space: nowrap; font-variant-numeric: tabular-nums;
+      cursor: default; user-select: none;
+    }
+    #session-timer.session-active {
+      color: #3fb950; border-color: rgba(46,160,67,0.45);
+      background: rgba(46,160,67,0.08);
+    }
+
     /* Badge — matches parent button color */
     .badge {
       display: inline-block; border-radius: 8px; padding: 0 5px;
@@ -2198,6 +2212,7 @@
       <span id="comment-nav-label" style="font-size:12px;color:#8b949e;margin:0 4px"></span>
       <button id="btn-next-comment" title="Next comment (Cmd+])" aria-label="Next comment">▶</button>
     </span>
+    <span id="session-timer" title="Total time reviewing PRs in this session. Advances once per minute; a new session starts after 15 minutes without activity.">⏱ 0 min</span>
     <div id="ai-chat-panel">
       <div class="ai-chat-header">
         <span class="ai-chat-title">Chat with AI</span>

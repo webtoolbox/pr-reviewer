@@ -5939,3 +5939,66 @@ describe('Arrow key PR navigation', () => {
     expect(row[0]).toContain('Previous / next PR');
   });
 });
+
+// ── Session review timer (mirrors the logic in renderer.js) ──
+
+describe('Session review timer', () => {
+  const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // keep in sync with SESSION_IDLE_TIMEOUT_MS
+
+  function minutesSince(sessionStart, now) {
+    if (sessionStart === null || sessionStart === undefined) return 0;
+    return Math.max(0, Math.floor((now - sessionStart) / (60 * 1000)));
+  }
+
+  function sessionTimedOut(lastActive, now) {
+    if (lastActive === null || lastActive === undefined) return false;
+    return now - lastActive >= IDLE_TIMEOUT_MS;
+  }
+
+  function restoreSavedSession(saved, now) {
+    const stillRunning = saved
+      && typeof saved.start === 'number'
+      && typeof saved.lastActive === 'number'
+      && now - saved.lastActive < IDLE_TIMEOUT_MS;
+    return stillRunning ? { start: saved.start, lastActive: saved.lastActive } : null;
+  }
+
+  const T0 = 1700000000000;
+
+  test('shows 0 minutes when no session is running', () => {
+    expect(minutesSince(null, T0)).toBe(0);
+  });
+
+  test('advances in whole minutes, not seconds', () => {
+    expect(minutesSince(T0, T0)).toBe(0);
+    expect(minutesSince(T0, T0 + 59 * 1000)).toBe(0);
+    expect(minutesSince(T0, T0 + 60 * 1000)).toBe(1);
+    expect(minutesSince(T0, T0 + 119 * 1000)).toBe(1);
+    expect(minutesSince(T0, T0 + 5 * 60 * 1000)).toBe(5);
+    expect(minutesSince(T0, T0 + 90 * 60 * 1000)).toBe(90);
+  });
+
+  test('session only ends once the idle timeout is reached', () => {
+    expect(sessionTimedOut(T0, T0 + IDLE_TIMEOUT_MS - 1)).toBe(false);
+    expect(sessionTimedOut(T0, T0 + IDLE_TIMEOUT_MS)).toBe(true);
+    expect(sessionTimedOut(T0, T0 + IDLE_TIMEOUT_MS + 60 * 1000)).toBe(true);
+    expect(sessionTimedOut(null, T0)).toBe(false);
+  });
+
+  test('a saved session resumes when the gap is under the timeout', () => {
+    const saved = { start: T0 - 12 * 60 * 1000, lastActive: T0 - 5 * 60 * 1000 };
+    expect(restoreSavedSession(saved, T0)).toEqual(saved);
+  });
+
+  test('a saved session is discarded once the timeout has passed', () => {
+    const saved = { start: T0 - 60 * 60 * 1000, lastActive: T0 - 16 * 60 * 1000 };
+    expect(restoreSavedSession(saved, T0)).toBeNull();
+  });
+
+  test('a saved session with missing or malformed fields is discarded', () => {
+    expect(restoreSavedSession(null, T0)).toBeNull();
+    expect(restoreSavedSession({}, T0)).toBeNull();
+    expect(restoreSavedSession({ start: 'yesterday', lastActive: T0 }, T0)).toBeNull();
+    expect(restoreSavedSession({ start: T0, lastActive: null }, T0)).toBeNull();
+  });
+});

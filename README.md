@@ -43,6 +43,7 @@ Reviewing PRs on GitHub means clicking into a PR, reading the description, scann
 - **Direct GitHub submission** — reviews submitted directly to GitHub
 - **Auto-save drafts** — comments survive app restarts
 - **Export as markdown** with code context and images
+- **Session review timer** — the top bar shows the total time spent reviewing PRs in the current session. It advances once per minute, and a new session starts after 15 minutes without activity
 
 ### PR Management
 - **PR dropdown** — lists open PRs pending your review
