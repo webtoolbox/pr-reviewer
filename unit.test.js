@@ -5795,6 +5795,23 @@ describe('All Comments panel delete button and Cmd+Enter edit', () => {
     expect(list).toMatch(/uid: c\._uid \|\| null/);
   });
 
+  test('pending comments are collected before submitted ones, newest first', () => {
+    const start = rendererSource.indexOf('function getCombinedCommentList');
+    const end = rendererSource.indexOf('function renderCommentsList');
+    const list = rendererSource.substring(start, end);
+    // A pending comment just written must be the top row of the panel, not
+    // buried under every comment already on GitHub.
+    const pendingIdx = list.indexOf('kind: isAi ?');
+    const submittedIdx = list.indexOf("kind: 'submitted'");
+    expect(pendingIdx).toBeGreaterThan(-1);
+    expect(submittedIdx).toBeGreaterThan(-1);
+    expect(pendingIdx).toBeLessThan(submittedIdx);
+    // Newest first within the pending group (backwards walk of `comments`).
+    expect(list).toMatch(/for \(let i = local\.length - 1; i >= 0; i--\)/);
+    // The PR-level pending row still leads the list.
+    expect(list.indexOf("kind: 'pr-pending'")).toBeLessThan(pendingIdx);
+  });
+
   test('deleting from the panel reuses deleteComment when the marker exists', () => {
     const start = rendererSource.indexOf('function deleteCommentFromPanel');
     const end = rendererSource.indexOf('function scrollToCommentLocation');

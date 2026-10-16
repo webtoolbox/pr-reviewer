@@ -3502,6 +3502,8 @@ async function runTests() {
       const items = panel.querySelectorAll('.comment-list-item');
       const badges = panel.querySelectorAll('.c-badge');
       const texts = Array.from(panel.querySelectorAll('.c-text')).map(t => t.textContent);
+      // Row order: pending (newest first) at the TOP, submitted at the bottom.
+      const kinds = Array.from(items).map(el => (el.textContent.includes('octocat') ? 'submitted' : 'local'));
       const countText = (panel.querySelector('.comments-panel-header span:last-child') || {}).textContent || '';
       btn.style.display = 'flex';
       return {
@@ -3509,6 +3511,7 @@ async function runTests() {
         itemCount: items.length,
         badgeCount: badges.length,
         texts,
+        kinds,
         countText,
         hasPending: Array.from(badges).some(b => b.classList.contains('pending')),
         hasAi: Array.from(badges).some(b => b.classList.contains('ai') && b.classList.contains('pending')),
@@ -3545,6 +3548,11 @@ async function runTests() {
   assert('Comments panel header count text shows 4',
     !!commentsPanelTest && commentsPanelTest.countText.includes('4'),
     `countText: ${commentsPanelTest && commentsPanelTest.countText}`);
+  // Pending rows sit ABOVE submitted ones, newest pending first — a comment
+  // just written must be the first row, never buried under GitHub history.
+  assert('Pending comments are listed above submitted comments, newest pending first',
+    JSON.stringify(commentsPanelTest && commentsPanelTest.kinds) === JSON.stringify(['local', 'local', 'local', 'submitted']),
+    `kinds: ${JSON.stringify(commentsPanelTest && commentsPanelTest.kinds)}`);
 
   // Clicking a pending comment should scroll/highlight its marker.
   // Note: the comments panel items are re-rendered by renderCommentsList, and

@@ -5592,19 +5592,13 @@ function getCombinedCommentList() {
     });
   }
 
-  // Submitted GitHub inline review comments
-  for (const c of inlineReviewComments || []) {
-    items.push({
-      kind: 'submitted',
-      author: c.author || 'unknown',
-      location: c.path ? `${c.path}${c.line ? ':' + c.line : ''}` : '',
-      text: c.body || '',
-      target: { file: c.path, line: c.line || c.originalLine || null, side: c.side || 'RIGHT' }
-    });
-  }
-
-  // Local pending comments (not yet submitted)
-  for (const c of comments || []) {
+  // Local pending comments (not yet submitted) — FIRST, newest first. These
+  // are the ones the reviewer still has to act on, and a freshly written one
+  // must land at the top of the panel instead of being buried under every
+  // comment that was already sent to GitHub.
+  const local = comments || [];
+  for (let i = local.length - 1; i >= 0; i--) {
+    const c = local[i];
     const isAi = !!c.isAiTagged;
     items.push({
       kind: isAi ? 'ai' : 'pending',
@@ -5613,6 +5607,18 @@ function getCombinedCommentList() {
       text: stripAiTag(c.text || ''),
       uid: c._uid || null,
       target: { file: c.file, line: c.line || null, side: c.side || 'RIGHT', level: c.level }
+    });
+  }
+
+  // Submitted GitHub inline review comments — LAST. Already on GitHub, so they
+  // are reference material rather than outstanding work.
+  for (const c of inlineReviewComments || []) {
+    items.push({
+      kind: 'submitted',
+      author: c.author || 'unknown',
+      location: c.path ? `${c.path}${c.line ? ':' + c.line : ''}` : '',
+      text: c.body || '',
+      target: { file: c.path, line: c.line || c.originalLine || null, side: c.side || 'RIGHT' }
     });
   }
 

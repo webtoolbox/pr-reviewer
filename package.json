@@ -1,6 +1,6 @@
 {
   "name": "pr-reviewer",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "A macOS desktop app for reviewing GitHub PR diffs with line-level commenting, file-level comments, and AI agent integration.",
   "main": "main.js",
   "scripts": {
