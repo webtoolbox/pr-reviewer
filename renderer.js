@@ -68,6 +68,118 @@ const fileSidebarList = document.getElementById('file-sidebar-list');
 const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
 const contentDiv = document.getElementById('content');
 
+// ===================== SESSION REVIEW TIMER =====================
+// Tracks total time spent reviewing PRs in the current session and shows it in
+// the top bar. The clock advances in whole minutes only (one tick per minute —
+// never per second), and a session ends after SESSION_IDLE_TIMEOUT_MS without
+// review activity: the next activity then starts a fresh session at 0 min.
+
+const SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // inactivity that ends a session
+const SESSION_TICK_MS = 60 * 1000;              // update the clock once a minute
+const SESSION_TOUCH_THROTTLE_MS = 5000;         // collapse bursts of input events
+const SESSION_STORAGE_KEY = 'pr-reviewer.session-timer';
+
+const sessionTimerEl = document.getElementById('session-timer');
+let sessionStart = null;      // epoch ms the current session began (null = no session)
+let sessionLastActive = null; // epoch ms of the last review activity
+let sessionLastTouch = 0;
+let sessionRenderedMinute = -1;
+
+function reviewSessionMinutes(now = Date.now()) {
+  if (sessionStart === null) return 0;
+  return Math.max(0, Math.floor((now - sessionStart) / (60 * 1000))); // whole minutes only
+}
+
+function persistReviewSession() {
+  try {
+    if (sessionStart === null) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } else {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ start: sessionStart, lastActive: sessionLastActive }));
+    }
+  } catch (err) {
+    // Storage unavailable — the timer just won't survive an app restart.
+  }
+}
+
+function renderReviewSessionTimer() {
+  if (!sessionTimerEl) return;
+  const minutes = reviewSessionMinutes();
+  if (minutes !== sessionRenderedMinute) {
+    sessionRenderedMinute = minutes;
+    sessionTimerEl.textContent = `⏱ ${minutes} min`;
+  }
+}
+
+function startReviewSession(now) {
+  sessionStart = now;
+  sessionLastActive = now;
+  persistReviewSession();
+  renderReviewSessionTimer();
+}
+
+function endReviewSession() {
+  sessionStart = null;
+  sessionLastActive = null;
+  sessionRenderedMinute = -1;
+  persistReviewSession();
+  renderReviewSessionTimer();
+}
+
+// Called on review activity (loading a diff, clicks, typing, scrolling).
+// Starts a session when none is running or the previous one timed out.
+function touchReviewSession(force = false) {
+  const now = Date.now();
+  if (!force && now - sessionLastTouch < SESSION_TOUCH_THROTTLE_MS) return;
+  sessionLastTouch = now;
+  if (sessionStart === null || now - sessionLastActive >= SESSION_IDLE_TIMEOUT_MS) {
+    startReviewSession(now);
+  } else {
+    sessionLastActive = now;
+    persistReviewSession();
+    renderReviewSessionTimer();
+  }
+}
+
+// Resume a session that was still within the idle timeout (e.g. app restart)
+function restoreReviewSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    const stillRunning = saved
+      && typeof saved.start === 'number'
+      && typeof saved.lastActive === 'number'
+      && Date.now() - saved.lastActive < SESSION_IDLE_TIMEOUT_MS;
+    if (stillRunning) {
+      sessionStart = saved.start;
+      sessionLastActive = saved.lastActive;
+    } else {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch (err) {
+    // Corrupt state — start fresh.
+  }
+}
+
+function reviewSessionTick() {
+  if (sessionStart !== null && Date.now() - sessionLastActive >= SESSION_IDLE_TIMEOUT_MS) {
+    endReviewSession();
+  }
+  renderReviewSessionTimer();
+}
+
+function initReviewSessionTimer() {
+  restoreReviewSession();
+  renderReviewSessionTimer();
+  setInterval(reviewSessionTick, SESSION_TICK_MS);
+  ['pointerdown', 'wheel', 'keydown', 'scroll'].forEach((evt) => {
+    document.addEventListener(evt, () => touchReviewSession(), { capture: true, passive: true });
+  });
+}
+
+initReviewSessionTimer();
+
 // ===================== FILE SIDEBAR =====================
 
 function populateFileSidebar() {
@@ -621,6 +733,9 @@ function loadDiff(content, filePath) {
     resetButtons();
     return;
   }
+
+  // A diff on screen means reviewing is under way — count it as session activity
+  touchReviewSession(true);
 
   // Sort files by extension, then by name — filtered-out extensions go last
   const allExtsForSort = extractExtensionsFromDiff(content);
