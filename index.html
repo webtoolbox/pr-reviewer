@@ -37,7 +37,7 @@
     #session-timer {
       display: inline-flex; align-items: center;
       padding: 5px 11px; border: 1px solid #30363d; border-radius: 9999px;
-      background: #21262d; color: #8b949e;
+      background: #21262d; color: #c9d1d9; /* same as the icons/pills beside it */
       font-size: 12px; font-weight: 500; line-height: 1.2;
       white-space: nowrap; font-variant-numeric: tabular-nums;
       cursor: default; user-select: none;
@@ -1930,8 +1930,9 @@
       #review-bar input { background: #ffffff; color: #24292f; border: 1px solid #d0d7de; }
       #review-bar input:focus { border-color: #0969da; }
 
-      /* Session review timer */
-      #session-timer { background: #f6f8fa; border-color: #d0d7de; color: #57606a; }
+      /* Session review timer — matches #review-bar button color so the label
+         reads the same as the pills and icons beside it */
+      #session-timer { background: #f6f8fa; border-color: #d0d7de; color: #24292f; }
 
       /* Find-in-page bar */
       #find-bar { background: #ffffff; border-color: #d0d7de; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
