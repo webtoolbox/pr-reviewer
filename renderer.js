@@ -109,7 +109,6 @@ function renderReviewSessionTimer() {
     sessionRenderedMinute = minutes;
     sessionTimerEl.textContent = `⏱ ${minutes} min`;
   }
-  sessionTimerEl.classList.toggle('session-active', sessionStart !== null);
 }
 
 function startReviewSession(now) {
