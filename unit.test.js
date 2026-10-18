@@ -138,6 +138,7 @@ function sortDiffByExtension(diffContent, excludedExts) {
   const files = diffContent.split(/^diff --git /m);
   const validFiles = files.filter(f => f.trim());
   const excluded = Array.isArray(excludedExts) ? excludedExts : [];
+  const noHunkFiles = extractFileNamesWithoutHunks(diffContent);
 
   function getExt(fileBlock) {
     const match = fileBlock.split('\n')[0].match(/a\/(.+?) b\//);
@@ -151,7 +152,7 @@ function sortDiffByExtension(diffContent, excludedExts) {
     return match ? match[1] : '';
   }
 
-  const groupOf = (f) => excluded.includes(getExt(f)) ? 1 : 0;
+  const groupOf = (f) => (excluded.includes(getExt(f)) || noHunkFiles.has(getName(f))) ? 1 : 0;
   validFiles.sort((a, b) => {
     const ga = groupOf(a), gb = groupOf(b);
     if (ga !== gb) return ga - gb; // excluded last
@@ -449,6 +450,20 @@ function getExt(fileBlock) {
 function getName(fileBlock) {
   const match = fileBlock.split('\n')[0].match(/a\/(.+?) b\//);
   return match ? match[1] : '';
+}
+
+// Copy of renderer.js extractFileNamesWithoutHunks: file blocks with no @@ hunk
+// (binary content, mode/rename-only changes) render as a header + stub row.
+function extractFileNamesWithoutHunks(diffContent) {
+  const names = new Set();
+  if (!diffContent || !diffContent.includes('diff --git')) return names;
+  for (const block of diffContent.split(/^diff --git /m)) {
+    if (!block.trim()) continue;
+    if (/(^|\n)@@ -/.test(block)) continue;
+    const name = getName(block);
+    if (name) names.add(name);
+  }
+  return names;
 }
 
 // Filter PRs by search text (mirrors renderPrList filtering logic)
@@ -880,6 +895,82 @@ diff --git a/c.pm b/c.pm
     expect(pmPos).toBeGreaterThanOrEqual(0);
     expect(jsonPos).toBeGreaterThan(jsPos);
     expect(jsonPos).toBeGreaterThan(pmPos);
+  });
+
+  test('pushes hunk-less (binary) file blocks to the end', () => {
+    const diff = `diff --git a/a.js b/a.js
+--- a/a.js
++++ b/a.js
+@@ -1 +1 @@
+-a
++b
+diff --git a/icons.eot b/icons.eot
+index 1234567..89abcde 100644
+Binary files a/icons.eot and b/icons.eot differ
+diff --git a/z.pm b/z.pm
+--- a/z.pm
++++ b/z.pm
+@@ -1 +1 @@
+-e
++f`;
+    const sorted = sortDiffByExtension(diff);
+    const eotPos = sorted.indexOf('a/icons.eot');
+    expect(eotPos).toBeGreaterThan(sorted.indexOf('a/a.js'));
+    expect(eotPos).toBeGreaterThan(sorted.indexOf('a/z.pm'));
+  });
+});
+
+// ── extractFileNamesWithoutHunks ──
+
+describe('extractFileNamesWithoutHunks', () => {
+  test('binary block (no @@ hunk) is detected', () => {
+    const diff = `diff --git a/data/fonts/forum1/icons.eot b/data/fonts/forum1/icons.eot
+index 1234567..89abcde 100644
+Binary files a/data/fonts/forum1/icons.eot and b/data/fonts/forum1/icons.eot differ`;
+    const names = extractFileNamesWithoutHunks(diff);
+    expect([...names]).toEqual(['data/fonts/forum1/icons.eot']);
+  });
+
+  test('blocks with a hunk are not detected', () => {
+    const diff = `diff --git a/a.js b/a.js
+--- a/a.js
++++ b/a.js
+@@ -1 +1 @@
+-old
++new`;
+    expect(extractFileNamesWithoutHunks(diff).size).toBe(0);
+  });
+
+  test('only hunk-less files are returned from a mixed diff', () => {
+    const diff = `diff --git a/a.js b/a.js
+--- a/a.js
++++ b/a.js
+@@ -1 +1 @@
+-old
++new
+diff --git a/icons.woff2 b/icons.woff2
+index 1234567..89abcde 100644
+Binary files a/icons.woff2 and b/icons.woff2 differ
+diff --git a/Makefile b/Makefile
+old mode 100644
+new mode 100755`;
+    const names = extractFileNamesWithoutHunks(diff);
+    expect([...names]).toEqual(['icons.woff2', 'Makefile']);
+  });
+
+  test('added/deleted content lines starting with @@ stay in their block', () => {
+    const diff = `diff --git a/a.js b/a.js
+--- a/a.js
++++ b/a.js
+@@ -1 +1 @@
++@@ -1 +1 @@ placeholder`;
+    expect(extractFileNamesWithoutHunks(diff).size).toBe(0);
+  });
+
+  test('empty / non-diff content returns an empty set', () => {
+    expect(extractFileNamesWithoutHunks('').size).toBe(0);
+    expect(extractFileNamesWithoutHunks(null).size).toBe(0);
+    expect(extractFileNamesWithoutHunks('just text').size).toBe(0);
   });
 });
 
@@ -4838,10 +4929,42 @@ describe('Collapsed files reorder to end', () => {
 
   test('reorderCollapsedFilesLast is called after renders and on toggle', () => {
     expect(rendererSource).toContain('reorderCollapsedFilesLast();');
-    // Called in loadDiff, renderFilteredDiff, and the toggle click handler
+    // Called in loadDiff, renderFilteredDiff, applyExtensionFilterInPlace and
+    // the toggle click handler
     const calls = rendererSource.match(/reorderCollapsedFilesLast\(\);/g);
     expect(calls).not.toBeNull();
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  test('extension filter reorders after collapsing in place', () => {
+    // Unchecking an extension must leave collapsed sections at the END. It used
+    // to collapse them where they rendered, so filtered-out files sat in the
+    // middle of the page with expanded files below them.
+    const fnStart = rendererSource.indexOf('function applyExtensionFilterInPlace()');
+    const fnEnd = rendererSource.indexOf('\n// Select all', fnStart);
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnSrc = rendererSource.substring(fnStart, fnEnd);
+    expect(fnSrc).toContain('collapseFilteredFiles(excludedExts)');
+    expect(fnSrc).toContain('reorderCollapsedFilesLast();');
+    // Still the in-place path — never a diff2html re-render
+    expect(fnSrc).not.toContain('Diff2HtmlUI');
+  });
+
+  test('hunk-less (binary) file blocks collapse with the other collapsed files', () => {
+    // Binary blocks (no @@ hunk, no +++ line) render as a header + stub row, so
+    // they must be collapsed and grouped at the end like any filtered-out file.
+    expect(rendererSource).toContain('function extractFileNamesWithoutHunks');
+    const fnStart = rendererSource.indexOf('function collapseFilteredFiles(');
+    const fnEnd = rendererSource.indexOf('\nfunction addFileCollapseToggles()', fnStart);
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnSrc = rendererSource.substring(fnStart, fnEnd);
+    expect(fnSrc).toContain('extractFileNamesWithoutHunks(currentDiffContent)');
+    expect(fnSrc).toContain('noHunkFiles.has(fileName)');
+    // The in-place file swap must preserve that collapsed state too
+    const swapStart = rendererSource.indexOf('function renderSingleFileInPlace');
+    const swapEnd = rendererSource.indexOf('function replaceFileInDiff', swapStart);
+    const swapSrc = rendererSource.substring(swapStart, swapEnd);
+    expect(swapSrc).toContain('extractFileNamesWithoutHunks(currentDiffContent)');
   });
 });
 
