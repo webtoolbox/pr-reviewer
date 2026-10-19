@@ -3122,7 +3122,13 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     expect(funcSrc).toContain('git merge-base ${prHead} master');
     expect(funcSrc).toContain('git diff ${masterBase} ${prHead} -- ${JSON.stringify(file)}');
     // The replayed (--theirs) diff is the fallback, not the final word.
-    expect(funcSrc).toContain('rebuilt.push(residue)');
+    // execPromise resolves stdout.trim(), so the residue has no trailing
+    // newline; pushing it raw glues the next file's `diff --git` header onto
+    // its last line and diff2html merges the two files into one section
+    // (PR #6460: icons.woff2 heading over a .pm file's content). The push
+    // must keep the separator on its own line.
+    expect(funcSrc).toContain('rebuilt.push(residue.endsWith(');
+    expect(funcSrc).toContain("? residue : `${residue}\\n`)");
     // A conflicted file whose residue is empty is absorbed master content only,
     // so it must be left out of the net diff entirely.
     expect(funcSrc).toContain("residueRanges[file] = { base: masterBase, head: prHead }");

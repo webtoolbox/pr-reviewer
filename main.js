@@ -1033,7 +1033,12 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas, hea
             { cwd: worktreePath, timeout: 60000 }
           ).catch(() => '');
           if (residue) {
-            rebuilt.push(residue);
+            // execPromise resolves stdout.trim(), so a residue never ends with a
+            // newline. Pushing it raw glues the next file's `diff --git` header
+            // onto the residue's last line, which makes diff2html merge two
+            // files into one section (heading of file A over content of file B).
+            // Keep the separator on its own line like every other chunk.
+            rebuilt.push(residue.endsWith('\n') ? residue : `${residue}\n`);
             // Context expansion must diff this file over the SAME range the
             // display used (master merge-base -> PR head), not baseSha ->
             // sinceReviewRef, or expanding a line would re-reveal every
