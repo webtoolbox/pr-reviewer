@@ -2090,10 +2090,11 @@ function renderSingleFileInPlace(fileName, fileDiff) {
   // Re-highlight unrecognized languages for this wrapper
   highlightUnrecognizedFilesForWrapper(newWrapper);
 
-  // Preserve collapsed state for filtered-out files
+  // Preserve collapsed state for filtered-out files and for hunk-less (binary)
+  // blocks, which always render collapsed
   const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
   const excludedExts = extractExtensionsFromDiff(currentDiffContent).filter(e => hiddenExtensions.includes(e));
-  if (excludedExts.includes(ext)) {
+  if (excludedExts.includes(ext) || extractFileNamesWithoutHunks(currentDiffContent).has(fileName)) {
     collapseFileWrapper(newWrapper, fileName);
   }
 
@@ -4710,6 +4711,9 @@ function applyExtensionFilterInPlace() {
   collapseFilteredFiles(excludedExts);
   // Sync the header chevron toggles with the new collapse state.
   addFileCollapseToggles();
+  // Collapsed sections belong at the end of the diff. Without this they stay
+  // wherever they rendered, so filtered-out files sit in the middle of the page.
+  reorderCollapsedFilesLast();
   // Keep the name filter consistent with the current collapse state.
   if (currentNameFilter) applyFileNameFilter();
   // Reflect the changed visibility in the file sidebar.
@@ -5137,19 +5141,22 @@ if (origRenderFilteredDiff) {
   };
 }
 
-// Collapse files matching excluded extensions — same diff2html rendering,
-// just hidden by default with a toggle icon on the header
+// Collapse files matching excluded extensions plus hunk-less (binary) blocks —
+// same diff2html rendering, just hidden by default with a toggle icon on the
+// header. Both kinds render collapsed, so both are grouped at the end by
+// reorderCollapsedFilesLast().
 function collapseFilteredFiles(excludedExts) {
   const fileWrappers = diffContainer.querySelectorAll('.d2h-file-wrapper');
+  const noHunkFiles = extractFileNamesWithoutHunks(currentDiffContent);
   for (const wrapper of fileWrappers) {
     const fileNameEl = wrapper.querySelector('.d2h-file-name');
     if (!fileNameEl) continue;
     const fileName = fileNameEl.textContent.trim();
     const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
-    const isExcluded = excludedExts.includes(ext);
+    const shouldBeCollapsed = excludedExts.includes(ext) || noHunkFiles.has(fileName);
 
-    // Non-excluded files: ensure they're expanded and don't have a stale toggle.
-    if (!isExcluded) {
+    // Expanded files: ensure they're expanded and don't have a stale toggle.
+    if (!shouldBeCollapsed) {
       wrapper.classList.remove('filtered-collapsed');
       collapsedFiles.delete(fileName);
       continue;
@@ -5551,16 +5558,36 @@ function getName(fileBlock) {
   return match ? match[1] : '';
 }
 
-// Sort diff content by file extension, then by name. If excludedExts is
-// provided, files with those extensions are pushed to the END (still sorted by
-// extension then name within each group) so filtered-out files appear last.
+// File blocks with no @@ hunk — binary content ("Binary files ... differ" /
+// "GIT binary patch"), mode-only or rename-only changes — render as a file
+// header plus one stub row, which reads as a collapsed section. Binary files
+// also have no +++ b/ line, so extractExtensionsFromDiff never sees their
+// extension: without this they stay expanded in the middle of the diff.
+function extractFileNamesWithoutHunks(diffContent) {
+  const names = new Set();
+  if (!diffContent || !diffContent.includes('diff --git')) return names;
+  for (const block of diffContent.split(/^diff --git /m)) {
+    if (!block.trim()) continue;
+    // A hunk header starts at column 0; +/-/space prefixed lines never match.
+    if (/(^|\n)@@ -/.test(block)) continue;
+    const name = getName(block);
+    if (name) names.add(name);
+  }
+  return names;
+}
+
+// Sort diff content by file extension, then by name. Files that render
+// collapsed — excluded extensions and hunk-less (binary) blocks — are pushed
+// to the END (still sorted by extension then name within each group) so every
+// collapsed section appears last.
 function sortDiffByExtension(diffContent, excludedExts) {
   if (!diffContent || !diffContent.includes('diff --git')) return diffContent;
   const files = diffContent.split(/^diff --git /m);
   const validFiles = files.filter(f => f.trim());
   const excluded = Array.isArray(excludedExts) ? excludedExts : [];
+  const noHunkFiles = extractFileNamesWithoutHunks(diffContent);
 
-  const groupOf = (f) => excluded.includes(getExt(f)) ? 1 : 0;
+  const groupOf = (f) => (excluded.includes(getExt(f)) || noHunkFiles.has(getName(f))) ? 1 : 0;
   validFiles.sort((a, b) => {
     const ga = groupOf(a), gb = groupOf(b);
     if (ga !== gb) return ga - gb; // excluded last
