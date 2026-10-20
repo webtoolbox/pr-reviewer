@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { execFile, exec, execSync } = require('child_process');
+const { rebuildNetDiff } = require('./rebuild-net-diff');
 
 // ── File-based logger ──────────────────────────────────────────────────────────
 const LOG_DIR = app.getPath('userData');
@@ -1021,34 +1022,32 @@ async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas, hea
         ? await execPromise(`git merge-base ${prHead} master`, { cwd: worktreePath }).catch(() => '')
         : '';
       if (masterBase) {
-        const rebuilt = [];
-        // Keep every non-conflicted file exactly as the replay produced it.
-        for (const chunk of splitPerFileDiff(netDiff)) {
-          if (!chunk.path || !conflictedPaths.has(chunk.path)) rebuilt.push(chunk.text);
-        }
-        // Re-derive conflicted files from the residue.
+        // Fetch each conflicted file's residue, then rebuild via the pure
+        // helper (unit-tested in rebuild-net-diff.js / unit.test.js): every
+        // non-conflicted file keeps the replayed text verbatim, conflicted
+        // files are replaced by their residue with the trailing newline
+        // preserved — a trimmed residue otherwise glues the next file's
+        // `diff --git` header onto its last line and diff2html renders both
+        // files as one section (#6460).
+        const residues = {};
         for (const file of conflictedPaths) {
-          const residue = await execPromise(
+          residues[file] = await execPromise(
             `git diff ${masterBase} ${prHead} -- ${JSON.stringify(file)}`,
             { cwd: worktreePath, timeout: 60000 }
           ).catch(() => '');
-          if (residue) {
-            // execPromise resolves stdout.trim(), so a residue never ends with a
-            // newline. Pushing it raw glues the next file's `diff --git` header
-            // onto the residue's last line, which makes diff2html merge two
-            // files into one section (heading of file A over content of file B).
-            // Keep the separator on its own line like every other chunk.
-            rebuilt.push(residue.endsWith('\n') ? residue : `${residue}\n`);
-            // Context expansion must diff this file over the SAME range the
-            // display used (master merge-base -> PR head), not baseSha ->
-            // sinceReviewRef, or expanding a line would re-reveal every
-            // absorbed master change this residue just removed.
-            residueRanges[file] = { base: masterBase, head: prHead };
-          } else {
-            log('INFO', `[since-review] ${file} conflicted but the author's residue vs master is empty — absorbed master content only, left out`);
-          }
         }
-        netDiff = rebuilt.join('');
+        const { diff, replacedFiles, leftOutFiles } = rebuildNetDiff(netDiff, conflictedPaths, residues);
+        for (const file of replacedFiles) {
+          // Context expansion must diff this file over the SAME range the
+          // display used (master merge-base -> PR head), not baseSha ->
+          // sinceReviewRef, or expanding a line would re-reveal every
+          // absorbed master change this residue just removed.
+          residueRanges[file] = { base: masterBase, head: prHead };
+        }
+        for (const file of leftOutFiles) {
+          log('INFO', `[since-review] ${file} conflicted but the author's residue vs master is empty — absorbed master content only, left out`);
+        }
+        netDiff = diff;
       } else {
         log('WARN', '[since-review] could not resolve the PR head merge-base with master; keeping the replayed (--theirs) diff for conflicted files');
       }
@@ -1115,27 +1114,7 @@ function changedFilesFromDiff(diffText) {
 // Split a unified diff into one chunk per file, each carrying its path.
 // Used to rebuild the net diff per file: conflicted files are replaced by the
 // author's residue while every other file keeps the replayed diff verbatim.
-function splitPerFileDiff(diffText) {
-  const text = String(diffText || '');
-  if (!text) return [];
-  const chunks = [];
-  let current = null;
-  for (const line of text.split('\n')) {
-    if (line.startsWith('diff --git ')) {
-      if (current) chunks.push(current);
-      const m = line.match(/^diff --git "?a\/(.+?)"? "?b\/(.+?)"?\s*$/);
-      const raw = m && m[2] ? m[2] : line.slice('diff --git '.length);
-      current = {
-        path: raw.replace(/^"|"$/g, '').replace(/\\([ "\\])/g, '$1'),
-        text: line + '\n',
-      };
-    } else if (current) {
-      current.text += line + '\n';
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
+// (moved to rebuild-net-diff.js — kept out of main.js so it stays unit-testable)
 
 // Changed files for a PR, computed WITHOUT the unbounded `git log base..head`
 // --name-only walk. On the app's shallow clone (depth-1 master), an old review

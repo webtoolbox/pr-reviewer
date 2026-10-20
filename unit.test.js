@@ -3118,23 +3118,130 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     // taking --theirs wholesale would render that master content as PR work
     // (PR #7359: 637 lines of master's deploy_branch.cgi). Rebuild conflicted
     // files from the author's residue instead: diff(merge-base(head, master), head).
+    // The rebuild itself lives in rebuild-net-diff.js and is behavior-tested
+    // in the rebuildNetDiff suite below; main.js keeps the git plumbing.
     expect(funcSrc).toContain('const conflictedPaths = new Set()');
     expect(funcSrc).toContain('git merge-base ${prHead} master');
     expect(funcSrc).toContain('git diff ${masterBase} ${prHead} -- ${JSON.stringify(file)}');
-    // The replayed (--theirs) diff is the fallback, not the final word.
-    // execPromise resolves stdout.trim(), so the residue has no trailing
-    // newline; pushing it raw glues the next file's `diff --git` header onto
-    // its last line and diff2html merges the two files into one section
-    // (PR #6460: icons.woff2 heading over a .pm file's content). The push
-    // must keep the separator on its own line.
-    expect(funcSrc).toContain('rebuilt.push(residue.endsWith(');
-    expect(funcSrc).toContain("? residue : `${residue}\\n`)");
-    // A conflicted file whose residue is empty is absorbed master content only,
-    // so it must be left out of the net diff entirely.
+    expect(funcSrc).toContain('rebuildNetDiff(netDiff, conflictedPaths, residues)');
+    // Context expansion must diff replaced files over the residue range.
     expect(funcSrc).toContain("residueRanges[file] = { base: masterBase, head: prHead }");
     expect(funcSrc).toContain('the author\'s residue vs master is empty');
-    // Non-conflicted files keep the replayed diff verbatim.
-    expect(funcSrc).toContain('!conflictedPaths.has(chunk.path)');
+  });
+
+  describe('rebuildNetDiff (since-review residue rebuild)', () => {
+    const { splitPerFileDiff, rebuildNetDiff, hasGluedSeparators } = require('./rebuild-net-diff');
+
+    // Minimal but structurally real two-file diff. Production netDiff comes
+    // from execPromise (stdout.trim()), so the fixture ends WITHOUT a trailing
+    // newline — that is the exact shape the rebuild consumes.
+    const fileA =
+      [
+        'diff --git a/data/fonts/forum1/icons.woff2 b/data/fonts/forum1/icons.woff2',
+        'index 1111111..2222222 100644',
+        'Binary files a/data/fonts/forum1/icons.woff2 and b/data/fonts/forum1/icons.woff2 differ',
+      ].join('\n') + '\n';
+    const fileB = [
+      'diff --git a/modules/OO/Topic.pm b/modules/OO/Topic.pm',
+      'index 3333333..4444444 100644',
+      '--- a/modules/OO/Topic.pm',
+      '+++ b/modules/OO/Topic.pm',
+      '@@ -359,1 +359,1 @@',
+      '-sub canViewPosts {',
+      '+sub canViewPreview {',
+    ].join('\n');
+    const replayed = fileA + fileB;
+
+    test('splitPerFileDiff splits one chunk per diff --git header, carrying paths', () => {
+      const chunks = splitPerFileDiff(replayed);
+      expect(chunks.map((c) => c.path)).toEqual([
+        'data/fonts/forum1/icons.woff2',
+        'modules/OO/Topic.pm',
+      ]);
+      // each chunk keeps its own trailing newline so a rejoin is lossless;
+      // a trailing newline is also NORMALIZED in (the input's missing one is
+      // added) — that normalization is what keeps `diff --git` separators on
+      // their own line (#6460).
+      expect(chunks.every((c) => c.text.endsWith('\n'))).toBe(true);
+      expect(chunks.map((c) => c.text).join('')).toBe(`${replayed}\n`);
+    });
+
+    test('a trimmed residue does NOT glue the next file\'s header (#6460)', () => {
+      // execPromise resolves stdout.trim(), so residues arrive WITHOUT a
+      // trailing newline. Rebuilt output must still put every `diff --git`
+      // on its own line — otherwise diff2html merges two files into one
+      // section: heading of file A over hunks of file B (icons.woff2
+      // heading above a .pm diff on PR #6460).
+      const residueA = fileA.replace(/\n$/, ''); // trimmed, as execPromise returns
+      const { diff } = rebuildNetDiff(replayed, new Set(['data/fonts/forum1/icons.woff2']), {
+        'data/fonts/forum1/icons.woff2': residueA,
+      });
+      expect(hasGluedSeparators(diff)).toBe(false);
+      // both files still parse as separate sections; the replaced file is
+      // appended after the non-conflicted chunks (same order as main.js)
+      const chunks = splitPerFileDiff(diff);
+      expect(chunks.map((c) => c.path)).toEqual([
+        'modules/OO/Topic.pm',
+        'data/fonts/forum1/icons.woff2',
+      ]);
+      // and each heading is at the start of its own line
+      expect(diff).toContain('\ndiff --git a/data/fonts/forum1/icons.woff2');
+    });
+
+    test('a residue that already ends with a newline is not double-spaced', () => {
+      const { diff } = rebuildNetDiff(replayed, new Set(['data/fonts/forum1/icons.woff2']), {
+        'data/fonts/forum1/icons.woff2': fileA,
+      });
+      expect(diff).not.toContain('\n\n\ndiff --git');
+      expect(hasGluedSeparators(diff)).toBe(false);
+    });
+
+    test('non-conflicted files keep the replayed text verbatim', () => {
+      // conflicted path is NOT in the replayed diff (already absorbed),
+      // so fileB must survive byte-for-byte
+      const { diff, replacedFiles, leftOutFiles } = rebuildNetDiff(
+        replayed,
+        new Set(['modules/MB/Ghost.pm']),
+        { 'modules/MB/Ghost.pm': '' }
+      );
+      // byte-for-byte, apart from the trailing-newline normalization
+      expect(diff).toBe(`${replayed}\n`);
+      expect(replacedFiles).toEqual([]);
+      expect(leftOutFiles).toEqual(['modules/MB/Ghost.pm']);
+    });
+
+    test('a conflicted file with a non-empty residue is replaced and reported', () => {
+      const residueB = fileB.replace(/\n$/, '');
+      const { diff, replacedFiles, leftOutFiles } = rebuildNetDiff(
+        replayed,
+        new Set(['modules/OO/Topic.pm']),
+        { 'modules/OO/Topic.pm': residueB }
+      );
+      expect(replacedFiles).toEqual(['modules/OO/Topic.pm']);
+      expect(leftOutFiles).toEqual([]);
+      expect(diff).toContain('diff --git a/modules/OO/Topic.pm');
+      expect(hasGluedSeparators(diff)).toBe(false);
+    });
+
+    test('an empty residue (absorbed master content only) leaves the file out entirely', () => {
+      const { diff, replacedFiles, leftOutFiles } = rebuildNetDiff(
+        replayed,
+        new Set(['data/fonts/forum1/icons.woff2']),
+        { 'data/fonts/forum1/icons.woff2': '' }
+      );
+      expect(replacedFiles).toEqual([]);
+      expect(leftOutFiles).toEqual(['data/fonts/forum1/icons.woff2']);
+      // the file vanished from the diff — no header, no content
+      expect(diff).not.toContain('icons.woff2');
+      expect(diff).toContain('diff --git a/modules/OO/Topic.pm');
+    });
+
+    test('accepts a plain array of conflicted paths', () => {
+      const { diff } = rebuildNetDiff(replayed, ['modules/OO/Topic.pm'], {
+        'modules/OO/Topic.pm': fileB.replace(/\n$/, ''),
+      });
+      expect(hasGluedSeparators(diff)).toBe(false);
+    });
   });
 
   test('context expansion of an author-residue file uses the residue range, not base..sinceReviewRef', () => {
