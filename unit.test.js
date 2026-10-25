@@ -328,7 +328,7 @@ function detectBeforeAfterPairs(prBody) {
 
   const pairs = [];
   const lines = prBody.split('\n');
-  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\\s\)]+)\)|src="((?:https?|file):\/\/[^"]+)"/;
+  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\s)]+)\)|src="((?:https?|file):\/\/[^"]+)"/;
 
   for (let i = 0; i < lines.length - 1; i++) {
     const line = lines[i].trim();
@@ -1433,6 +1433,29 @@ describe('detectBeforeAfterPairs', () => {
 ![img](https://example.com/after.png)`;
     const pairs = detectBeforeAfterPairs(body);
     expect(pairs.length).toBe(1);
+  });
+
+  test('detects real-world image URLs with letter s in the host (regression)', () => {
+    // The char class was written [^\\s)] which excluded the letter 's', so every
+    // real URL (amazonaws, websitetoolbox, github user-attachments) went undetected.
+    const body = `**Before**
+![before](https://wt-screenshots.s3.amazonaws.com/topic/x_before.png)
+
+**After**
+![after](https://wt-screenshots.s3.amazonaws.com/topic/x_after.png)`;
+    const pairs = detectBeforeAfterPairs(body);
+    expect(pairs.length).toBe(1);
+    expect(pairs[0].before).toBe('https://wt-screenshots.s3.amazonaws.com/topic/x_before.png');
+    expect(pairs[0].after).toBe('https://wt-screenshots.s3.amazonaws.com/topic/x_after.png');
+  });
+
+  test('detects github user-attachments URLs (regression: s inside the path)', () => {
+    const body = `## Before
+![before](https://github.com/user-attachments/assets/aaaa1111-bbbb-cccc-dddd-eeee22222222)
+
+## After
+![after](https://github.com/user-attachments/assets/ffff3333-4444-5555-6666-aaaa77777777)`;
+    expect(detectBeforeAfterPairs(body).length).toBe(1);
   });
 
   test('detects standalone before/after (pattern 2)', () => {

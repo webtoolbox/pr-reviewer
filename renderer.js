@@ -6290,7 +6290,7 @@ function detectBeforeAfterPairs(prBody) {
   const pairs = [];
   const lines = prBody.split('\n');
   // Match both markdown ![alt](url) and HTML <img src="url"> tags (http, https, or file://)
-  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\\s)]+)\)|src="((?:https?|file):\/\/[^"]+)"/g;
+  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\s)]+)\)|src="((?:https?|file):\/\/[^"]+)"/g;
 
   // Collect all images from a range of lines
   function collectImages(fromLine, toLine) {
