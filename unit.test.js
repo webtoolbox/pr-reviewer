@@ -323,83 +323,10 @@ function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
   return result.join('');
 }
 
-function detectBeforeAfterPairs(prBody) {
-  if (!prBody || typeof prBody !== 'string') return [];
-
-  const pairs = [];
-  const lines = prBody.split('\n');
-  const imageUrlRegex = /!\[.*?\]\(((?:https?|file):\/\/[^\s)]+)\)|src="((?:https?|file):\/\/[^"]+)"/;
-
-  for (let i = 0; i < lines.length - 1; i++) {
-    const line = lines[i].trim();
-    const nextLine = lines[i + 1] ? lines[i + 1].trim() : '';
-
-    const beforeMatch = line.match(/^#{1,6}\s+.*before/i) ||
-                        line.match(/^\*{1,2}\s*before\s*:?\s*\*{0,2}/i) ||
-                        line.match(/^before\s*:/i);
-
-    if (beforeMatch) {
-      let beforeUrl = null;
-      for (let j = i; j <= Math.min(i + 3, lines.length - 1); j++) {
-        const imgMatch = lines[j].match(imageUrlRegex);
-        if (imgMatch) {
-          beforeUrl = imgMatch[1] || imgMatch[2];
-          break;
-        }
-      }
-
-      if (beforeUrl) {
-        for (let k = i + 1; k <= Math.min(i + 10, lines.length - 1); k++) {
-          const afterLine = lines[k].trim();
-          const afterMatch = afterLine.match(/^#{1,6}\s+.*after/i) ||
-                             afterLine.match(/^\*{1,2}\s*after\s*:?\s*\*{0,2}/i) ||
-                             afterLine.match(/^after\s*:/i);
-
-          if (afterMatch) {
-            for (let m = k; m <= Math.min(k + 3, lines.length - 1); m++) {
-              const afterImgMatch = lines[m].match(imageUrlRegex);
-              if (afterImgMatch) {
-                pairs.push({ before: beforeUrl, after: afterImgMatch[1] || afterImgMatch[2] });
-                break;
-              }
-            }
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  // Pattern 2: sequential standalone before/after
-  if (pairs.length === 0) {
-    let pendingBefore = null;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      const isBeforeLine = /^(?:before|after)\s*:?\s*$/i.test(line) ||
-                           /^\*{1,2}\s*(?:before|after)\s*:?\s*\*{0,2}$/i.test(line);
-
-      if (isBeforeLine) {
-        const isBefore = /^before/i.test(line);
-        for (let j = i; j <= Math.min(i + 2, lines.length - 1); j++) {
-          const imgMatch = lines[j].match(imageUrlRegex);
-          if (imgMatch) {
-            const url = imgMatch[1] || imgMatch[2];
-            if (isBefore) {
-              pendingBefore = url;
-            } else if (pendingBefore) {
-              pairs.push({ before: pendingBefore, after: url });
-              pendingBefore = null;
-            }
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  return pairs;
-}
-
+// detectBeforeAfterPairs: single source shared with renderer.js — this file used
+// to carry a divergent copy (string-shaped pairs, different label windows) that
+// hid real bugs; everything below requires the shared module instead.
+const detectBeforeAfterPairs = require('./detect-before-after');
 function getPlatformInstructions(platform) {
   if (platform.includes('mac')) {
     return {
@@ -1410,7 +1337,7 @@ diff --git a/templates/admin/moderators.tpl b/templates/admin/moderators.tpl
   });
 });
 
-// ── detectBeforeAfterPairs ──
+// ── detectBeforeAfterPairs (shared module — URL-array contract) ──
 
 describe('detectBeforeAfterPairs', () => {
   test('detects heading-style before/after with markdown images', () => {
@@ -1421,8 +1348,8 @@ describe('detectBeforeAfterPairs', () => {
 ![after](https://example.com/after.png)`;
     const pairs = detectBeforeAfterPairs(body);
     expect(pairs.length).toBe(1);
-    expect(pairs[0].before).toBe('https://example.com/before.png');
-    expect(pairs[0].after).toBe('https://example.com/after.png');
+    expect(pairs[0].before).toEqual(['https://example.com/before.png']);
+    expect(pairs[0].after).toEqual(['https://example.com/after.png']);
   });
 
   test('detects bold-style before/after', () => {
@@ -1431,30 +1358,6 @@ describe('detectBeforeAfterPairs', () => {
 
 **After:**
 ![img](https://example.com/after.png)`;
-    const pairs = detectBeforeAfterPairs(body);
-    expect(pairs.length).toBe(1);
-  });
-
-  test('detects real-world image URLs with letter s in the host (regression)', () => {
-    // The char class was written [^\\s)] which excluded the letter 's', so every
-    // real URL (amazonaws, websitetoolbox, github user-attachments) went undetected.
-    const body = `**Before**
-![before](https://wt-screenshots.s3.amazonaws.com/topic/x_before.png)
-
-**After**
-![after](https://wt-screenshots.s3.amazonaws.com/topic/x_after.png)`;
-    const pairs = detectBeforeAfterPairs(body);
-    expect(pairs.length).toBe(1);
-    expect(pairs[0].before).toBe('https://wt-screenshots.s3.amazonaws.com/topic/x_before.png');
-    expect(pairs[0].after).toBe('https://wt-screenshots.s3.amazonaws.com/topic/x_after.png');
-  });
-
-  test('detects github user-attachments URLs (regression: s inside the path)', () => {
-    const body = `## Before
-![before](https://github.com/user-attachments/assets/aaaa1111-bbbb-cccc-dddd-eeee22222222)
-
-## After
-![after](https://github.com/user-attachments/assets/ffff3333-4444-5555-6666-aaaa77777777)`;
     expect(detectBeforeAfterPairs(body).length).toBe(1);
   });
 
@@ -1466,7 +1369,7 @@ After:
 ![after](https://example.com/after.png)`;
     const pairs = detectBeforeAfterPairs(body);
     expect(pairs.length).toBe(1);
-    expect(pairs[0].before).toBe('https://example.com/before.png');
+    expect(pairs[0].before).toEqual(['https://example.com/before.png']);
   });
 
   test('returns empty for no before/after pattern', () => {
@@ -1491,8 +1394,24 @@ Some text between
 ![a2](https://example.com/a2.png)`;
     const pairs = detectBeforeAfterPairs(body);
     expect(pairs.length).toBe(2);
-    expect(pairs[0].before).toBe('https://example.com/b1.png');
-    expect(pairs[1].before).toBe('https://example.com/b2.png');
+    expect(pairs[0].before).toEqual(['https://example.com/b1.png']);
+    expect(pairs[1].before).toEqual(['https://example.com/b2.png']);
+  });
+
+  test('collects ALL images between the labels (URL-array contract)', () => {
+    const body = `**Before**
+![b1](https://example.com/b1.png)
+![b2](https://example.com/b2.png)
+
+**After**
+![a1](https://example.com/a1.png)`;
+    const pairs = detectBeforeAfterPairs(body);
+    expect(pairs.length).toBe(1);
+    expect(pairs[0].before).toEqual([
+      'https://example.com/b1.png',
+      'https://example.com/b2.png',
+    ]);
+    expect(pairs[0].after).toEqual(['https://example.com/a1.png']);
   });
 
   test('detects HTML img src patterns', () => {
@@ -1502,7 +1421,7 @@ Some text between
 <img src="https://example.com/after.png">`;
     const pairs = detectBeforeAfterPairs(body);
     expect(pairs.length).toBe(1);
-    expect(pairs[0].before).toBe('https://example.com/before.png');
+    expect(pairs[0].before).toEqual(['https://example.com/before.png']);
   });
 
   test('detects file:// URLs', () => {
@@ -1512,7 +1431,30 @@ Some text between
 ![after](file:///tmp/after.png)`;
     const pairs = detectBeforeAfterPairs(body);
     expect(pairs.length).toBe(1);
-    expect(pairs[0].before).toContain('file://');
+    expect(pairs[0].before[0]).toContain('file://');
+  });
+
+  test('detects real-world image URLs with letter s in the host (regression)', () => {
+    // The char class was written [^\\s)] which excluded the letter 's', so every
+    // real URL (amazonaws, websitetoolbox, github user-attachments) went undetected.
+    const body = `**Before**
+![before](https://wt-screenshots.s3.amazonaws.com/topic/x_before.png)
+
+**After**
+![after](https://wt-screenshots.s3.amazonaws.com/topic/x_after.png)`;
+    const pairs = detectBeforeAfterPairs(body);
+    expect(pairs.length).toBe(1);
+    expect(pairs[0].before).toEqual(['https://wt-screenshots.s3.amazonaws.com/topic/x_before.png']);
+    expect(pairs[0].after).toEqual(['https://wt-screenshots.s3.amazonaws.com/topic/x_after.png']);
+  });
+
+  test('detects github user-attachments URLs (regression: s inside the path)', () => {
+    const body = `## Before
+![before](https://github.com/user-attachments/assets/aaaa1111-bbbb-cccc-dddd-eeee22222222)
+
+## After
+![after](https://github.com/user-attachments/assets/ffff3333-4444-5555-6666-aaaa77777777)`;
+    expect(detectBeforeAfterPairs(body).length).toBe(1);
   });
 });
 
