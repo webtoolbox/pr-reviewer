@@ -6739,7 +6739,11 @@ async function showRulesDialog(reviewFeedback, reviewTarget) {
   if (!config.rules || !config.rules.enabled) return false;
 
   rulesTargetRepo = (reviewTarget && reviewTarget.repo) || currentRepoKey || null;
-  rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath) || currentRepoPath || null;
+  // Never hand the main process a checkout belonging to a DIFFERENT repo: the
+  // on-screen PR's path is only a valid fallback when the on-screen PR IS the
+  // repo we are reading rules for.
+  rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath)
+    || ((!rulesTargetRepo || rulesTargetRepo === currentRepoKey) ? currentRepoPath : null);
 
   showToast('Analyzing feedback against existing rules...', 'progress');
   

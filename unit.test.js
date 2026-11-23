@@ -6545,7 +6545,9 @@ describe('Rules target the reviewed PR repo (renderer)', () => {
 
   test('the request carries the reviewed PR repo, not whichever PR is on screen later', () => {
     expect(dialogSrc).toContain('rulesTargetRepo = (reviewTarget && reviewTarget.repo) || currentRepoKey || null;');
-    expect(dialogSrc).toContain('rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath) || currentRepoPath || null;');
+    // The on-screen checkout is only a fallback when it belongs to the same repo
+    expect(dialogSrc).toContain("((!rulesTargetRepo || rulesTargetRepo === currentRepoKey) ? currentRepoPath : null)");
+    expect(dialogSrc).not.toContain('rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath) || currentRepoPath || null;');
     expect(dialogSrc).toContain('repo: rulesTargetRepo');
     expect(dialogSrc).toContain('repoPath: rulesTargetRepoPath');
     // propose uses the repo the main process actually read the rules from
