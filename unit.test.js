@@ -3229,8 +3229,10 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
 
   test('REAL GIT: a conflicted replay leaves no conflict markers in the net diff', async () => {
     const { exec, execSync } = require('child_process');
-    // Load the real function out of main.js (it only depends on execPromise,
-    // log, path, os and fs), then replay a conflict it must survive.
+    // Load the real function out of main.js (it depends on execPromise, log,
+    // path, os, fs and the repo write guard), then replay a conflict it must
+    // survive. The guard is wired exactly as main.js wires it, so the test also
+    // proves the app's own temp worktrees are treated as app-owned.
     const execSrc = mainSource.substring(
       mainSource.indexOf('function execPromise('),
       mainSource.indexOf('\n// Helper: paginate')
@@ -3239,8 +3241,11 @@ describe('computeSinceReviewNetDiff (since-review net diff)', () => {
     const fnSrc = mainSource.substring(fnStart, mainSource.indexOf('function changedFilesFromDiff(', fnStart));
     const execPromise = new Function('exec', `return (${execSrc})`)(exec);
     const logs = [];
-    const compute = new Function('execPromise', 'log', 'path', 'os', 'fs', `return (${fnSrc})`)(
-      execPromise, (...a) => logs.push(a.join(' ')), path, os, fs
+    const guard = require('./repo-guard.js');
+    const ownsRepoPath = (p) => guard.isAppOwnedRepoPath(p, { appDataDir: '/nonexistent-app-data', tmpDir: os.tmpdir() });
+    const refuseForeignWrite = (p, what) => { logs.push('refused to ' + what + ' in ' + p); return false; };
+    const compute = new Function('execPromise', 'log', 'path', 'os', 'fs', 'ownsRepoPath', 'refuseForeignWrite', `return (${fnSrc})`)(
+      execPromise, (...a) => logs.push(a.join(' ')), path, os, fs, ownsRepoPath, refuseForeignWrite
     );
 
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-reviewer-conflict-'));
@@ -4036,10 +4041,16 @@ describe('AI chat never touches the user working copy', () => {
     const start = mainSource.indexOf('function buildChatPrompt');
     const end = mainSource.indexOf('function cleanHermesResponse', start);
     const fn = mainSource.substring(start, end);
-    expect(fn).toContain('Repository checkout to use for ALL git commands');
-    expect(fn).toContain('NEVER run git checkout');
-    expect(fn).toContain('~/Repos/Website-Toolbox');
-    expect(fn).toContain('repoPath');
+    // The wording lives in the one shared helper every agent prompt uses
+    expect(fn).toContain('for (const line of repoWritePolicyLines(repoPath)) lines.push(line);');
+    const policy = mainSource.substring(
+      mainSource.indexOf('function repoWritePolicyLines(repoPath)'),
+      mainSource.indexOf('// Build a conversational prompt')
+    );
+    expect(policy).toContain('Repository checkout to use for ALL git commands');
+    expect(policy).toContain('NEVER run a branch- or tree-changing command');
+    expect(policy).toContain('~/Repos/Website-Toolbox');
+    expect(policy).toContain('their current branch must not change');
   });
 
   test('ai-chat handler resolves and passes that repo path', () => {
@@ -6570,5 +6581,107 @@ describe('Rules target the reviewed PR repo (renderer)', () => {
     expect(dialogSrc).toContain("rulesData.noRulesFiles ? ' (no rules file yet)' : ''");
     const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
     expect(html).toContain('id="rules-repo"');
+  });
+});
+
+describe('Repo write guard (which checkouts the app may touch)', () => {
+  const { isAppOwnedRepoPath } = require('./repo-guard.js');
+  const APP_DATA = '/Users/someone/Library/Application Support/pr-reviewer';
+  const TMP = '/var/folders/xy/T';
+  const opts = { appDataDir: APP_DATA, tmpDir: TMP };
+
+  test('the app may write to its own clones and its own worktrees', () => {
+    expect(isAppOwnedRepoPath(`${APP_DATA}/repos/Website-Toolbox`, opts)).toBe(true);
+    expect(isAppOwnedRepoPath(`${APP_DATA}/repos/wordpress-plugin/`, opts)).toBe(true);
+    expect(isAppOwnedRepoPath(`${APP_DATA}/worktrees/pr-8033`, opts)).toBe(true);
+    expect(isAppOwnedRepoPath(`${TMP}/pr-reviewer-since-review-1700000000000`, opts)).toBe(true);
+  });
+
+  test('the reviewer own checkouts are refused', () => {
+    expect(isAppOwnedRepoPath('/Users/someone/Website-Toolbox', opts)).toBe(false);
+    expect(isAppOwnedRepoPath('/Users/someone/Repos/Website-Toolbox', opts)).toBe(false);
+    expect(isAppOwnedRepoPath('/Users/someone/Repos/Website-Toolbox/', opts)).toBe(false);
+    expect(isAppOwnedRepoPath('~/Repos/Website-Toolbox', opts)).toBe(false);
+    expect(isAppOwnedRepoPath('/tmp/Website-Toolbox', opts)).toBe(false);
+    // Any other temp dir is not the app's either
+    expect(isAppOwnedRepoPath(`${TMP}/other-thing`, opts)).toBe(false);
+    // Sibling of repos/, not inside it
+    expect(isAppOwnedRepoPath(`${APP_DATA}/repos-other/Website-Toolbox`, opts)).toBe(false);
+    expect(isAppOwnedRepoPath(`${APP_DATA}/generated/pr-1`, opts)).toBe(false);
+  });
+
+  test('empty or malformed paths are refused rather than guessed', () => {
+    expect(isAppOwnedRepoPath('', opts)).toBe(false);
+    expect(isAppOwnedRepoPath(null, opts)).toBe(false);
+    expect(isAppOwnedRepoPath(undefined, opts)).toBe(false);
+    expect(isAppOwnedRepoPath(`${APP_DATA}/repos/Website-Toolbox`, {})).toBe(false);
+    expect(isAppOwnedRepoPath(`${APP_DATA}/repos/Website-Toolbox`, { appDataDir: '' })).toBe(false);
+  });
+
+  test('windows separators do not let a foreign path look owned', () => {
+    expect(isAppOwnedRepoPath(`${APP_DATA}/repos/Website-Toolbox`.replace(/\//g, '\\'), opts)).toBe(true);
+    expect(isAppOwnedRepoPath('C:\\Users\\someone\\Website-Toolbox', opts)).toBe(false);
+  });
+});
+
+describe('Repo write guard wiring (main process)', () => {
+  let mainSource, preloadSource;
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    preloadSource = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+  });
+
+  test('the shared guard is what main.js uses', () => {
+    expect(mainSource).toContain("const { isAppOwnedRepoPath } = require('./repo-guard');");
+    expect(mainSource).toContain('return isAppOwnedRepoPath(repoPath, { appDataDir: getAppDataDir(), tmpDir: os.tmpdir() });');
+  });
+
+  test('a foreign checkout is never handed out as the repo path', () => {
+    const start = mainSource.indexOf('function getLocalRepoPath(repoKey) {');
+    const body = mainSource.substring(start, start + 1700);
+    // The config repoPath fallback is gone: it could point at the reviewer's checkout
+    expect(body).not.toContain('return expandPath(appConfig.repoPath)');
+    expect(body).toContain('!ownsRepoPath(appConfig.repoPath)');
+    expect(body).toContain('it is outside the app');
+  });
+
+  test('the app can no longer check a clone out onto master (or any branch)', () => {
+    expect(mainSource).not.toContain("ipcMain.handle('checkout-master'");
+    expect(mainSource).not.toContain('git checkout master');
+    expect(mainSource).not.toContain('git checkout main');
+    expect(preloadSource).not.toContain('checkoutMaster');
+    expect(preloadSource).not.toContain('checkout-master');
+  });
+
+  test('every write to a repository is gated on the app owning it', () => {
+    // fetch (creates pr-<N> branches), the since-review replay worktrees, the
+    // rules-file local sync
+    expect(mainSource).toContain('const canFetchInRepo = ownsRepoPath(repoPath);');
+    expect(mainSource).toContain('if (!canFetchInRepo) refuseForeignWrite(repoPath, ');
+    expect(mainSource).toContain("refuseForeignWrite(repoPath, 'replaying PR commits to build the since-review diff');");
+    expect(mainSource).toContain('if (localRepo && !ownsRepoPath(localRepo)) {');
+  });
+
+  test('a skipped fetch keeps the load path working instead of throwing', () => {
+    const start = mainSource.indexOf('async function generateDiff(prNumber, repoKey) {');
+    const body = mainSource.substring(start, start + 14000);
+    expect(body).toContain('const skippedFetch = Promise.resolve(');
+    expect(body).toContain(': [skippedFetch, skippedFetch]);');
+    expect(body).toContain('if (!canFetchInRepo) {');
+  });
+
+  test('every agent prompt that may run git names the app clone and the off-limits copies', () => {
+    const policy = mainSource.substring(
+      mainSource.indexOf('function repoWritePolicyLines(repoPath)'),
+      mainSource.indexOf('// Build a conversational prompt')
+    );
+    expect(policy).toContain('Repository checkout to use for ALL git commands: ');
+    expect(policy).toContain('NEVER run a branch- or tree-changing command');
+    expect(policy).toContain('their current branch must not change');
+    // ai-chat, the rules proposal and auto-fix all carry it
+    expect(mainSource).toContain('for (const line of repoWritePolicyLines(repoPath)) lines.push(line);');
+    expect(mainSource).toContain("${repoWritePolicyLines(rulesRepoPath).map(l => '\\n' + l).join('')}");
+    expect(mainSource).toContain("${repoWritePolicyLines(repoPath).map(l => '\\n' + l).join('')}");
+    expect(mainSource).toContain('**Checkout**: ${repoPath}');
   });
 });

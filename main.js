@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { execFile, exec, execSync } = require('child_process');
 const { rebuildNetDiff } = require('./rebuild-net-diff');
+const { isAppOwnedRepoPath } = require('./repo-guard');
 
 // ── File-based logger ──────────────────────────────────────────────────────────
 const LOG_DIR = app.getPath('userData');
@@ -206,6 +207,18 @@ async function getPrChatContext(prNumber, repoKey) {
   }
 }
 
+// The lines every agent prompt must carry when the agent may run git. The app's
+// own clone is named explicitly, and the reviewer's checkouts are named as
+// off-limits: an agent that picks ~/Website-Toolbox both switched the branch the
+// reviewer was working on and left pr-<N> branches behind in it.
+function repoWritePolicyLines(repoPath) {
+  if (!repoPath) return [];
+  return [
+    'Repository checkout to use for ALL git commands: ' + repoPath,
+    'Run every git command in that directory. NEVER run a branch- or tree-changing command (git checkout, git switch, git fetch, git pull, git push, git merge, git cherry-pick, git worktree add/remove, git commit, git reset) in ~/Website-Toolbox, ~/Repos/Website-Toolbox, /Users/sandeep/Website-Toolbox or any other copy of this repository — those are the user\'s own working copies and their current branch must not change. Read-only commands (git show, git log, git diff with explicit refs, git grep) against them are fine.'
+  ];
+}
+
 // Build a conversational prompt embedding prior messages for back-and-forth chat
 function buildChatPrompt(context, history, message, repoPath) {
   const lines = [
@@ -213,13 +226,7 @@ function buildChatPrompt(context, history, message, repoPath) {
     "Answer the user's questions about the code, the branch, or the pull request concisely and helpfully.",
     'When you need to search or locate files/code, ALWAYS prefer `fd` over `find` and `rg` over `grep` — they are installed and far faster.'
   ];
-  if (repoPath) {
-    // The app keeps its own clone. Agents that pick the user's checkout
-    // (~/Repos/Website-Toolbox) instead end up switching branches in the
-    // user's own working copy — never allow that.
-    lines.push('Repository checkout to use for ALL git commands: ' + repoPath);
-    lines.push('Run every git command in that directory. NEVER run git checkout, git switch, git pull, git push, git commit or any other branch-changing command in ~/Repos/Website-Toolbox, ~/Website-Toolbox or any other copy of this repository — those are the user\'s own working copies and their current branch must not change. Read-only commands (git show, git log, git grep) against them are fine.');
-  }
+  for (const line of repoWritePolicyLines(repoPath)) lines.push(line);
   if (context) lines.push('Current pull request context: ' + context);
   lines.push('');
   lines.push('Conversation so far:');
@@ -470,16 +477,38 @@ function expandPath(p) {
 // this path is used for fetches, ref updates, worktree add/remove and prune,
 // which would disturb the checkout the reviewer has open in their editor.
 const warnedMissingClone = new Set();
+const warnedForeignConfigPath = new Set();
+
+// Every fs/git operation that WRITES to a repository goes through this. The rule
+// itself (which paths count as the app's own) lives in repo-guard.js so main.js
+// and the unit tests cannot drift apart.
+function ownsRepoPath(repoPath) {
+  return isAppOwnedRepoPath(repoPath, { appDataDir: getAppDataDir(), tmpDir: os.tmpdir() });
+}
+
+// Log-and-refuse: callers either skip the mutation or bail out early. Nothing in
+// this app may mutate a checkout it does not own (see repo-guard.js).
+function refuseForeignWrite(repoPath, what) {
+  log('WARN', `[repo-guard] Not ${what} in ${repoPath} - that is not the app's own clone, so it is the reviewer's checkout and must keep its branch and its branches`);
+  return false;
+}
+
 function getLocalRepoPath(repoKey) {
   const repoName = repoKey && repoKey.includes('/')
     ? repoKey.split('/')[1]
     : (appConfig.repoName || 'Website-Toolbox');
   const dataReposPath = path.join(getAppDataDir(), 'repos', repoName);
   if (fs.existsSync(dataReposPath)) return dataReposPath;
-  // Configured repoPath (config.json points at the same app-owned clone)
+  // A configured repoPath OUTSIDE the app's own clones is deliberately ignored:
+  // handing it out is how the reviewer's checkout got fetched into, given pr-<N>
+  // branches and switched to a PR branch. The app says so once and uses its own
+  // (not yet cloned) location instead.
   const defaultRepoKey = `${appConfig.repoOwner}/${appConfig.repoName}`;
-  if ((!repoKey || repoKey === defaultRepoKey) && appConfig.repoPath) {
-    return expandPath(appConfig.repoPath);
+  if ((!repoKey || repoKey === defaultRepoKey) && appConfig.repoPath && !ownsRepoPath(appConfig.repoPath)) {
+    if (!warnedForeignConfigPath.has(appConfig.repoPath)) {
+      warnedForeignConfigPath.add(appConfig.repoPath);
+      log('WARN', `[repo-path] Ignoring config repoPath ${appConfig.repoPath}: it is outside the app's own clones (${path.join(getAppDataDir(), 'repos')}) and is never written to`);
+    }
   }
   // Not cloned yet: return the app's own location and say so once, instead of
   // quietly reading and writing the reviewer's own checkout.
@@ -908,6 +937,13 @@ function isMasterImportCommit(commit) {
 
 async function computeSinceReviewNetDiff(repoPath, baseSha, afterReviewShas, headSha) {
   if (!repoPath || !baseSha || !afterReviewShas || afterReviewShas.length === 0) {
+    return { diff: '', sinceReviewRef: null };
+  }
+  // Replaying PR commits needs `git worktree add` + cherry-pick in the clone; a
+  // checkout the app does not own is left alone and the caller falls back to the
+  // plain PR diff.
+  if (!ownsRepoPath(repoPath)) {
+    refuseForeignWrite(repoPath, 'replaying PR commits to build the since-review diff');
     return { diff: '', sinceReviewRef: null };
   }
   const worktreePath = path.join(os.tmpdir(), `pr-reviewer-since-review-${Date.now()}`);
@@ -1358,6 +1394,13 @@ async function generateDiff(prNumber, repoKey) {
     }
   }
 
+  // Fetching is a WRITE: `git fetch origin pull/N/head:pr-N` creates a local
+  // branch. Only the app's own clone may be written to, so a foreign checkout
+  // (i.e. the reviewer's) is left untouched and the PR opens from the gh pr diff
+  // instead of hard-failing.
+  const canFetchInRepo = ownsRepoPath(repoPath);
+  if (!canFetchInRepo) refuseForeignWrite(repoPath, 'fetching PR refs');
+
   // Fetch the PR branch and master in parallel (both independent network calls).
   // On a shallow clone, fetching the PR branch brings in both headSha and baseSha.
   // master is fetched fresh EVERY load (depth-1) so diffs are computed against
@@ -1369,10 +1412,11 @@ async function generateDiff(prNumber, repoKey) {
   // and surfaced as "Cannot fetch head commit". master is fetched WITHOUT
   // --depth=1: each depth-1 fetch re-shallowed the clone, which is exactly
   // what made every cold PR head fetch re-download hundreds of MB.
-  const [prFetch, masterFetch] = await Promise.allSettled([
+  const skippedFetch = Promise.resolve('skipped: not the app\'s own clone');
+  const [prFetch, masterFetch] = await Promise.allSettled(canFetchInRepo ? [
     execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 300000 }),
     execPromise('git fetch origin master:refs/remotes/origin/master --force', { cwd: repoPath, timeout: 120000 })
-  ]);
+  ] : [skippedFetch, skippedFetch]);
   if (prFetch.status === 'fulfilled') log('INFO', '[generateDiff] Fetched PR branch successfully');
   else log('ERROR', '[generateDiff] PR branch fetch failed:', prFetch.reason && prFetch.reason.message);
   if (masterFetch.status === 'rejected') log('ERROR', '[generateDiff] master fetch failed:', masterFetch.reason && masterFetch.reason.message);
@@ -1390,6 +1434,7 @@ async function generateDiff(prNumber, repoKey) {
   if (!(await shaExists(headSha))) {
     log('INFO', `[generateDiff] Head SHA ${headSha.substring(0,7)} still not available after PR fetch — retrying once`);
     try {
+      if (!canFetchInRepo) throw new Error('skipped: not the app\'s own clone');
       await execPromise(`git fetch origin pull/${prNumber}/head:pr-${prNumber}`, { cwd: repoPath, timeout: 300000 });
     } catch (retryErr) {
       log('ERROR', '[generateDiff] PR branch fetch retry failed:', retryErr.message);
@@ -1406,9 +1451,14 @@ async function generateDiff(prNumber, repoKey) {
   if (localGitReady && !(await shaExists(baseSha))) {
     log('INFO', `[generateDiff] Base SHA ${baseSha.substring(0,7)} not in local repo, fetching individually`);
     try {
+      if (!canFetchInRepo) throw new Error('not the app\'s own clone');
       await execPromise(`git fetch origin ${baseSha}`, { cwd: repoPath, timeout: 300000 });
     } catch (fetchErr) {
-      throw new Error(`Cannot reach base commit ${baseSha.substring(0,7)}: ${fetchErr.message}`);
+      if (!canFetchInRepo) {
+        log('WARN', `[generateDiff] Base commit ${baseSha.substring(0,7)} not fetched: ${repoPath} is not the app's own clone`);
+      } else {
+        throw new Error(`Cannot reach base commit ${baseSha.substring(0,7)}: ${fetchErr.message}`);
+      }
     }
   }
 
@@ -1929,26 +1979,6 @@ ipcMain.handle('find-in-page', (event, { text, options }) => {
 ipcMain.handle('stop-find-in-page', (event, { action }) => {
   event.sender.stopFindInPage(action || 'clearSelection');
   return true;
-});
-
-ipcMain.handle('checkout-master', async (event, { repoKey }) => {
-  const repoPath = getLocalRepoPath(repoKey);
-  if (!repoPath) return { error: 'No repo path' };
-  try {
-    // Try master first, then main
-    try {
-      await execPromise('git checkout master', { cwd: repoPath, timeout: 10000 });
-      log('INFO', '[checkout-master] Switched to master branch in', repoKey);
-      return { branch: 'master' };
-    } catch {
-      await execPromise('git checkout main', { cwd: repoPath, timeout: 10000 });
-      log('INFO', '[checkout-master] Switched to main branch in', repoKey);
-      return { branch: 'main' };
-    }
-  } catch (err) {
-    log('ERROR', '[checkout-master] Failed:', err.message);
-    return { error: err.message };
-  }
 });
 
 ipcMain.handle('open-file', async (event) => {
@@ -3361,6 +3391,9 @@ ipcMain.handle('auto-fix-with-ai', async (event, { prNumber, comments, reviewBod
 **Head Branch**: ${headBranch}
 **Base Branch**: ${baseBranch}
 
+**Checkout**: ${repoPath}
+${repoWritePolicyLines(repoPath).map(l => '\n' + l).join('')}
+
 **Review Comments**:
 ${commentSummary}${bodySummary}
 
@@ -4547,7 +4580,12 @@ ipcMain.handle('propose-rules', async (event, data = {}) => {
     }
   }
 
+  // The app's own clone, named in the prompt: the agent searches files while
+  // analysing, and it must do that here, not in the reviewer's own checkout.
+  const rulesRepoPath = (data && data.repoPath) || getLocalRepoPath(target.key);
+
   const prompt = `You are analyzing code review feedback to propose new agent rules for the ${owner}/${repo} repository.
+${repoWritePolicyLines(rulesRepoPath).map(l => '\n' + l).join('')}
 
 When you search or locate files/code as part of this analysis, ALWAYS prefer \`fd\` over \`find\` and \`rg\` over \`grep\` — they are installed and far faster.
 
@@ -4579,7 +4617,6 @@ Keep rules concise — one sentence each when possible.`;
     // Run inside the PR's repo when we have one, so fd/rg searches the prompt
     // invites land on the right codebase (the app's own cwd is not the repo).
     const aiOpts = { timeout: 60000 };
-    const rulesRepoPath = (data && data.repoPath) || getLocalRepoPath(target.key);
     if (rulesRepoPath && fs.existsSync(rulesRepoPath)) aiOpts.cwd = rulesRepoPath;
     const proc = require('child_process').execFile(aiCmd, args, aiOpts, (err, stdout) => {
       if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles, error: err.message }); return; }
@@ -4794,7 +4831,9 @@ ipcMain.handle('save-agent-rules', async (event, data = {}) => {
       // in-progress work or inject master changes into another branch.
       try {
         const localRepo = rulesRepoPath;
-        if (localRepo && fs.existsSync(localRepo)) {
+        if (localRepo && !ownsRepoPath(localRepo)) {
+          log('INFO', `[propose-rules] Skipped local sync for ${file}: ${localRepo} is not the app's own clone`);
+        } else if (localRepo && fs.existsSync(localRepo)) {
           const branch = await execPromise(`git -C "${localRepo}" rev-parse --abbrev-ref HEAD`).catch(() => '');
           const isMaster = branch.trim() === 'master' || branch.trim() === 'main';
           if (!isMaster) {
