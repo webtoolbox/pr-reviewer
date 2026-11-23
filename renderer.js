@@ -4425,6 +4425,7 @@ function closePrDropdown() {
 }
 
 async function openPrDropdown() {
+  closePrDescDropdown();
   // Position dropdown directly under the ▾ button
   const btnRect = btnPrList.getBoundingClientRect();
   prDropdown.style.top = (btnRect.bottom + 4) + 'px';
@@ -4698,6 +4699,7 @@ function closeFileFilterDropdown() {
 }
 
 function openFileFilterDropdown() {
+  closePrDescDropdown();
   // Position dropdown under the button
   const btnRect = btnFileFilter.getBoundingClientRect();
   fileFilterDropdown.style.top = (btnRect.bottom + 4) + 'px';
@@ -4975,6 +4977,7 @@ function toggleRepoDropdown() {
 }
 
 function openRepoDropdown() {
+  closePrDescDropdown();
   const btnRect = btnRepos.getBoundingClientRect();
   repoDropdown.style.top = (btnRect.bottom + 4) + 'px';
   repoDropdown.style.right = (window.innerWidth - btnRect.right) + 'px';
@@ -5259,8 +5262,11 @@ function addFileCollapseToggleForWrapper(wrapper, fileName) {
     else collapsedFiles.delete(fileName);
     toggle.classList.toggle('collapsed', collapsed);
     toggle.title = collapsed ? 'Expand file' : 'Collapse file';
-    // Keep all collapsed files grouped at the end after a manual toggle
-    reorderCollapsedFilesLast();
+    // NO reorderCollapsedFilesLast() here, on purpose. Regrouping moved the very
+    // file the reviewer just toggled: expanding a collapsed file shot it up into
+    // the expanded group at the top of the diff, and collapsing one sent it to
+    // the bottom. The file now stays exactly where it is on screen. The
+    // collapsed-at-the-end order is established only when a diff is rendered.
   });
 
   // Place toggle at the far left of the header (before the file name)
@@ -5719,6 +5725,7 @@ function closeCommitsPanel() {
 }
 
 function openCommitsPanel() {
+  closePrDescDropdown();
   const btnRect = btnCommits.getBoundingClientRect();
   commitsPanel.style.top = (btnRect.bottom + 4) + 'px';
   commitsPanel.style.right = (window.innerWidth - btnRect.right) + 'px';
@@ -5760,6 +5767,7 @@ function closeCommentsPanel() {
 
 function openCommentsPanel() {
   if (!btnComments || !commentsPanel) return;
+  closePrDescDropdown();
   const btnRect = btnComments.getBoundingClientRect();
   commentsPanel.style.top = (btnRect.bottom + 4) + 'px';
   commentsPanel.style.right = (window.innerWidth - btnRect.right) + 'px';
@@ -6278,6 +6286,8 @@ let prDescShownFor = null;
 // Open the PR description pane. Kept separate from togglePrDescDropdown so
 // loadPrByNumber can show it for a new PR without the close half of a toggle.
 function openPrDescDropdown() {
+  closeToolbarPanesForPrDesc();
+
   let dropdown = document.getElementById('pr-desc-dropdown');
   if (!dropdown) {
     dropdown = document.createElement('div');
@@ -6357,12 +6367,28 @@ function autoShowPrDescForNewPr(prNumber) {
   openPrDescDropdown();
 }
 
+// One pane at a time. The description is a floating pane over the diff and sits
+// on the SAME layer (z-index 1001) as the toolbar dropdowns, so the two stacked
+// on top of each other when both were open. Two halves: every other pane opener
+// calls closePrDescDropdown() before showing itself, and opening the description
+// closes those panes back (closeToolbarPanesForPrDesc).
 function closePrDescDropdown() {
   const dropdown = document.getElementById('pr-desc-dropdown');
   if (dropdown) { dropdown.classList.remove('open'); dropdown.style.width = ''; dropdown.style.maxWidth = ''; }
   const toggleBtn = document.querySelector('.pr-desc-toggle');
   if (toggleBtn) toggleBtn.classList.remove('open');
 }
+// The toolbar panes step aside when the description opens (the other half of the
+// one-pane-at-a-time rule above). Overlays are not listed: they paint above the
+// description (z-index 1099+) and cannot be reached while it is open.
+function closeToolbarPanesForPrDesc() {
+  if (typeof closePrDropdown === 'function') closePrDropdown();
+  if (typeof closeRepoDropdown === 'function') closeRepoDropdown();
+  if (typeof closeFileFilterDropdown === 'function') closeFileFilterDropdown();
+  if (typeof closeCommitsPanel === 'function') closeCommitsPanel();
+  if (typeof closeCommentsPanel === 'function') closeCommentsPanel();
+}
+
 // ===================== BEFORE/AFTER IMAGE COMPARISON =====================
 
 let beforeAfterPairs = [];
@@ -6375,6 +6401,7 @@ let compareZoomedSide = null; // null | 'before' | 'after'
 // Open before/after comparison slideshow
 function openCompareSlideshow(index) {
   if (!beforeAfterPairs || beforeAfterPairs.length === 0) return;
+  closePrDescDropdown();
   compareOverlayIndex = index || 0;
   compareZoomedSide = null;
 
@@ -6736,6 +6763,7 @@ async function showRulesDialog(reviewFeedback) {
     currentRuleProposals = result.proposals || [];
     rulesAvailableFiles = result.availableFiles || ['AGENTS.md'];
     
+    closePrDescDropdown();
     rulesOverlay.style.display = 'flex';
     btnRulesSave.disabled = false;
     let html = '';
@@ -6888,6 +6916,7 @@ function setNestedValue(obj, path, value) {
 }
 
 async function openPreferences() {
+  closePrDescDropdown();
   try {
     const config = await window.electronAPI.getConfig();
 
@@ -7076,6 +7105,7 @@ function openReviewHistoryDropdown() {
   if (!reviewHistoryOverlay) return;
   closePrDropdown();
   closeRepoDropdown();
+  closePrDescDropdown();
   renderReviewHistoryDropdown();
   reviewHistoryOverlay.style.display = 'flex';
 }
@@ -7098,6 +7128,7 @@ function openShortcutsDialog() {
   if (!shortcutsOverlay) return;
   // Close prefs if open so the shortcut dialog sits on top cleanly
   if (prefsOverlay && prefsOverlay.style.display === 'flex') closePreferences();
+  closePrDescDropdown();
   shortcutsOverlay.style.display = 'flex';
 }
 function closeShortcutsDialog() {
@@ -7950,7 +7981,10 @@ if (btnAiChat && aiChatPanel) {
   btnAiChat.addEventListener('click', (e) => {
     e.stopPropagation();
     const isOpen = aiChatPanel.classList.contains('open');
-    if (!isOpen) positionAiChatPanel();
+    if (!isOpen) {
+      closePrDescDropdown();
+      positionAiChatPanel();
+    }
     aiChatPanel.classList.toggle('open');
     if (!isOpen && aiChatInput) aiChatInput.focus();
   });
@@ -7992,6 +8026,7 @@ function openPrCommentDialog() {
   // The comments list reopens when the dialog closes, so the user lands back
   // on the dropdown they pressed "+" in.
   closeCommentsPanel();
+  closePrDescDropdown();
   if (prCommentBackdrop) prCommentBackdrop.classList.add('open');
   prCommentPanel.classList.add('open');
   if (reviewBody) setTimeout(() => reviewBody.focus(), 0);

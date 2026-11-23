@@ -5009,13 +5009,22 @@ describe('Collapsed files reorder to end', () => {
     expect(funcSrc).toContain('d2h-dark-color-scheme');
   });
 
-  test('reorderCollapsedFilesLast is called after renders and on toggle', () => {
+  test('reorderCollapsedFilesLast runs after renders but NOT on a manual toggle', () => {
     expect(rendererSource).toContain('reorderCollapsedFilesLast();');
-    // Called in loadDiff, renderFilteredDiff, applyExtensionFilterInPlace and
-    // the toggle click handler
+    // Called by the render paths that establish the collapsed-at-the-end order
+    // (loadDiff, renderFilteredDiff, applyExtensionFilterInPlace)
     const calls = rendererSource.match(/reorderCollapsedFilesLast\(\);/g);
     expect(calls).not.toBeNull();
-    expect(calls.length).toBeGreaterThanOrEqual(4);
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    // The manual expand/collapse toggle must not regroup: it moved the file the
+    // reviewer had just toggled to another part of the page (an expanded file
+    // shot up into the top group) instead of leaving it where it was.
+    const toggleStart = rendererSource.indexOf('function addFileCollapseToggleForWrapper(');
+    const toggleEnd = rendererSource.indexOf('function collapseFileWrapper(', toggleStart);
+    expect(toggleStart).toBeGreaterThan(-1);
+    const toggleSrc = rendererSource.substring(toggleStart, toggleEnd);
+    expect(toggleSrc).not.toContain('reorderCollapsedFilesLast();');
+    expect(toggleSrc).toContain("classList.toggle('filtered-collapsed')");
   });
 
   test('extension filter reorders after collapsing in place', () => {
@@ -6414,5 +6423,58 @@ describe('PR description pane', () => {
     const block = rendererSource.substring(idx, idx + 300);
     expect(block).toContain("classList.remove('open')");
     expect(block).not.toContain('scrollTop');
+  });
+});
+
+// ── One pane at a time ──
+
+describe('One pane at a time', () => {
+  let rendererSource;
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+  });
+
+  test('every other pane opener closes the PR description first', () => {
+    // The toolbar buttons stopPropagation, so the document-level "click outside
+    // closes it" listener never fired for them and the description stayed open
+    // underneath the panel that had just opened.
+    const openers = [
+      ['async function openPrDropdown()', 400],
+      ['function openFileFilterDropdown()', 400],
+      ['function openRepoDropdown()', 400],
+      ['function openCommitsPanel()', 400],
+      ['function openCommentsPanel()', 400],
+      ['function openReviewHistoryDropdown()', 400],
+      ['async function openPreferences()', 400],
+      ['function openShortcutsDialog()', 400],
+      ['function openPrCommentDialog()', 400],
+      ['function openCompareSlideshow(index)', 400],
+      ['async function showRulesDialog(reviewFeedback)', 2200]
+    ];
+    const missing = [];
+    for (const [signature, window] of openers) {
+      const start = rendererSource.indexOf(signature);
+      if (start === -1) { missing.push(signature + ' (not found)'); continue; }
+      const body = rendererSource.substring(start, start + window);
+      if (!body.includes('closePrDescDropdown();') && !body.includes('closePrDescForOtherPane();')) {
+        missing.push(signature);
+      }
+    }
+    expect(missing).toEqual([]);
+    // The AI chat panel opens from an inline handler, not a function
+    expect(rendererSource).toContain("if (!isOpen) {\n      closePrDescDropdown();");
+  });
+
+  test('opening the description closes the toolbar panes back', () => {
+    const start = rendererSource.indexOf('function openPrDescDropdown()');
+    const src = rendererSource.substring(start, start + 300);
+    expect(src).toContain('closeToolbarPanesForPrDesc();');
+    const helperIdx = rendererSource.indexOf('function closeToolbarPanesForPrDesc()');
+    expect(helperIdx).toBeGreaterThan(-1);
+    const helper = rendererSource.substring(helperIdx, helperIdx + 600);
+    for (const fn of ['closePrDropdown', 'closeRepoDropdown', 'closeFileFilterDropdown',
+                      'closeCommitsPanel', 'closeCommentsPanel']) {
+      expect(helper).toContain(`${fn}()`);
+    }
   });
 });

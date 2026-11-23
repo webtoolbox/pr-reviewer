@@ -2186,6 +2186,60 @@ async function runTests() {
   `);
   assert('Every file header has a working expand/collapse toggle', collapseToggle === 'ok', `result: ${collapseToggle}`);
 
+  // TEST: Toggling a file's collapse state must NOT move it elsewhere in the page.
+  // Regrouping collapsed files on a manual toggle used to shoot an expanded file
+  // up to the top group (or send a collapsed one to the bottom) while the
+  // reviewer was looking at it.
+  const toggleStaysPut = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      hiddenExtensions = [];
+      hiddenPathPatterns = [];
+      document.querySelectorAll('.d2h-file-wrapper').forEach(w => w.classList.remove('filtered-collapsed'));
+      collapsedFiles.clear();
+      addFileCollapseToggles();
+      const wrappers = () => Array.from(document.querySelectorAll('.d2h-file-wrapper'));
+      const names = () => wrappers().map(w => {
+        const n = w.querySelector('.d2h-file-name');
+        return n ? n.textContent.trim() : '';
+      });
+      if (wrappers().length < 3) return 'need-3-files';
+      const orderBefore = names();
+      const first = wrappers()[0];
+      const scrollable = document.documentElement.scrollHeight > window.innerHeight;
+      if (scrollable) window.scrollTo(0, 60);
+      const scrollBefore = window.scrollY;
+      first.querySelector('.file-collapse-toggle').click();
+      const orderAfterCollapse = names();
+      const scrollAfterCollapse = window.scrollY;
+      first.querySelector('.file-collapse-toggle').click();
+      const orderAfterExpand = names();
+      const scrollAfterExpand = window.scrollY;
+      const indexAfterExpand = wrappers().indexOf(first);
+      const reset = () => {
+        document.querySelectorAll('.d2h-file-wrapper').forEach(w => w.classList.remove('filtered-collapsed'));
+        collapsedFiles.clear();
+        addFileCollapseToggles();
+      };
+      reset();
+      return {
+        sameAfterCollapse: JSON.stringify(orderBefore) === JSON.stringify(orderAfterCollapse),
+        sameAfterExpand: JSON.stringify(orderBefore) === JSON.stringify(orderAfterExpand),
+        indexAfterExpand,
+        scrollable, scrollBefore, scrollAfterCollapse, scrollAfterExpand
+      };
+    })()
+  `);
+  assert('Collapsing a file leaves it where it was in the diff',
+    toggleStaysPut.sameAfterCollapse === true, JSON.stringify(toggleStaysPut));
+  assert('Expanding a collapsed file leaves it where it was (no jump to the top group)',
+    toggleStaysPut.sameAfterExpand === true && toggleStaysPut.indexAfterExpand === 0,
+    JSON.stringify(toggleStaysPut));
+  assert('Toggling a file does not scroll the page',
+    !toggleStaysPut.scrollable ||
+      (toggleStaysPut.scrollAfterCollapse === toggleStaysPut.scrollBefore &&
+       toggleStaysPut.scrollAfterExpand === toggleStaysPut.scrollBefore),
+    JSON.stringify(toggleStaysPut));
+
   // TEST: sortDiffByExtension pushes filtered-out extensions to the end
   const sortExcludedLast = await mainWindow.webContents.executeJavaScript(`
     (() => {
@@ -3321,6 +3375,95 @@ async function runTests() {
     descNoRepeat.reopenedSamePr === false, JSON.stringify(descNoRepeat));
   assert('The next PR re-opens the pane with its own description',
     descNoRepeat.newPrOpened && descNoRepeat.showsThirdBody, JSON.stringify(descNoRepeat));
+
+  // ===================== ONE PANE AT A TIME =====================
+
+  // The toolbar buttons stop propagation, so the document-level "click outside
+  // closes it" listener never saw those clicks and the description stayed open
+  // underneath the panel that had just opened.
+  const paneExclusion = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const descOpen = () => !!document.querySelector('#pr-desc-dropdown.open');
+      const panelOpen = (sel) => {
+        const el = document.querySelector(sel);
+        return !!(el && el.classList.contains('open'));
+      };
+      currentPrNumber = currentPrNumber || 7777;
+      currentPrBody = 'Pane exclusion test body';
+      const panels = [
+        { label: 'commits', btn: '#btn-commits', panel: '#commits-panel', close: 'closeCommitsPanel' },
+        { label: 'comments', btn: '#btn-comments', panel: '#comments-panel', close: 'closeCommentsPanel' },
+        { label: 'PR list', btn: '#btn-pr-list', panel: '#pr-dropdown', close: 'closePrDropdown' },
+        { label: 'repos', btn: '#btn-repos', panel: '#repo-dropdown', close: 'closeRepoDropdown' },
+        { label: 'extensions', btn: '#btn-file-filter', panel: '#file-filter-dropdown', close: 'closeFileFilterDropdown' },
+        { label: 'AI chat', btn: '#btn-ai-chat', panel: '#ai-chat-panel', close: 'closeAiChatPanel' }
+      ];
+      const results = [];
+      for (const p of panels) {
+        if (typeof window[p.close] === 'function') window[p.close]();
+        else {
+          const el = document.querySelector(p.panel);
+          if (el) el.classList.remove('open');
+        }
+        openPrDescDropdown();
+        const descWasOpen = descOpen();
+        const btn = document.querySelector(p.btn);
+        if (!btn) { results.push({ label: p.label, missing: true }); continue; }
+        btn.click();
+        await sleep(150);
+        results.push({
+          label: p.label,
+          descWasOpen,
+          opened: panelOpen(p.panel),
+          descClosed: !descOpen()
+        });
+        if (typeof window[p.close] === 'function') window[p.close]();
+        else {
+          const el = document.querySelector(p.panel);
+          if (el) el.classList.remove('open');
+        }
+      }
+      // The description still opens on its own afterwards
+      openPrDescDropdown();
+      const reopened = descOpen();
+      closePrDescDropdown();
+      return { results, reopened, closedAfter: descOpen() };
+    })()
+  `);
+  const paneFails = paneExclusion.results.filter(
+    r => r.missing || !r.descWasOpen || !r.opened || !r.descClosed
+  );
+  assert('Opening any other pane closes the PR description pane',
+    paneExclusion.results.length === 6 && paneFails.length === 0,
+    JSON.stringify(paneExclusion));
+  assert('The pane still opens on its own after another pane closed it',
+    paneExclusion.reopened === true && paneExclusion.closedAfter === false,
+    JSON.stringify(paneExclusion));
+
+  // And the other way round: opening the description closes the open pane back
+  const paneExclusionReverse = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const isOpen = (sel) => {
+        const el = document.querySelector(sel);
+        return !!(el && el.classList.contains('open'));
+      };
+      document.querySelector('#btn-commits').click();
+      const commitsOpen = isOpen('#commits-panel');
+      openPrDescDropdown();
+      const result = {
+        commitsOpen,
+        commitsAfter: isOpen('#commits-panel'),
+        descOpen: isOpen('#pr-desc-dropdown')
+      };
+      closePrDescDropdown();
+      return result;
+    })()
+  `);
+  assert('Opening the description closes the pane that was open',
+    paneExclusionReverse.commitsOpen && !paneExclusionReverse.commitsAfter &&
+      paneExclusionReverse.descOpen,
+    JSON.stringify(paneExclusionReverse));
 
   // ===================== CONTRIBUTOR LINE (stage 1 → stage 2) =====================
 
