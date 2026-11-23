@@ -3133,9 +3133,11 @@ async function runTests() {
   // ===================== PR DESCRIPTION HOTKEY (Cmd+D) =====================
 
   // Cmd+D toggles the PR description dropdown, but only when a PR is loaded,
-  // so give the renderer a PR number and a body to render.
+  // so give the renderer a PR number and a body to render. A PR load now opens
+  // the pane by design, so establish the closed precondition explicitly.
   let prDescState = await mainWindow.webContents.executeJavaScript(`
     (() => {
+      closePrDescDropdown();
       currentPrNumber = currentPrNumber || 99999;
       currentPrBody = 'Description for the hotkey test';
       return { number: currentPrNumber, alreadyOpen: !!document.querySelector('#pr-desc-dropdown.open') };
@@ -3182,6 +3184,143 @@ async function runTests() {
       .some(r => r.textContent.includes('Show PR description') && r.querySelector('kbd:nth-child(2)').textContent === 'D')
   `);
   assert('Shortcuts dialog lists Cmd+D (Show PR description)', prDescShortcutRow);
+
+  // ===================== COPY PR NUMBER =====================
+
+  const copyBtnState = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.getElementById('btn-copy-pr');
+      const input = document.getElementById('pr-number');
+      return {
+        exists: !!btn,
+        title: btn ? btn.title : '',
+        inWrapper: !!(btn && btn.closest('#pr-number-wrapper')),
+        afterInput: !!(btn && input && (input.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        hasIcon: !!(btn && btn.querySelector('svg'))
+      };
+    })()
+  `);
+  assert('Copy icon sits beside the PR # box with a tooltip',
+    copyBtnState.exists && copyBtnState.inWrapper && copyBtnState.afterInput && copyBtnState.hasIcon &&
+      copyBtnState.title === 'Copy PR number',
+    JSON.stringify(copyBtnState));
+
+  const copyResult = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const container = document.getElementById('toast-container');
+      container.innerHTML = '';
+      const saved = currentPrNumber;
+      currentPrNumber = 4242;
+      document.getElementById('btn-copy-pr').click();
+      await new Promise(r => setTimeout(r, 200));
+      const text = container.textContent || '';
+      currentPrNumber = saved;
+      return text;
+    })()
+  `);
+  assert('Copy icon copies the loaded PR number and says so',
+    copyResult.includes('Copied PR #4242'), `toast: "${copyResult}"`);
+
+  // Nothing loaded: report it instead of copying an empty string
+  const copyEmptyResult = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const container = document.getElementById('toast-container');
+      container.innerHTML = '';
+      const saved = currentPrNumber;
+      currentPrNumber = null;
+      const input = document.getElementById('pr-number');
+      const savedValue = input.value;
+      input.value = '';
+      document.getElementById('btn-copy-pr').click();
+      await new Promise(r => setTimeout(r, 200));
+      const text = container.textContent || '';
+      currentPrNumber = saved;
+      input.value = savedValue;
+      container.innerHTML = '';
+      return text;
+    })()
+  `);
+  assert('Copy icon with no PR loaded copies nothing and says so',
+    copyEmptyResult.includes('No PR loaded'), `toast: "${copyEmptyResult}"`);
+
+  // ===================== PR DESCRIPTION PANE (auto-open + first-show scroll) =====================
+
+  // A new PR shows its description without a click, and the FIRST show of a PR
+  // always starts at the top — a stale offset from the previous PR's longer
+  // description used to land the reader in the middle of the body.
+  const autoOpen = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const body = (label) => Array.from({ length: 200 }, (_, i) => label + ' paragraph ' + i).join('\\n\\n');
+      closePrDescDropdown();
+      prDescShownFor = null;
+      currentPrNumber = 5001;
+      currentPrBody = body('First');
+      autoShowPrDescForNewPr(5001);
+      const dd = document.getElementById('pr-desc-dropdown');
+      return {
+        open: !!(dd && dd.classList.contains('open')),
+        showsBody: !!(dd && dd.textContent.includes('First paragraph 199')),
+        scrollTop: dd ? dd.scrollTop : -1
+      };
+    })()
+  `);
+  assert('Description pane opens automatically for a new PR',
+    autoOpen.open && autoOpen.showsBody, JSON.stringify(autoOpen));
+  assert('The first show of a PR starts at the top',
+    autoOpen.scrollTop === 0, `scrollTop: ${autoOpen.scrollTop}`);
+
+  const descScroll = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const dd = document.getElementById('pr-desc-dropdown');
+      dd.scrollTop = 120;
+      const scrolledTo = dd.scrollTop;
+      // Same PR: closing and reopening keeps where the reviewer was reading
+      closePrDescDropdown();
+      togglePrDescDropdown();
+      const samePrScrollTop = dd.scrollTop;
+      // Next PR arrives: loadDiff closes the pane, then the load path shows it
+      currentPrNumber = 5002;
+      currentPrBody = Array.from({ length: 200 }, (_, i) => 'Second paragraph ' + i).join('\\n\\n');
+      closePrDescDropdown();
+      autoShowPrDescForNewPr(5002);
+      return {
+        scrolledTo,
+        samePrScrollTop,
+        nextPrScrollTop: dd.scrollTop,
+        nextPrOpen: dd.classList.contains('open'),
+        shownFor: String(prDescShownFor)
+      };
+    })()
+  `);
+  assert('Scrolling the description pane actually moves it',
+    descScroll.scrolledTo > 0, JSON.stringify(descScroll));
+  assert('Re-opening the same PR keeps the reviewer\'s scroll position',
+    descScroll.samePrScrollTop === descScroll.scrolledTo, JSON.stringify(descScroll));
+  assert('A different PR opens its description at the top',
+    descScroll.nextPrOpen && descScroll.nextPrScrollTop === 0, JSON.stringify(descScroll));
+  assert('The pane remembers which PR it was shown for',
+    descScroll.shownFor === '5002', JSON.stringify(descScroll));
+
+  // The PR already on screen is never re-shown (reloading, re-selecting)
+  const descNoRepeat = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      closePrDescDropdown();
+      autoShowPrDescForNewPr(5002);
+      const reopenedSamePr = !!document.querySelector('#pr-desc-dropdown.open');
+      closePrDescDropdown();
+      currentPrNumber = 5003;
+      currentPrBody = 'Third PR body';
+      autoShowPrDescForNewPr(5003);
+      const newPrOpened = !!document.querySelector('#pr-desc-dropdown.open');
+      const showsThirdBody = document.getElementById('pr-desc-dropdown').textContent.includes('Third PR body');
+      closePrDescDropdown();
+      return { reopenedSamePr, newPrOpened, showsThirdBody };
+    })()
+  `);
+  assert('Re-selecting the PR already on screen does not re-open the pane',
+    descNoRepeat.reopenedSamePr === false, JSON.stringify(descNoRepeat));
+  assert('The next PR re-opens the pane with its own description',
+    descNoRepeat.newPrOpened && descNoRepeat.showsThirdBody, JSON.stringify(descNoRepeat));
 
   // ===================== CONTRIBUTOR LINE (stage 1 → stage 2) =====================
 
@@ -4032,6 +4171,109 @@ async function runTests() {
   assert('Every removed and added line still renders after regrouping',
     blockGrouping.delRows === 5 && blockGrouping.insRows === 11,
     JSON.stringify(blockGrouping));
+
+  // ===================== HIDDEN FILE PATHS (internal config option) =====================
+
+  // diff.hiddenPaths holds glob patterns; the dashboard's own settings hide
+  // /tests/** . A matching file must behave exactly like a file whose extension
+  // is unchecked: collapsed, and grouped at the end of the diff.
+  const hiddenPathDiff = [
+    'diff --git a/modules/keep.pm b/modules/keep.pm',
+    'index 1111111..2222222 100644',
+    '--- a/modules/keep.pm',
+    '+++ b/modules/keep.pm',
+    '@@ -1,3 +1,3 @@',
+    ' sub keep_me {',
+    '-    return 1;',
+    '+    return 2;',
+    ' }',
+    'diff --git a/tests/registration.test.pl b/tests/registration.test.pl',
+    'index 3333333..4444444 100644',
+    '--- a/tests/registration.test.pl',
+    '+++ b/tests/registration.test.pl',
+    '@@ -1,3 +1,3 @@',
+    ' use Test::More;',
+    '-ok(1, "old");',
+    '+ok(1, "new");',
+    ' done_testing();',
+    'diff --git a/docs/notes.md b/docs/notes.md',
+    'index 5555555..6666666 100644',
+    '--- a/docs/notes.md',
+    '+++ b/docs/notes.md',
+    '@@ -1,3 +1,3 @@',
+    ' # Notes',
+    '-old line',
+    '+new line',
+    ' end'
+  ].join('\n');
+
+  const hiddenPathResult = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const read = () => {
+        const wrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper'));
+        const name = (w) => {
+          const el = w.querySelector('.d2h-file-name');
+          return el ? el.textContent.trim() : '';
+        };
+        return {
+          order: wrappers.map(name),
+          collapsed: wrappers.filter(w => w.classList.contains('filtered-collapsed')).map(name)
+        };
+      };
+
+      const savedPatterns = hiddenPathPatterns;
+      const savedExts = hiddenExtensions;
+      hiddenExtensions = [];
+
+      // Nothing configured: every file stays expanded (unchanged behaviour)
+      hiddenPathPatterns = [];
+      loadDiff(${JSON.stringify(hiddenPathDiff)});
+      const withoutOption = read();
+
+      // /tests/** configured: the test file collapses and moves last
+      hiddenPathPatterns = ['/tests/**'];
+      loadDiff(${JSON.stringify(hiddenPathDiff)});
+      const withOption = read();
+
+      hiddenPathPatterns = savedPatterns;
+      hiddenExtensions = savedExts;
+      return { withoutOption, withOption };
+    })()
+  `);
+  assert('Hidden paths: no patterns means nothing is collapsed',
+    hiddenPathResult.withoutOption.collapsed.length === 0,
+    JSON.stringify(hiddenPathResult.withoutOption));
+  assert('Hidden paths: /tests/** collapses the matching file',
+    JSON.stringify(hiddenPathResult.withOption.collapsed) === JSON.stringify(['tests/registration.test.pl']),
+    JSON.stringify(hiddenPathResult.withOption));
+  assert('Hidden paths: the collapsed file sorts to the end of the diff',
+    JSON.stringify(hiddenPathResult.withOption.order) === JSON.stringify([
+      'docs/notes.md', 'modules/keep.pm', 'tests/registration.test.pl'
+    ]),
+    JSON.stringify(hiddenPathResult.withOption.order));
+
+  // A name filter must not sneak a hidden path back into view
+  const hiddenPathFiltered = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      const savedPatterns = hiddenPathPatterns;
+      hiddenPathPatterns = ['/tests/**'];
+      loadDiff(${JSON.stringify(hiddenPathDiff)});
+      currentNameFilter = 'test';
+      applyFileNameFilter();
+      const wrappers = Array.from(document.querySelectorAll('.d2h-file-wrapper'));
+      const shown = wrappers.filter(w => w.style.display !== 'none').map(w => {
+        const el = w.querySelector('.d2h-file-name');
+        return el ? el.textContent.trim() : '';
+      });
+      currentNameFilter = '';
+      applyFileNameFilter();
+      hiddenPathPatterns = savedPatterns;
+      return shown;
+    })()
+  `);
+  assert('Hidden paths: a name filter keeps hidden-path files out of view',
+    JSON.stringify(hiddenPathFiltered) === JSON.stringify([]),
+    JSON.stringify(hiddenPathFiltered));
 
   // Leave the suite on the fixture diff, exactly as we found it
   await mainWindow.webContents.executeJavaScript(`

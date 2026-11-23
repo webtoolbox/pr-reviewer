@@ -327,6 +327,10 @@ function replaceFileInDiff(fullDiff, targetFile, newFileDiff) {
 // to carry a divergent copy (string-shaped pairs, different label windows) that
 // hid real bugs; everything below requires the shared module instead.
 const detectBeforeAfterPairs = require('./detect-before-after');
+
+// hiddenPaths matcher: also a single shared source (renderer.js + jest), for the
+// config-driven hidden-path filter.
+const { matchesHiddenPath, isHiddenPath, normalizeHiddenPaths } = require('./hidden-paths');
 function getPlatformInstructions(platform) {
   if (platform.includes('mac')) {
     return {
@@ -6218,5 +6222,197 @@ describe('Session review timer', () => {
     expect(restoreSavedSession({}, T0)).toBeNull();
     expect(restoreSavedSession({ start: 'yesterday', lastActive: T0 }, T0)).toBeNull();
     expect(restoreSavedSession({ start: T0, lastActive: null }, T0)).toBeNull();
+  });
+});
+
+// ── Hidden file paths (internal config option, diff.hiddenPaths) ──
+
+describe('hidden paths matcher', () => {
+  test('a leading slash anchors the pattern to the repo root', () => {
+    expect(matchesHiddenPath('tests/a.js', '/tests/**')).toBe(true);
+    expect(matchesHiddenPath('tests/deep/dir/a.pm', '/tests/**')).toBe(true);
+    // Nested tests/ directories are a different path — only the root one is
+    // anchored here, which is what a pattern starting with '/' means.
+    expect(matchesHiddenPath('app/tests/a.js', '/tests/**')).toBe(false);
+    expect(matchesHiddenPath('atest/a.js', '/tests/**')).toBe(false);
+  });
+
+  test('a pattern with no leading slash matches at any depth', () => {
+    expect(matchesHiddenPath('tests/a.js', 'tests/**')).toBe(true);
+    expect(matchesHiddenPath('app/tests/a.js', 'tests/**')).toBe(true);
+    expect(matchesHiddenPath('vendor/lib/a.php', 'vendor/**')).toBe(true);
+  });
+
+  test('** crosses directories, a single * does not', () => {
+    expect(matchesHiddenPath('a/b/x.min.js', '**/*.min.js')).toBe(true);
+    expect(matchesHiddenPath('x.min.js', '**/*.min.js')).toBe(true);
+    // A bare glob is not anchored (gitignore-style), so it matches at any depth
+    expect(matchesHiddenPath('a/b/x.min.js', '*.min.js')).toBe(true);
+    // ...but a single star still refuses to cross a slash of its own
+    expect(matchesHiddenPath('a/x.js', 'a?.js')).toBe(false);
+  });
+
+  test('regex metacharacters in a path are literal', () => {
+    expect(matchesHiddenPath('a.js', '/a.js')).toBe(true);
+    expect(matchesHiddenPath('axjs', '/a.js')).toBe(false);
+    expect(matchesHiddenPath('a+b/c(1).js', '/a+b/c(1).js')).toBe(true);
+    expect(matchesHiddenPath('aab/c1.js', '/a+b/c(1).js')).toBe(false);
+  });
+
+  test('the path is matched repo-root-relative, however it is written', () => {
+    expect(matchesHiddenPath('./tests/a.js', '/tests/**')).toBe(true);
+    expect(matchesHiddenPath('/tests/a.js', '/tests/**')).toBe(true);
+    expect(matchesHiddenPath('tests/a.js', '/tests/**')).toBe(true);
+    expect(matchesHiddenPath('  tests/a.js  ', '/tests/**')).toBe(false); // paths from the DOM are trimmed by the caller
+  });
+
+  test('blank and non-string patterns never hide anything', () => {
+    expect(matchesHiddenPath('a.js', '')).toBe(false);
+    expect(matchesHiddenPath('a.js', '   ')).toBe(false);
+    expect(matchesHiddenPath('a.js', '/')).toBe(false);
+    expect(matchesHiddenPath('a.js', 42)).toBe(false);
+    expect(matchesHiddenPath('', '/tests/**')).toBe(false);
+  });
+
+  test('isHiddenPath is true when ANY configured pattern matches', () => {
+    expect(isHiddenPath('tests/a.js', ['/docs/**', '/tests/**'])).toBe(true);
+    expect(isHiddenPath('src/a.js', ['/docs/**', '/tests/**'])).toBe(false);
+    expect(isHiddenPath('src/a.js', [])).toBe(false);
+    expect(isHiddenPath('src/a.js', null)).toBe(false);
+  });
+
+  test('normalizeHiddenPaths accepts an array or a comma-separated string', () => {
+    expect(normalizeHiddenPaths(['/tests/**', '/docs/**'])).toEqual(['/tests/**', '/docs/**']);
+    expect(normalizeHiddenPaths('/tests/**, /docs/**')).toEqual(['/tests/**', '/docs/**']);
+    // Anything unusable is dropped rather than becoming a pattern that hides
+    // every file
+    expect(normalizeHiddenPaths(undefined)).toEqual([]);
+    expect(normalizeHiddenPaths(['/tests/**', '  ', null, 5])).toEqual(['/tests/**']);
+  });
+});
+
+describe('hidden paths wired into the diff filter', () => {
+  let rendererSource, htmlSource, configJson;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    htmlSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+    configJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+  });
+
+  test('index.html loads the shared matcher before renderer.js', () => {
+    expect(htmlSource).toContain('<script src="hidden-paths.js"></script>');
+    expect(htmlSource.indexOf('<script src="hidden-paths.js"></script>'))
+      .toBeLessThan(htmlSource.indexOf('<script src="renderer.js"></script>'));
+  });
+
+  test('config.json documents the internal option', () => {
+    expect(Array.isArray(configJson.diff.hiddenPaths)).toBe(true);
+  });
+
+  test('renderer reads diff.hiddenPaths from config on startup', () => {
+    expect(rendererSource).toContain('hiddenPathPatterns = normalizeHiddenPathPatterns(config.diff && config.diff.hiddenPaths);');
+  });
+
+  test('collapseFilteredFiles collapses hidden paths like hidden extensions', () => {
+    const fnStart = rendererSource.indexOf('function collapseFilteredFiles(');
+    const fnEnd = rendererSource.indexOf('\nfunction addFileCollapseToggles()', fnStart);
+    const fnSrc = rendererSource.substring(fnStart, fnEnd);
+    expect(fnSrc).toContain('isFileHiddenByPath(fileName)');
+    // Still the same single collapse decision, now with three inputs
+    expect(fnSrc).toContain('noHunkFiles.has(fileName)');
+  });
+
+  test('renderer never re-implements the path matcher (single shared source)', () => {
+    expect(rendererSource).toContain('HiddenPaths.isHiddenPath(fileName, hiddenPathPatterns)');
+    expect(rendererSource).not.toContain('function globToRegExp');
+  });
+});
+
+// ── Copy PR number icon ──
+
+describe('PR number copy icon', () => {
+  let rendererSource, htmlSource;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    htmlSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  });
+
+  test('the toolbar has a copy button next to the PR # box', () => {
+    expect(htmlSource).toContain('id="btn-copy-pr"');
+    expect(htmlSource).toContain('title="Copy PR number"');
+    // Sits inside the PR # wrapper, right after the number input
+    const wrapperIdx = htmlSource.indexOf('id="pr-number-wrapper"');
+    const inputIdx = htmlSource.indexOf('id="pr-number"');
+    const copyIdx = htmlSource.indexOf('id="btn-copy-pr"');
+    expect(wrapperIdx).toBeGreaterThan(-1);
+    expect(copyIdx).toBeGreaterThan(inputIdx);
+    expect(copyIdx).toBeLessThan(htmlSource.indexOf('id="btn-pr-list"'));
+  });
+
+  test('clicking it copies the loaded PR number through the main-process clipboard', () => {
+    const handlerStart = rendererSource.indexOf('btnCopyPr.addEventListener');
+    expect(handlerStart).toBeGreaterThan(-1);
+    const handlerSrc = rendererSource.substring(handlerStart, handlerStart + 900);
+    expect(handlerSrc).toContain('window.electronAPI.copyText(prNumber)');
+    // Report success/failure instead of failing silently
+    expect(handlerSrc).toContain("showToast('Copied PR #' + prNumber");
+    expect(handlerSrc).toContain('Failed to copy PR number');
+  });
+});
+
+// ── PR description pane: auto-open + first-show scroll ──
+
+describe('PR description pane', () => {
+  let rendererSource, paneSrc;
+
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    const start = rendererSource.indexOf('function openPrDescDropdown()');
+    paneSrc = rendererSource.substring(start, rendererSource.indexOf('function closePrDescDropdown()', start));
+  });
+
+  test('opening is separate from toggling', () => {
+    expect(rendererSource).toContain('function openPrDescDropdown()');
+    expect(paneSrc).toContain('function togglePrDescDropdown()');
+    const toggleSrc = paneSrc.substring(paneSrc.indexOf('function togglePrDescDropdown()'));
+    expect(toggleSrc).toContain('openPrDescDropdown();');
+  });
+
+  test('a new PR shows its description without a click', () => {
+    expect(rendererSource).toContain('autoShowPrDescForNewPr(prNumber);');
+    const fnSrc = rendererSource.substring(
+      rendererSource.indexOf('function autoShowPrDescForNewPr('),
+      rendererSource.indexOf('function closePrDescDropdown()')
+    );
+    // Once per PR: the PR already on screen is never re-shown
+    expect(fnSrc).toContain('if (String(prDescShownFor) === String(prNumber)) return;');
+    expect(fnSrc).toContain('openPrDescDropdown();');
+    // Called from the load path, after the pane was closed by the new diff
+    const autoIdx = rendererSource.indexOf('autoShowPrDescForNewPr(prNumber);');
+    expect(autoIdx).toBeGreaterThan(rendererSource.indexOf('loadDiff(result.content, result.filePath);'));
+  });
+
+  test('the first show of a PR resets the scroll AFTER the pane is visible', () => {
+    // scrollTop writes are ignored while display:none, and Chromium restores the
+    // old offset on re-show — so the reset must come after the class flip.
+    const openIdx = paneSrc.indexOf("dropdown.classList.add('open');");
+    const resetIdx = paneSrc.indexOf('dropdown.scrollTop = 0;');
+    expect(openIdx).toBeGreaterThan(-1);
+    expect(resetIdx).toBeGreaterThan(openIdx);
+    // Only the first show of a PR resets; re-opening the same PR keeps position
+    expect(paneSrc).toContain('if (String(prDescShownFor) !== String(currentPrNumber)) {');
+    expect(paneSrc).toContain('prDescShownFor = currentPrNumber;');
+  });
+
+  test('loadDiff closes the pane without a dead scroll reset', () => {
+    // The old code wrote scrollTop = 0 while the pane was display:none, which
+    // silently did nothing — that is what left a stale offset behind.
+    const idx = rendererSource.indexOf('const descDropdown = document.getElementById(\'pr-desc-dropdown\');');
+    expect(idx).toBeGreaterThan(-1);
+    const block = rendererSource.substring(idx, idx + 300);
+    expect(block).toContain("classList.remove('open')");
+    expect(block).not.toContain('scrollTop');
   });
 });

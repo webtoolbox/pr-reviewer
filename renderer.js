@@ -63,6 +63,7 @@ const btnPrevComment = document.getElementById('btn-prev-comment');
 const btnNextComment = document.getElementById('btn-next-comment');
 const prNumberInput = document.getElementById('pr-number');
 const prNumberWrapper = document.getElementById('pr-number-wrapper');
+const btnCopyPr = document.getElementById('btn-copy-pr');
 const fileSidebar = document.getElementById('file-sidebar');
 const fileSidebarList = document.getElementById('file-sidebar-list');
 const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
@@ -801,12 +802,11 @@ function loadDiff(content, filePath) {
   // Scroll to top when loading a new PR
   window.scrollTo(0, 0);
 
-  // Reset description dropdown scroll position
+  // The description pane belongs to the PR that was on screen: close it. Its
+  // scroll offset is reset when it next OPENS (openPrDescDropdown) — a write
+  // here would be ignored, the element is display:none.
   const descDropdown = document.getElementById('pr-desc-dropdown');
-  if (descDropdown) {
-    descDropdown.scrollTop = 0;
-    descDropdown.classList.remove('open');
-  }
+  if (descDropdown) descDropdown.classList.remove('open');
 
   // Apply extension filter to diff view on initial load
   // Extensions in hiddenExtensions are collapsed on load
@@ -2090,11 +2090,11 @@ function renderSingleFileInPlace(fileName, fileDiff) {
   // Re-highlight unrecognized languages for this wrapper
   highlightUnrecognizedFilesForWrapper(newWrapper);
 
-  // Preserve collapsed state for filtered-out files and for hunk-less (binary)
-  // blocks, which always render collapsed
+  // Preserve collapsed state for filtered-out files (hidden extension or hidden
+  // path) and for hunk-less (binary) blocks, which always render collapsed
   const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
   const excludedExts = extractExtensionsFromDiff(currentDiffContent).filter(e => hiddenExtensions.includes(e));
-  if (excludedExts.includes(ext) || extractFileNamesWithoutHunks(currentDiffContent).has(fileName)) {
+  if (excludedExts.includes(ext) || extractFileNamesWithoutHunks(currentDiffContent).has(fileName) || isFileHiddenByPath(fileName)) {
     collapseFileWrapper(newWrapper, fileName);
   }
 
@@ -3515,6 +3515,8 @@ window.electronAPI.getConfig().then(async (config) => {
   if (config.prNumber) prNumberInput.value = config.prNumber;
   if (config.aiTagPrefix) aiTagPrefix = config.aiTagPrefix;
   if (config.diff && config.diff.viewMode) currentDiffViewMode = config.diff.viewMode;
+  // Paths never shown expanded (internal option, diff.hiddenPaths)
+  hiddenPathPatterns = normalizeHiddenPathPatterns(config.diff && config.diff.hiddenPaths);
   // Note: fetchCollaborators() is called in loadPrByNumber() with the correct repoKey
 
   // Check binaries on startup
@@ -4184,6 +4186,29 @@ prNumberInput.addEventListener('keydown', async (e) => {
   }
 });
 
+// Copy PR number — the PR # box holds the number of the PR on screen, so the
+// icon beside it just lifts that number onto the clipboard (for a ticket, a
+// commit message, a chat). Copies the digits only, never a leading '#'.
+if (btnCopyPr) {
+  btnCopyPr.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const prNumber = String(currentPrNumber != null ? currentPrNumber : prNumberInput.value).replace(/^#/, '').trim();
+    if (!prNumber) {
+      showToast('No PR loaded', 'info', 2000);
+      return;
+    }
+    // Clipboard goes through the main process: navigator.clipboard has no
+    // clipboard-write permission in the renderer.
+    window.electronAPI.copyText(prNumber).then((ok) => {
+      if (ok) showToast('Copied PR #' + prNumber, 'info', 2000);
+      else showToast('Failed to copy PR number', 'error', 3000);
+    }).catch((err) => {
+      console.error('Failed to copy PR number:', err);
+      showToast('Failed to copy PR number', 'error', 3000);
+    });
+  });
+}
+
 async function loadPrByNumber(prNumber, repoKey, force = false) {
   console.log('[loadPr] Loading PR #' + prNumber, 'repo:', repoKey || 'default');
   // Stage-2 contributor state belongs to the PR it was computed for — drop it
@@ -4324,6 +4349,11 @@ async function loadPrByNumber(prNumber, repoKey, force = false) {
 
     // Build info bar with full data (including review info from diff)
     updatePrInfoBar(prNumber, currentPrTitle, result);
+
+    // A different PR is now on screen — show its description without waiting for
+    // a click. The body is final at this point (GitHub images already rewritten
+    // to local files), so the pane never opens on a half-downloaded body.
+    autoShowPrDescForNewPr(prNumber);
 
     // Fetch collaborators and review comments if not already started
     if (!prMeta || prMeta.error) {
@@ -4610,6 +4640,28 @@ let allExtensionsInDiff = [];
 // Update filter button on startup in case extensions were persisted
 setTimeout(() => { if (typeof updateFilterButtonState === 'function') updateFilterButtonState(); }, 0);
 
+// ── Hidden file paths (internal config option) ──
+// diff.hiddenPaths in config.json / ~/.config/pr-reviewer/config.json holds glob
+// patterns for paths the reviewer never wants expanded, e.g. ["/tests/**"]. Same
+// mechanism as a hidden extension: the file collapses into the group at the end
+// of the diff and stays one click away. The matching itself lives in
+// hidden-paths.js — loaded as a script before this file, required by unit.test.js.
+let hiddenPathPatterns = [];
+
+// Config may hold an array or one comma-separated string; blank entries are
+// dropped so a stray value can never hide every file.
+function normalizeHiddenPathPatterns(value) {
+  if (typeof HiddenPaths === 'undefined') return [];
+  return HiddenPaths.normalizeHiddenPaths(value);
+}
+
+// True when the file's repo-root-relative path matches a configured hidden path.
+function isFileHiddenByPath(fileName) {
+  if (!fileName || hiddenPathPatterns.length === 0) return false;
+  if (typeof HiddenPaths === 'undefined') return false;
+  return HiddenPaths.isHiddenPath(fileName, hiddenPathPatterns);
+}
+
 function saveHiddenExtensions() {
   try {
     localStorage.setItem('pr-reviewer-hidden-extensions', JSON.stringify(hiddenExtensions));
@@ -4793,7 +4845,10 @@ function applyFileNameFilter() {
       const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
       if (ext && excludedExts.includes(ext)) matchesExt = false;
     }
-    wrapper.style.display = (matchesName && matchesExt) ? '' : 'none';
+    // Files hidden by path follow the same rule as a hidden extension: an active
+    // name filter leaves them out of the list entirely.
+    const matchesPath = !isFileHiddenByPath(fileName);
+    wrapper.style.display = (matchesName && matchesExt && matchesPath) ? '' : 'none';
   });
 
   // Also hide/show corresponding file list entries
@@ -5153,7 +5208,7 @@ function collapseFilteredFiles(excludedExts) {
     if (!fileNameEl) continue;
     const fileName = fileNameEl.textContent.trim();
     const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
-    const shouldBeCollapsed = excludedExts.includes(ext) || noHunkFiles.has(fileName);
+    const shouldBeCollapsed = excludedExts.includes(ext) || noHunkFiles.has(fileName) || isFileHiddenByPath(fileName);
 
     // Expanded files: ensure they're expanded and don't have a stale toggle.
     if (!shouldBeCollapsed) {
@@ -5577,9 +5632,9 @@ function extractFileNamesWithoutHunks(diffContent) {
 }
 
 // Sort diff content by file extension, then by name. Files that render
-// collapsed — excluded extensions and hunk-less (binary) blocks — are pushed
-// to the END (still sorted by extension then name within each group) so every
-// collapsed section appears last.
+// collapsed — excluded extensions, hidden paths and hunk-less (binary) blocks —
+// are pushed to the END (still sorted by extension then name within each group)
+// so every collapsed section appears last.
 function sortDiffByExtension(diffContent, excludedExts) {
   if (!diffContent || !diffContent.includes('diff --git')) return diffContent;
   const files = diffContent.split(/^diff --git /m);
@@ -5587,7 +5642,7 @@ function sortDiffByExtension(diffContent, excludedExts) {
   const excluded = Array.isArray(excludedExts) ? excludedExts : [];
   const noHunkFiles = extractFileNamesWithoutHunks(diffContent);
 
-  const groupOf = (f) => (excluded.includes(getExt(f)) || noHunkFiles.has(getName(f))) ? 1 : 0;
+  const groupOf = (f) => (excluded.includes(getExt(f)) || noHunkFiles.has(getName(f)) || isFileHiddenByPath(getName(f))) ? 1 : 0;
   validFiles.sort((a, b) => {
     const ga = groupOf(a), gb = groupOf(b);
     if (ga !== gb) return ga - gb; // excluded last
@@ -6215,12 +6270,15 @@ function renderMarkdownHtml(text) {
   }
 }
 
-function togglePrDescDropdown() {
+// Which PR the pane currently belongs to. Drives two things: the pane is shown
+// automatically when a DIFFERENT PR appears on screen (autoShowPrDescForNewPr),
+// and the FIRST show of a PR always starts at the top.
+let prDescShownFor = null;
+
+// Open the PR description pane. Kept separate from togglePrDescDropdown so
+// loadPrByNumber can show it for a new PR without the close half of a toggle.
+function openPrDescDropdown() {
   let dropdown = document.getElementById('pr-desc-dropdown');
-  if (dropdown && dropdown.classList.contains('open')) {
-    closePrDescDropdown();
-    return;
-  }
   if (!dropdown) {
     dropdown = document.createElement('div');
     dropdown.id = 'pr-desc-dropdown';
@@ -6266,9 +6324,37 @@ function togglePrDescDropdown() {
 
   dropdown.classList.add('open');
 
+  // Comes AFTER the class flip on purpose. A display:none element silently
+  // ignores scrollTop writes, and Chromium restores the old offset when it is
+  // shown again — resetting while the pane was hidden is why a new PR's
+  // description could open scrolled into the middle. Only the first show of a
+  // PR resets; re-opening the same PR keeps the reviewer's position.
+  if (String(prDescShownFor) !== String(currentPrNumber)) {
+    dropdown.scrollTop = 0;
+  }
+  prDescShownFor = currentPrNumber;
+
   // Rotate ▾ arrow
   const toggleBtn = document.querySelector('.pr-desc-toggle');
   if (toggleBtn) toggleBtn.classList.add('open');
+}
+
+function togglePrDescDropdown() {
+  const dropdown = document.getElementById('pr-desc-dropdown');
+  if (dropdown && dropdown.classList.contains('open')) {
+    closePrDescDropdown();
+    return;
+  }
+  openPrDescDropdown();
+}
+
+// Show the description when a new PR appears on screen, without a click. Never
+// re-shows for the PR already displayed, so reloading a PR (Cmd+R) or
+// re-selecting it leaves the pane as the reviewer left it.
+function autoShowPrDescForNewPr(prNumber) {
+  if (!prNumber) return;
+  if (String(prDescShownFor) === String(prNumber)) return;
+  openPrDescDropdown();
 }
 
 function closePrDescDropdown() {

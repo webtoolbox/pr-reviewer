@@ -25,7 +25,8 @@
   "diff": {
     "mode": "since-review",
     "excludeMerges": true,
-    "viewMode": "unified"
+    "viewMode": "unified",
+    "hiddenPaths": []
   },
   "imageUpload": {
     "enabled": false,
