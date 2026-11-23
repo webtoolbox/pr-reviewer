@@ -4419,13 +4419,37 @@ ipcMain.handle('open-file-in-editor', async (event, { filePath, line }) => {
 
 // ===================== AGENT RULES PROPOSAL =====================
 
-// Get AGENTS.md and referenced rules files from the local repo
-ipcMain.handle('get-agent-rules', async () => {
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
-  if (!owner || !repo) return { error: 'No repo configured' };
+// Which repo's AGENTS.md / instructions the rule system reads and writes: the
+// repo of the PR on screen, never the configured default repo. Reading
+// Website-Toolbox rules while reviewing a wordpress-plugin PR proposed Perl
+// rules from .github/instructions/perl.instructions.md for a PHP PR. The
+// renderer passes { repo, repoPath }; without them we fall back to the
+// configured repo (older callers, nothing loaded yet).
+function resolveRulesRepo(repoKey) {
+  const key = String(repoKey || '').trim().replace(/^\/+|\/+$/g, '');
+  const parts = key.split('/');
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return { owner: parts[0], name: parts[1], key: `${parts[0]}/${parts[1]}` };
+  }
+  if (appConfig.repoOwner && appConfig.repoName) {
+    return {
+      owner: appConfig.repoOwner,
+      name: appConfig.repoName,
+      key: `${appConfig.repoOwner}/${appConfig.repoName}`
+    };
+  }
+  return null;
+}
 
-  const repoPath = getLocalRepoPath(`${owner}/${repo}`);
+// Get AGENTS.md and referenced rules files for the PR's repo
+ipcMain.handle('get-agent-rules', async (event, data = {}) => {
+  const target = resolveRulesRepo(data && data.repo);
+  if (!target) return { error: 'No repo configured' };
+  const owner = target.owner;
+  const repo = target.name;
+  log('INFO', `[get-agent-rules] Rules repo: ${target.key}`);
+
+  const repoPath = (data && data.repoPath) || getLocalRepoPath(target.key);
   if (!repoPath) return { error: 'No local repo path found' };
 
   try {
@@ -4487,20 +4511,24 @@ ipcMain.handle('get-agent-rules', async () => {
       if (content) referencedFiles.push({ path: ref, content });
     }
 
-    return { agentsMd, referencedFiles };
+    return { agentsMd, referencedFiles, repo: target.key };
   } catch (err) {
     return { error: err.message };
   }
 });
 
 // Analyze review feedback against existing rules and propose new ones
-ipcMain.handle('propose-rules', async (event, { feedback, agentsMd, referencedFiles }) => {
+ipcMain.handle('propose-rules', async (event, data = {}) => {
+  const { feedback, agentsMd, referencedFiles } = data || {};
   const rulesConfig = appConfig.rules || {};
   if (!rulesConfig.enabled) return { proposals: [], disabled: true };
   
   const aiCmd = rulesConfig.aiCommand || appConfig.aiCommand || 'hermes';
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
+  const target = resolveRulesRepo(data && data.repo);
+  if (!target) return { proposals: [], availableFiles: ['AGENTS.md'], error: 'No repo configured' };
+  const owner = target.owner;
+  const repo = target.name;
+  log('INFO', `[propose-rules] Rules repo: ${target.key}`);
   
   const feedbackText = feedback.map(f => `- [${f.file}${f.line ? ` line ${f.line}` : ''}] ${f.text}`).join('\n');
   
@@ -4544,7 +4572,12 @@ Keep rules concise — one sentence each when possible.`;
     // -Q (quiet) suppresses hermes' banner and box-drawing UI so the response is
     // the raw JSON the prompt asks for — no border pipes or chrome to strip.
     const args = ['chat', '-p', rulesConfig.aiProfile || appConfig.hermesProfile || 'wt', '-q', prompt, '-Q'];
-    const proc = require('child_process').execFile(aiCmd, args, { timeout: 60000 }, (err, stdout) => {
+    // Run inside the PR's repo when we have one, so fd/rg searches the prompt
+    // invites land on the right codebase (the app's own cwd is not the repo).
+    const aiOpts = { timeout: 60000 };
+    const rulesRepoPath = (data && data.repoPath) || getLocalRepoPath(target.key);
+    if (rulesRepoPath && fs.existsSync(rulesRepoPath)) aiOpts.cwd = rulesRepoPath;
+    const proc = require('child_process').execFile(aiCmd, args, aiOpts, (err, stdout) => {
       if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles, error: err.message }); return; }
       log('INFO', '[propose-rules] AI response received, length:', stdout.length, 'chars');
       log('INFO', '[propose-rules] Raw response (first 500):', stdout.substring(0, 500));
@@ -4676,10 +4709,16 @@ function applyRulesToContent(content, rules) {
 }
 
 // Save proposed rules to files
-ipcMain.handle('save-agent-rules', async (event, { rules }) => {
-  const owner = appConfig.repoOwner;
-  const repo = appConfig.repoName;
-  if (!owner || !repo) return { error: 'No repo configured' };
+ipcMain.handle('save-agent-rules', async (event, data = {}) => {
+  const { rules } = data || {};
+  const target = resolveRulesRepo(data && data.repo);
+  if (!target) return { error: 'No repo configured' };
+  const owner = target.owner;
+  const repo = target.name;
+  // The rules being saved belong to the PR that was reviewed, which may already
+  // be off screen (auto-advance is not blocked by the rules dialog).
+  log('INFO', `[save-agent-rules] Rules repo: ${target.key}`);
+  const rulesRepoPath = (data && data.repoPath) || getLocalRepoPath(target.key);
   
   const results = [];
   // Group rules by file
@@ -4750,8 +4789,8 @@ ipcMain.handle('save-agent-rules', async (event, { rules }) => {
       // the local file is clean (no uncommitted edits), so we never clobber
       // in-progress work or inject master changes into another branch.
       try {
-        const localRepo = getLocalRepoPath(`${owner}/${repo}`);
-        if (fs.existsSync(localRepo)) {
+        const localRepo = rulesRepoPath;
+        if (localRepo && fs.existsSync(localRepo)) {
           const branch = await execPromise(`git -C "${localRepo}" rev-parse --abbrev-ref HEAD`).catch(() => '');
           const isMaster = branch.trim() === 'master' || branch.trim() === 'main';
           if (!isMaster) {

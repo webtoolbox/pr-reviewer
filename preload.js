@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFunctionPreview: (data) => ipcRenderer.invoke('get-function-preview', data),
   submitGitHubReview: (data) => ipcRenderer.invoke('submit-github-review', data),
   openFileInEditor: (data) => ipcRenderer.invoke('open-file-in-editor', data),
-  getAgentRules: () => ipcRenderer.invoke('get-agent-rules'),
+  getAgentRules: (data) => ipcRenderer.invoke('get-agent-rules', data),
   proposeRules: (data) => ipcRenderer.invoke('propose-rules', data),
   aiChat: (data) => ipcRenderer.invoke('ai-chat', data),
   // Registration hands back the EXACT listener passed to ipcRenderer.on, so the

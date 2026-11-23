@@ -2121,6 +2121,51 @@ async function runTests() {
   assert('Modify proposal saves with type=modify and existingRule', modifyOk, `mod: ${JSON.stringify(modRule)}`);
   assert('New proposal saves with type=new', newOk, `new: ${JSON.stringify(newRule)}`);
 
+  // TEST: rules analysis targets the repo of the PR being reviewed
+  global.__rulesEnabled = true;
+  global.__rulesRequests = { get: null, propose: null, save: null };
+  const rulesRepoRun = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const saved = { repo: currentRepoKey, repoPath: currentRepoPath };
+      // The PR under review is from the wordpress plugin repo
+      currentPrNumber = 114;
+      currentRepoKey = 'webtoolbox/wordpress-plugin';
+      currentRepoPath = '/Users/sandeep/Library/Application Support/pr-reviewer/repos/wordpress-plugin';
+      const shown = await showRulesDialog(
+        [{ file: 'widgets/widget.php', line: 21, text: 'Never echo markup from the widget class' }],
+        { repo: currentRepoKey, repoPath: currentRepoPath }
+      );
+      const repoEl = document.getElementById('rules-repo');
+      const repoLine = repoEl ? repoEl.textContent : '';
+      const overlayVisible = rulesOverlay.style.display === 'flex';
+      const proposedFileOptions = Array.from(document.querySelectorAll('#rule-file-0 option')).map(o => o.value);
+      // Auto-advance loads the next PR (Website-Toolbox) while the dialog is open.
+      // Saving must still write to the repo of the PR that was reviewed.
+      currentRepoKey = 'webtoolbox/Website-Toolbox';
+      currentRepoPath = '/Users/sandeep/Library/Application Support/pr-reviewer/repos/Website-Toolbox';
+      btnRulesSave.click();
+      await sleep(700);
+      currentRepoKey = saved.repo;
+      currentRepoPath = saved.repoPath;
+      return { shown, repoLine, overlayVisible, proposedFileOptions };
+    })()
+  `);
+  assert('Rules are read for the repo of the PR being reviewed',
+    global.__rulesRequests.get && global.__rulesRequests.get.repo === 'webtoolbox/wordpress-plugin' &&
+      global.__rulesRequests.get.repoPath === '/Users/sandeep/Library/Application Support/pr-reviewer/repos/wordpress-plugin',
+    JSON.stringify(global.__rulesRequests.get));
+  assert('The proposal names the repo of the PR being reviewed',
+    global.__rulesRequests.propose && global.__rulesRequests.propose.repo === 'webtoolbox/wordpress-plugin',
+    JSON.stringify(global.__rulesRequests.propose));
+  assert('Saving the rules targets the reviewed PR\'s repo, not the PR auto-advance moved to',
+    global.__rulesRequests.save && global.__rulesRequests.save.repo === 'webtoolbox/wordpress-plugin',
+    JSON.stringify(global.__rulesRequests.save));
+  assert('The rules dialog says which repo the rules came from',
+    rulesRepoRun.repoLine === 'Rules from webtoolbox/wordpress-plugin',
+    JSON.stringify(rulesRepoRun));
+  global.__rulesEnabled = false;
+
   // TEST: Filtered-out files are collapsed (not hidden) with an individual expand toggle
   const filteredCollapse = await mainWindow.webContents.executeJavaScript(`
     (() => {
@@ -4462,7 +4507,7 @@ ipcMain.handle('read-file-content', async (event, { filePath, ref } = {}) => {
   }
   return { content: body, ref: ref || 'HEAD' };
 });
-ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', hermesProfile: 'wt', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: false }, autoFix: { enabled: true } }));
+ipcMain.handle('get-config', async () => ({ chatId: null, prNumber: null, aiTagPrefix: '@Hermes', hermesProfile: 'wt', repoOwner: '', repoName: '', repoPath: '', editorCommand: 'code', contextLines: 5, diff: { excludeMerges: true, viewMode: 'unified' }, imageUpload: { enabled: false, s3Bucket: '', awsProfile: 'default', awsRegion: 'us-east-1' }, cleanup: { enabled: true, retentionDays: 180 }, rules: { enabled: global.__rulesEnabled === true }, autoFix: { enabled: true } }));
 ipcMain.handle('save-review', async (event, review) => {
   const outputPath = path.join(app.getPath('temp'), 'diff-review-pending.json');
   fs.writeFileSync(outputPath, JSON.stringify(review, null, 2));
@@ -4634,9 +4679,25 @@ ipcMain.handle('stop-find-in-page', (event, { action }) => {
 
 // Capture what saveAgentRules sends so tests can assert type/existingRule pass-through
 global.__savedAgentRules = [];
-ipcMain.handle('save-agent-rules', async (event, { rules }) => {
+// Capture the rules-repo plumbing: the renderer must ask for the repo of the PR
+// being reviewed, not the configured default repo.
+global.__rulesRequests = { get: null, propose: null, save: null };
+ipcMain.handle('save-agent-rules', async (event, data = {}) => {
+  const { rules } = data || {};
   global.__savedAgentRules = rules;
+  global.__rulesRequests.save = { repo: data.repo || null, repoPath: data.repoPath || null };
   return { results: rules.map(r => ({ file: r.file, success: true })) };
+});
+ipcMain.handle('get-agent-rules', async (event, data = {}) => {
+  global.__rulesRequests.get = { repo: data.repo || null, repoPath: data.repoPath || null };
+  return { agentsMd: '# Agent rules\n', referencedFiles: [], repo: data.repo || null };
+});
+ipcMain.handle('propose-rules', async (event, data = {}) => {
+  global.__rulesRequests.propose = { repo: data.repo || null, repoPath: data.repoPath || null };
+  return {
+    proposals: [{ rule: 'Generalized rule text', file: 'AGENTS.md', reason: 'why', type: 'new', existingRule: '' }],
+    availableFiles: ['AGENTS.md']
+  };
 });
 ipcMain.handle('get-saved-agent-rules', async () => global.__savedAgentRules || []);
 

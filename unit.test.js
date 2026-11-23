@@ -3802,7 +3802,7 @@ describe('Rules dialog auto-advance fix', () => {
 
   test('showRulesDialog returns true when overlay is displayed', () => {
     // The function should return true only when proposals are shown
-    const funcStart = rendererSource.indexOf('async function showRulesDialog(reviewFeedback)');
+    const funcStart = rendererSource.indexOf('async function showRulesDialog(reviewFeedback, reviewTarget)');
     const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 100);
     const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
     // Should have exactly one 'return true' (proposals rendered path)
@@ -3818,7 +3818,7 @@ describe('Rules dialog auto-advance fix', () => {
     const submitEnd = rendererSource.indexOf('\n}\n', submitStart + 100);
     const submitSrc = rendererSource.substring(submitStart, submitEnd + 2);
     // Rules analysis should run in background, not block auto-advance
-    expect(submitSrc).toContain('showRulesDialog(feedback)');
+    expect(submitSrc).toContain('showRulesDialog(feedback, { repo: currentRepoKey, repoPath: currentRepoPath })');
     expect(submitSrc).toContain('.catch(');
     // Should NOT await showRulesDialog
     expect(submitSrc).not.toContain('await showRulesDialog');
@@ -6449,7 +6449,7 @@ describe('One pane at a time', () => {
       ['function openShortcutsDialog()', 400],
       ['function openPrCommentDialog()', 400],
       ['function openCompareSlideshow(index)', 400],
-      ['async function showRulesDialog(reviewFeedback)', 2200]
+      ['async function showRulesDialog(reviewFeedback, reviewTarget)', 2200]
     ];
     const missing = [];
     for (const [signature, window] of openers) {
@@ -6476,5 +6476,89 @@ describe('One pane at a time', () => {
                       'closeCommitsPanel', 'closeCommentsPanel']) {
       expect(helper).toContain(`${fn}()`);
     }
+  });
+});
+
+// ── Rules come from the PR's repo ──
+
+describe('Rules target the reviewed PR repo (main process)', () => {
+  let mainSource;
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  });
+
+  test('resolveRulesRepo takes the repo the renderer passed', () => {
+    const start = mainSource.indexOf('function resolveRulesRepo(repoKey)');
+    expect(start).toBeGreaterThan(-1);
+    const helper = mainSource.substring(start, start + 900);
+    expect(helper).toContain('return { owner: parts[0], name: parts[1], key:');
+    // Configured default repo is only the fallback, never the first choice
+    expect(helper).toContain('appConfig.repoOwner');
+    expect(helper.indexOf('parts.length === 2')).toBeLessThan(helper.indexOf('appConfig.repoOwner'));
+  });
+
+  test('all three rules handlers resolve the repo from their payload', () => {
+    for (const handler of ['get-agent-rules', 'propose-rules', 'save-agent-rules']) {
+      const start = mainSource.indexOf(`ipcMain.handle('${handler}', async (event, data = {}) => {`);
+      expect(start).toBeGreaterThan(-1);
+      const body = mainSource.substring(start, start + 1200);
+      expect(body).toContain('resolveRulesRepo(data && data.repo)');
+    }
+  });
+
+  test('the proposal names the reviewed repo instead of appConfig', () => {
+    const start = mainSource.indexOf("ipcMain.handle('propose-rules'");
+    const proposeBody = mainSource.substring(start, start + 6000);
+    expect(proposeBody).toContain('for the ${owner}/${repo} repository');
+    expect(proposeBody).toContain('const target = resolveRulesRepo(data && data.repo)');
+    // The analysis runs inside the PR's own checkout so fd/rg hit the right code
+    expect(proposeBody).toContain('aiOpts.cwd = rulesRepoPath');
+  });
+
+  test('saving writes rules to the resolved repo', () => {
+    const start = mainSource.indexOf("ipcMain.handle('save-agent-rules'");
+    const body = mainSource.substring(start, start + 6000);
+    expect(body).toContain('repos/${owner}/${repo}/contents/${file}');
+    expect(body).toContain('const rulesRepoPath = (data && data.repoPath) || getLocalRepoPath(target.key);');
+    // The local sync must use the same resolved path, not a second lookup
+    expect(body).toContain('const localRepo = rulesRepoPath;');
+    expect(body).not.toContain('appConfig.repoName');
+  });
+});
+
+describe('Rules target the reviewed PR repo (renderer)', () => {
+  let rendererSource, dialogSrc, saveSrc;
+  beforeAll(() => {
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    const start = rendererSource.indexOf('async function showRulesDialog(');
+    dialogSrc = rendererSource.substring(start, rendererSource.indexOf("btnRulesSave.addEventListener('click'", start));
+    const saveStart = rendererSource.indexOf("btnRulesSave.addEventListener('click'");
+    saveSrc = rendererSource.substring(saveStart, saveStart + 2500);
+  });
+
+  test('the request carries the reviewed PR repo, not whichever PR is on screen later', () => {
+    expect(dialogSrc).toContain('rulesTargetRepo = (reviewTarget && reviewTarget.repo) || currentRepoKey || null;');
+    expect(dialogSrc).toContain('rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath) || currentRepoPath || null;');
+    expect(dialogSrc).toContain('repo: rulesTargetRepo');
+    expect(dialogSrc).toContain('repoPath: rulesTargetRepoPath');
+    // propose uses the repo the main process actually read the rules from
+    expect(dialogSrc).toContain('repo: rulesData.repo || rulesTargetRepo');
+  });
+
+  test('the submit path passes the reviewed PR repo in', () => {
+    expect(rendererSource).toContain('showRulesDialog(feedback, { repo: currentRepoKey, repoPath: currentRepoPath })');
+  });
+
+  test('saving reuses the snapshot, so auto-advance cannot redirect the write', () => {
+    expect(saveSrc).toContain('repo: rulesTargetRepo');
+    expect(saveSrc).toContain('repoPath: rulesTargetRepoPath');
+    expect(saveSrc).not.toContain('repo: currentRepoKey');
+  });
+
+  test('the dialog shows which repo the rules came from', () => {
+    expect(dialogSrc).toContain("document.getElementById('rules-repo')");
+    expect(dialogSrc).toContain('Rules from ');
+    const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+    expect(html).toContain('id="rules-repo"');
   });
 });

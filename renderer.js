@@ -2889,9 +2889,11 @@ async function submitReview(eventType) {
             feedback.push({ file: c.file, line: c.line, text: c.text });
           }
         }
-        // Run rules analysis in background — don't block auto-advance
+        // Run rules analysis in background — don't block auto-advance. The rules
+        // must come from the repo of the PR being reviewed (this one), not the
+        // default repo and not whichever PR auto-advance loads next.
         if (feedback.length > 0) {
-          showRulesDialog(feedback).catch(err => {
+          showRulesDialog(feedback, { repo: currentRepoKey, repoPath: currentRepoPath }).catch(err => {
             console.warn('[rules] Background rules analysis error:', err.message);
           });
         }
@@ -6726,16 +6728,27 @@ const btnRulesCancel = document.getElementById('btn-rules-cancel');
 
 let currentRuleProposals = [];
 let rulesAvailableFiles = [];
+// The repo whose rules this dialog is working on. Snapshotted when the dialog is
+// requested so the analysis and the later Save both target the PR that was
+// REVIEWED, not whichever PR auto-advance has moved on to in the meantime.
+let rulesTargetRepo = null;
+let rulesTargetRepoPath = null;
 
-async function showRulesDialog(reviewFeedback) {
+async function showRulesDialog(reviewFeedback, reviewTarget) {
   const config = await window.electronAPI.getConfig();
   if (!config.rules || !config.rules.enabled) return false;
-  
+
+  rulesTargetRepo = (reviewTarget && reviewTarget.repo) || currentRepoKey || null;
+  rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath) || currentRepoPath || null;
+
   showToast('Analyzing feedback against existing rules...', 'progress');
   
   // Run analysis in background — don't show overlay until we have proposals
   try {
-    const rulesData = await window.electronAPI.getAgentRules();
+    const rulesData = await window.electronAPI.getAgentRules({
+      repo: rulesTargetRepo,
+      repoPath: rulesTargetRepoPath
+    });
     if (rulesData.error) {
       console.error('[rules] Failed to load agent rules:', rulesData.error);
       showToast('Rules analysis failed', 'error');
@@ -6745,7 +6758,9 @@ async function showRulesDialog(reviewFeedback) {
     const result = await window.electronAPI.proposeRules({
       feedback: reviewFeedback,
       agentsMd: rulesData.agentsMd || '',
-      referencedFiles: rulesData.referencedFiles || []
+      referencedFiles: rulesData.referencedFiles || [],
+      repo: rulesData.repo || rulesTargetRepo,
+      repoPath: rulesTargetRepoPath
     });
     
     if (result.error) {
@@ -6766,6 +6781,11 @@ async function showRulesDialog(reviewFeedback) {
     closePrDescDropdown();
     rulesOverlay.style.display = 'flex';
     btnRulesSave.disabled = false;
+    const repoLine = document.getElementById('rules-repo');
+    if (repoLine) {
+      const rulesRepo = rulesData.repo || rulesTargetRepo;
+      repoLine.textContent = rulesRepo ? `Rules from ${rulesRepo}` : '';
+    }
     let html = '';
     currentRuleProposals.forEach((proposal, i) => {
       html += `<div class="rule-item" data-index="${i}">
@@ -6807,7 +6827,11 @@ btnRulesSave.addEventListener('click', async () => {
   if (rulesToSave.length > 0) {
     btnRulesSave.disabled = true;
     btnRulesSave.textContent = 'Saving...';
-    const result = await window.electronAPI.saveAgentRules({ rules: rulesToSave });
+    const result = await window.electronAPI.saveAgentRules({
+      rules: rulesToSave,
+      repo: rulesTargetRepo,
+      repoPath: rulesTargetRepoPath
+    });
     if (result && result.error) {
       showToast(`⚠ Could not save rules: ${escapeHtml(result.error)}`, 'error', 10000);
     } else if (result && result.results) {
