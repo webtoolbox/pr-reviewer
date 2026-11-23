@@ -6506,6 +6506,13 @@ describe('Rules target the reviewed PR repo (main process)', () => {
     }
   });
 
+  test('a repo with no rules files at all is reported, not thrown on', () => {
+    const start = mainSource.indexOf("ipcMain.handle('get-agent-rules'");
+    const body = mainSource.substring(start, start + 4500);
+    expect(body).toContain("const fileRefs = (agentsMd || '').match(");
+    expect(body).toContain('noRulesFiles: !agentsMd && referencedFiles.length === 0');
+  });
+
   test('the proposal names the reviewed repo instead of appConfig', () => {
     const start = mainSource.indexOf("ipcMain.handle('propose-rules'");
     const proposeBody = mainSource.substring(start, start + 6000);
@@ -6555,9 +6562,10 @@ describe('Rules target the reviewed PR repo (renderer)', () => {
     expect(saveSrc).not.toContain('repo: currentRepoKey');
   });
 
-  test('the dialog shows which repo the rules came from', () => {
+  test('the dialog shows which repo the rules came from, and when it has none yet', () => {
     expect(dialogSrc).toContain("document.getElementById('rules-repo')");
     expect(dialogSrc).toContain('Rules from ');
+    expect(dialogSrc).toContain("rulesData.noRulesFiles ? ' (no rules file yet)' : ''");
     const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
     expect(html).toContain('id="rules-repo"');
   });

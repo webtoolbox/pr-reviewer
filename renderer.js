@@ -6784,7 +6784,10 @@ async function showRulesDialog(reviewFeedback, reviewTarget) {
     const repoLine = document.getElementById('rules-repo');
     if (repoLine) {
       const rulesRepo = rulesData.repo || rulesTargetRepo;
-      repoLine.textContent = rulesRepo ? `Rules from ${rulesRepo}` : '';
+      // Say which repo the rules came from, and when that repo has none yet -
+      // otherwise an empty rules base reads as "your feedback is already covered"
+      const noRulesYet = rulesData.noRulesFiles ? ' (no rules file yet)' : '';
+      repoLine.textContent = rulesRepo ? `Rules from ${rulesRepo}${noRulesYet}` : '';
     }
     let html = '';
     currentRuleProposals.forEach((proposal, i) => {

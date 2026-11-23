@@ -4503,7 +4503,9 @@ ipcMain.handle('get-agent-rules', async (event, data = {}) => {
     }
 
     // Also check AGENTS.md for explicit references to other files
-    const fileRefs = agentsMd.match(/(?:\.github\/instructions\/[\w.-]+\.md|\.github\/[\w.-]+\.md)/g) || [];
+    // (agentsMd stays null when the repo has no rules file at all - e.g. reviewing
+    // a PR in a repo that has never carried AGENTS.md; don't throw on that)
+    const fileRefs = (agentsMd || '').match(/(?:\.github\/instructions\/[\w.-]+\.md|\.github\/[\w.-]+\.md)/g) || [];
     const uniqueRefs = [...new Set(fileRefs)];
     for (const ref of uniqueRefs) {
       if (referencedFiles.some(f => f.path === ref)) continue; // Already loaded
@@ -4511,7 +4513,9 @@ ipcMain.handle('get-agent-rules', async (event, data = {}) => {
       if (content) referencedFiles.push({ path: ref, content });
     }
 
-    return { agentsMd, referencedFiles, repo: target.key };
+    // noRulesFiles tells the dialog to say so instead of implying the repo has
+    // rules this feedback was checked against
+    return { agentsMd, referencedFiles, repo: target.key, noRulesFiles: !agentsMd && referencedFiles.length === 0 };
   } catch (err) {
     return { error: err.message };
   }
