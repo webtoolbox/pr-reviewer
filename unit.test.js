@@ -3805,9 +3805,11 @@ describe('Rules dialog auto-advance fix', () => {
     expect(disabledCheck).toContain('return false');
   });
 
-  test('showRulesDialog returns true when overlay is displayed', () => {
-    // The function should return true only when proposals are shown
-    const funcStart = rendererSource.indexOf('async function showRulesDialog(reviewFeedback, reviewTarget)');
+  test('the rules analysis returns true only when proposals are rendered', () => {
+    // The outcome lives in runRulesAnalysis; showRulesDialog only wraps it in the
+    // persistent progress toast and passes the result through.
+    const funcStart = rendererSource.indexOf('async function runRulesAnalysis(reviewFeedback)');
+    expect(funcStart).toBeGreaterThan(-1);
     const funcEnd = rendererSource.indexOf('\n}\n', funcStart + 100);
     const funcSrc = rendererSource.substring(funcStart, funcEnd + 2);
     // Should have exactly one 'return true' (proposals rendered path)
@@ -3816,6 +3818,12 @@ describe('Rules dialog auto-advance fix', () => {
     // Should have 'return false' for errors/no-proposals
     const falseReturns = (funcSrc.match(/return false/g) || []).length;
     expect(falseReturns).toBeGreaterThanOrEqual(1);
+    // The dialog hands that result straight back to the caller.
+    const dialogSrc = rendererSource.substring(
+      rendererSource.indexOf('async function showRulesDialog'),
+      rendererSource.indexOf('async function showRulesDialog') + 1400
+    );
+    expect(dialogSrc).toContain('return withProgressToast(');
   });
 
   test('submitReview runs rules analysis in background (non-blocking)', () => {
@@ -6338,6 +6346,76 @@ describe('Session review timer', () => {
   });
 });
 
+// ── Rules analysis: long-running AI work ──
+
+describe('Rules analysis (long-running AI)', () => {
+  let mainSource;
+  let rendererSource;
+
+  beforeAll(() => {
+    mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+    rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+  });
+
+  const proposeHandler = () => mainSource.substring(
+    mainSource.indexOf("ipcMain.handle('propose-rules'"),
+    mainSource.indexOf('// ── Rule application helpers')
+  );
+
+  test('propose-rules does NOT kill the analysis on a wall-clock timer', () => {
+    const fn = proposeHandler();
+    // Regression: `timeout: 60000` killed every analysis that ran past a minute —
+    // execFile reports `Command failed: hermes chat ...` (killed: true) and the
+    // reviewer never saw the suggestions. The agent reads the rules files and
+    // searches the repo first, so a legitimate run takes minutes.
+    expect(fn).not.toMatch(/const aiOpts = \{[^}]*timeout/);
+    expect(fn).toContain('const aiOpts = {};');
+    // The repo cwd is still handed over so fd/rg land on the right codebase.
+    expect(fn).toContain('if (rulesRepoPath && fs.existsSync(rulesRepoPath)) aiOpts.cwd = rulesRepoPath;');
+    expect(fn).toContain('resolve({ proposals: [], availableFiles, error: err.message })');
+  });
+
+  test('showToast(m, type, 0) is persistent — only the caller dismisses it', () => {
+    const start = rendererSource.indexOf('function showToast');
+    const body = rendererSource.substring(start, rendererSource.indexOf('function showSafeToast', start));
+    expect(body).toContain('if (duration > 0) {');
+    expect(body).toContain('let timer = null;');
+    // _dismiss must tolerate a persistent toast having no timer at all.
+    expect(body).toContain('if (timer) clearTimeout(timer);');
+  });
+
+  test('the rules dialog holds its progress toast open until the analysis ends', () => {
+    const dialog = rendererSource.substring(
+      rendererSource.indexOf('async function showRulesDialog'),
+      rendererSource.indexOf('async function runRulesAnalysis')
+    );
+    // The analysis is wrapped in the persistent-toast helper.
+    expect(dialog).toContain("withProgressToast('Analyzing feedback against existing rules...', () => runRulesAnalysis(reviewFeedback))");
+
+    const helper = rendererSource.substring(
+      rendererSource.indexOf('async function withProgressToast'),
+      rendererSource.indexOf('async function runRulesAnalysis')
+    );
+    // duration 0 = persistent, plus a live elapsed count so a minutes-long run
+    // never looks like nothing is happening.
+    expect(helper).toContain("showToast(`${message} 0s`, 'progress', 0)");
+    expect(helper).toContain('toast.textContent = `${message} ${Math.round((Date.now() - startedAt) / 1000)}s`');
+    // Retired on EVERY exit path, including a throw: proposals, "nothing needed",
+    // error and exception all land in the finally.
+    expect(helper).toContain('} finally {');
+    expect(helper).toContain('clearInterval(tick);');
+    expect(helper).toContain('toast._dismiss()');
+
+    const analysis = rendererSource.substring(
+      rendererSource.indexOf('async function runRulesAnalysis'),
+      rendererSource.indexOf("btnRulesSave.addEventListener('click'")
+    );
+    // The outcome toasts are separate toasts, so they survive the progress one leaving.
+    expect(analysis).toContain("showToast('No new rules needed', 'info', 4000)");
+    expect(analysis).toContain("showToast('Rules analysis failed', 'error')");
+  });
+});
+
 // ── Hidden file paths (internal config option, diff.hiddenPaths) ──
 
 describe('hidden paths matcher', () => {
@@ -6553,7 +6631,7 @@ describe('One pane at a time', () => {
       ['function openShortcutsDialog()', 400],
       ['function openPrCommentDialog()', 400],
       ['function openCompareSlideshow(index)', 400],
-      ['async function showRulesDialog(reviewFeedback, reviewTarget)', 2200]
+      ['async function runRulesAnalysis(reviewFeedback)', 1600]
     ];
     const missing = [];
     for (const [signature, window] of openers) {

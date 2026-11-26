@@ -4631,7 +4631,14 @@ Keep rules concise — one sentence each when possible.`;
     const args = ['chat', '-p', rulesConfig.aiProfile || appConfig.hermesProfile || 'wt', '-q', prompt, '-Q'];
     // Run inside the PR's repo when we have one, so fd/rg searches the prompt
     // invites land on the right codebase (the app's own cwd is not the repo).
-    const aiOpts = { timeout: 60000 };
+    // No wall-clock kill. The old `timeout: 60000` killed the analysis mid-run:
+    // the agent reads AGENTS.md + the instruction files and searches the repo
+    // before answering, so a legitimate run takes minutes, and every run that
+    // passed 60s failed with execFile's `Command failed: hermes chat ...`
+    // (killed: true) — the reviewer never saw the suggestions. Hermes caps its
+    // own idle time (agent.gateway_timeout); the process ends on its own and the
+    // renderer keeps a progress toast up until it does.
+    const aiOpts = {};
     if (rulesRepoPath && fs.existsSync(rulesRepoPath)) aiOpts.cwd = rulesRepoPath;
     const proc = require('child_process').execFile(aiCmd, args, aiOpts, (err, stdout) => {
       if (err) { log('ERROR', '[propose-rules] AI command failed:', err.message); resolve({ proposals: [], availableFiles, error: err.message }); return; }

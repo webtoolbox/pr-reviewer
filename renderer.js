@@ -2649,13 +2649,20 @@ function showToast(message, type = 'info', duration = 8000) {
   toast.className = `toast toast-${type}`;
   toast.innerHTML = message;
   container.appendChild(toast);
-  const timer = setTimeout(() => {
-    toast.classList.add('toast-out');
-    setTimeout(() => toast.remove(), 300);
-  }, duration);
+  // duration 0 (or less) = persistent: the caller decides when it goes away.
+  // Used for work whose progress matters (the rules analysis can run minutes),
+  // where a self-dismissing toast left the user with no sign anything was running.
+  let timer = null;
+  if (duration > 0) {
+    timer = setTimeout(() => {
+      toast.classList.add('toast-out');
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
   // Return a dismiss handle so callers can remove the toast early
   toast._dismiss = () => {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
+    timer = null;
     toast.classList.add('toast-out');
     setTimeout(() => toast.remove(), 300);
   };
@@ -6762,8 +6769,34 @@ async function showRulesDialog(reviewFeedback, reviewTarget) {
   rulesTargetRepoPath = (reviewTarget && reviewTarget.repoPath)
     || ((!rulesTargetRepo || rulesTargetRepo === currentRepoKey) ? currentRepoPath : null);
 
-  showToast('Analyzing feedback against existing rules...', 'progress');
-  
+  // The analysis reads the repo's rules and searches the code before answering,
+  // so it runs for minutes: the progress toast must stay up for the whole run
+  // (the old 8s default vanished long before the answer arrived).
+  return withProgressToast('Analyzing feedback against existing rules...', () => runRulesAnalysis(reviewFeedback));
+}
+
+// Run `work()` under a toast that stays on screen until the work finishes,
+// showing elapsed seconds so a slow run never looks like it died. duration 0
+// means only this function takes the toast down.
+async function withProgressToast(message, work) {
+  const startedAt = Date.now();
+  const toast = showToast(`${message} 0s`, 'progress', 0);
+  const tick = setInterval(() => {
+    if (!toast || !toast.isConnected) return;
+    toast.textContent = `${message} ${Math.round((Date.now() - startedAt) / 1000)}s`;
+  }, 1000);
+  try {
+    return await work();
+  } finally {
+    clearInterval(tick);
+    if (toast && toast._dismiss) toast._dismiss();
+  }
+}
+
+// Load the rules, ask the AI for proposals and open the dialog; returns true when
+// the dialog was opened. Outcome toasts fire while the progress toast is still
+// up, so a result is never signalled only by a toast that disappeared.
+async function runRulesAnalysis(reviewFeedback) {
   // Run analysis in background — don't show overlay until we have proposals
   try {
     const rulesData = await window.electronAPI.getAgentRules({

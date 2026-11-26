@@ -2539,6 +2539,67 @@ async function runTests() {
   `);
   assert('A reset session keeps counting (activity does not restart it)', sessionTimerResetCounting === 'ok', `result: ${sessionTimerResetCounting}`);
 
+  // TEST: a persistent toast (duration 0) survives long work and only leaves when dismissed
+  const persistentToast = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (typeof showToast !== 'function') return 'no-fn';
+      const t = showToast('Analyzing feedback against existing rules... 0s', 'progress', 0);
+      await new Promise(r => setTimeout(r, 1500));
+      const stillThere = document.body.contains(t);
+      t._dismiss();
+      await new Promise(r => setTimeout(r, 400));
+      const gone = !document.body.contains(t);
+      return (stillThere && gone) ? 'ok' : JSON.stringify({ stillThere, gone });
+    })()
+  `);
+  assert('Persistent toast stays until dismissed', persistentToast === 'ok', `result: ${persistentToast}`);
+
+  // TEST: the normal auto-dismiss toasts still time out on their own
+  const autoDismissToast = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const t = showToast('short notice', 'info', 300);
+      await new Promise(r => setTimeout(r, 900));
+      return document.body.contains(t) ? 'stuck' : 'ok';
+    })()
+  `);
+  assert('Timed toast still auto-dismisses', autoDismissToast === 'ok', `result: ${autoDismissToast}`);
+
+  // TEST: the rules analysis keeps its progress toast up while the AI is working
+  // (the bridge is frozen, so this drives withProgressToast — what the rules
+  // dialog wraps the analysis in — instead of faking the AI IPC calls)
+  const rulesProgressToast = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      if (typeof withProgressToast !== 'function') return 'no-fn';
+      const work = new Promise((resolve) => setTimeout(() => resolve('proposals'), 2200));
+      const pending = withProgressToast('Analyzing feedback against existing rules...', () => work);
+      await new Promise(r => setTimeout(r, 1500));
+      const during = [...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).filter(t => /Analyzing feedback/.test(t));
+      // Exactly one toast, counting up in whole seconds.
+      const counts = during.length === 1 && /Analyzing feedback against existing rules\\.\\.\\. \\d+s/.test(during[0]);
+      const result = await pending;
+      await new Promise(r => setTimeout(r, 400));
+      const after = [...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent);
+      const progressGone = !after.some(t => /Analyzing feedback/.test(t));
+      window.__rulesToast = { during, counts, progressGone, result };
+      return (counts && progressGone && result === 'proposals') ? 'ok' : JSON.stringify(window.__rulesToast);
+    })()
+  `);
+  assert('Rules analysis holds its progress toast until the AI answers', rulesProgressToast === 'ok', `result: ${rulesProgressToast}`);
+
+  // TEST: the progress toast also goes away when the analysis throws
+  const rulesProgressToastThrow = await mainWindow.webContents.executeJavaScript(`
+    (async () => {
+      const pending = withProgressToast('Analyzing feedback against existing rules...', () => Promise.reject(new Error('boom'))).catch(() => 'threw');
+      await new Promise(r => setTimeout(r, 300));
+      const whileRunning = [...document.querySelectorAll('#toast-container .toast')].some(t => /Analyzing feedback/.test(t.textContent));
+      const result = await pending;
+      await new Promise(r => setTimeout(r, 400));
+      const gone = ![...document.querySelectorAll('#toast-container .toast')].some(t => /Analyzing feedback/.test(t.textContent));
+      return (whileRunning && gone && result === 'threw') ? 'ok' : JSON.stringify({ whileRunning, gone, result });
+    })()
+  `);
+  assert('Progress toast is retired when the analysis fails', rulesProgressToastThrow === 'ok', `result: ${rulesProgressToastThrow}`);
+
   // TEST: Keyboard shortcuts dialog toggles on Shift+?
   const shortcutsDialog = await mainWindow.webContents.executeJavaScript(`
     (() => {
