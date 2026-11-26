@@ -40,8 +40,9 @@
       background: #21262d; color: #c9d1d9; /* same as the icons/pills beside it */
       font-size: 12px; font-weight: 500; line-height: 1.2;
       white-space: nowrap; font-variant-numeric: tabular-nums;
-      cursor: default; user-select: none;
+      cursor: pointer; user-select: none;
     }
+    #session-timer:hover { background: #30363d; border-color: #484f58; }
 
     /* Badge — matches parent button color */
     .badge {
@@ -1943,6 +1944,7 @@
       /* Session review timer — matches #review-bar button color so the label
          reads the same as the pills and icons beside it */
       #session-timer { background: #f6f8fa; border-color: #d0d7de; color: #24292f; }
+      #session-timer:hover { background: #eaeef2; border-color: #afb8c1; }
 
       /* Find-in-page bar */
       #find-bar { background: #ffffff; border-color: #d0d7de; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
@@ -2228,7 +2230,7 @@
       <span id="comment-nav-label" style="font-size:12px;color:#8b949e;margin:0 4px"></span>
       <button id="btn-next-comment" title="Next comment (Cmd+])" aria-label="Next comment">▶</button>
     </span>
-    <span id="session-timer" title="Total time reviewing PRs in this session. Advances once per minute; a new session starts after 15 minutes without activity.">⏱ 0 min</span>
+    <span id="session-timer" title="Total time reviewing PRs in this session. Advances once per minute; a new session starts after 15 minutes without activity. Click to reset.">⏱ 0 min</span>
     <div id="ai-chat-panel">
       <div class="ai-chat-header">
         <span class="ai-chat-title">Chat with AI</span>

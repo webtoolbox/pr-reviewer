@@ -2496,6 +2496,49 @@ async function runTests() {
   `);
   assert('AI chat heartbeat does not clobber message', aiChatHeartbeat === 'ok', `result: ${aiChatHeartbeat}`);
 
+  // TEST: clicking the session timer resets it to 0 min and keeps counting
+  const sessionTimerReset = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof resetReviewSession !== 'function') return 'no-fn';
+      const el = document.getElementById('session-timer');
+      if (!el) return 'no-timer';
+      // Put the timer on a running 12-minute session by hand.
+      sessionStart = Date.now() - 12 * 60 * 1000;
+      sessionLastActive = Date.now();
+      sessionRenderedMinute = -1;
+      renderReviewSessionTimer();
+      const before = el.textContent;
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const after = el.textContent;
+      const stored = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || '{}');
+      // The reset session must be live: start ≈ now and far from the old start.
+      const live = typeof stored.start === 'number' && Math.abs(stored.start - Date.now()) < 3000;
+      const reset = before === '⏱ 12 min' && after === '⏱ 0 min';
+      window.__timerResetResult = { before, after, live, reset };
+      return reset && live ? 'ok' : JSON.stringify(window.__timerResetResult);
+    })()
+  `);
+  assert('Clicking the session timer resets it to 0 min', sessionTimerReset === 'ok', `result: ${sessionTimerReset}`);
+
+  // TEST: the reset is a fresh RUNNING session — later activity extends it, it
+  // does not restart the clock (only a reset or the idle timeout starts a new one)
+  const sessionTimerResetCounting = await mainWindow.webContents.executeJavaScript(`
+    (() => {
+      if (typeof touchReviewSession !== 'function') return 'no-fn';
+      const at = Date.now() - 5 * 60 * 1000;
+      sessionStart = at;
+      sessionLastActive = Date.now();
+      touchReviewSession(true);
+      const notRestarted = sessionStart === at;
+      sessionRenderedMinute = -1;
+      renderReviewSessionTimer();
+      const label = document.getElementById('session-timer').textContent;
+      window.__timerCountResult = { label, notRestarted };
+      return (label === '⏱ 5 min' && notRestarted) ? 'ok' : JSON.stringify(window.__timerCountResult);
+    })()
+  `);
+  assert('A reset session keeps counting (activity does not restart it)', sessionTimerResetCounting === 'ok', `result: ${sessionTimerResetCounting}`);
+
   // TEST: Keyboard shortcuts dialog toggles on Shift+?
   const shortcutsDialog = await mainWindow.webContents.executeJavaScript(`
     (() => {

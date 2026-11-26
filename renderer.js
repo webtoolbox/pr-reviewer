@@ -179,6 +179,23 @@ function initReviewSessionTimer() {
   });
 }
 
+// Clicking the timer restarts it: the label drops back to 0 min and the clock
+// counts from the click. A reset is a deliberate "start over" — it must not be
+// mistaken for the idle-timeout path (which also lands on 0 min), so it starts a
+// session immediately instead of clearing to "no session".
+function resetReviewSession() {
+  const now = Date.now();
+  sessionLastTouch = now;
+  startReviewSession(now);
+}
+
+if (sessionTimerEl) {
+  sessionTimerEl.addEventListener('click', () => {
+    resetReviewSession();
+    showToast('Review timer reset', 'info', 2000);
+  });
+}
+
 initReviewSessionTimer();
 
 // ===================== FILE SIDEBAR =====================

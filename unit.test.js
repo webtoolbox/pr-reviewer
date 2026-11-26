@@ -4543,12 +4543,20 @@ describe('AI Chat and Hermes profile', () => {
     expect(mainSource).toContain("ipcMain.handle('ai-chat'");
   });
 
-  test('ai-chat uses -t hermes-cli toolset and NO killing wall-clock timeout', () => {
+  test('ai-chat passes NO explicit toolset list so the profile cli surface wins', () => {
     const fn = mainSource.substring(
       mainSource.indexOf("ipcMain.handle('ai-chat'"),
       mainSource.indexOf('function newHermesStreamState')
     );
-    expect(fn).toContain("'-t', 'hermes-cli'");
+    // Regression: '-t', 'hermes-cli' REPLACES the profile's platform_toolsets.cli
+    // list inside the gateway, and that composite expands to tools the CLI surface
+    // does not have (kanban_*). The gateway then refused the WHOLE session with
+    // `invalid_params: toolsets: not available on this surface: kanban_attach, ...`
+    // and every chat bubble came back empty. The flag must stay off.
+    expect(fn).not.toContain("'-t'");
+    expect(fn).not.toContain("'--toolsets'");
+    expect(fn).not.toContain("'-t', 'hermes-cli'");
+    expect(fn).toContain("const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '--format', 'stream-json', '-q', prompt];");
     // Streamed as raw markdown events — the -q box re-renders markdown for the
     // terminal and strips ``` fences, so code blocks never rendered as blocks.
     expect(fn).toContain("'--format', 'stream-json'");
@@ -4563,6 +4571,43 @@ describe('AI Chat and Hermes profile', () => {
     expect(fn).toContain('const truncated = code !== 0 || signal || !state.done || clean.length === 0;');
     // Liveness heartbeat keeps the UI honest about long runs.
     expect(fn).toContain('heartbeat');
+  });
+
+  test('a run that never started reports the CLI reason instead of "incomplete"', () => {
+    const fn = mainSource.substring(
+      mainSource.indexOf('function newHermesStreamState'),
+      mainSource.indexOf('function expandPath')
+    );
+    const { newHermesStreamState, applyHermesStreamLine } = new Function(
+      fn + '\nreturn { newHermesStreamState, applyHermesStreamLine };'
+    )();
+    // The result event carries the failure reason when the session could not start.
+    const state = newHermesStreamState();
+    expect(state.error).toBe('');
+    expect(applyHermesStreamLine(
+      JSON.stringify({ type: 'result', session_id: '', exit_code: 1, text: '', error: 'invalid_params' }),
+      state
+    )).toBe(true);
+    expect(state.error).toBe('invalid_params');
+    expect(state.answer).toBe('');
+    // A clean run leaves the error field empty.
+    const ok = newHermesStreamState();
+    applyHermesStreamLine(JSON.stringify({ type: 'result', text: 'done', exit_code: 0 }), ok);
+    expect(ok.error).toBe('');
+    // A short reason can never arrive as whitespace-only noise.
+    const blank = newHermesStreamState();
+    applyHermesStreamLine(JSON.stringify({ type: 'result', text: '', exit_code: 1, error: '   ' }), blank);
+    expect(blank.error).toBe('');
+
+    const handler = mainSource.substring(
+      mainSource.indexOf("ipcMain.handle('ai-chat'"),
+      mainSource.indexOf('function newHermesStreamState')
+    );
+    expect(handler).toContain("const reason = (state.error || '').trim();");
+    expect(handler).toContain('`Hermes could not answer: ${reason}`');
+    expect(handler).toContain('clean.length === 0 && reason');
+    // With text on screen the truncation wording stays (that case IS a truncation).
+    expect(handler).toContain('Answer may be incomplete (${why})');
   });
 
   test('stream-json feed keeps markdown code fences and builds the activity feed', () => {
@@ -6242,6 +6287,54 @@ describe('Session review timer', () => {
     expect(restoreSavedSession({}, T0)).toBeNull();
     expect(restoreSavedSession({ start: 'yesterday', lastActive: T0 }, T0)).toBeNull();
     expect(restoreSavedSession({ start: T0, lastActive: null }, T0)).toBeNull();
+  });
+
+  // ── Click-to-reset ──
+  // Mirrors resetReviewSession(): a reset starts a NEW session at the click
+  // instant, so the label renders 0 min right away and counts from there.
+  function resetSession(now) {
+    return { start: now, lastActive: now };
+  }
+
+  test('a reset restarts the count at zero and keeps counting', () => {
+    const before = { start: T0, lastActive: T0 + 12 * 60 * 1000 };
+    const atReset = T0 + 12 * 60 * 1000;
+    expect(minutesSince(before.start, atReset)).toBe(12);
+    const after = resetSession(atReset);
+    expect(minutesSince(after.start, atReset)).toBe(0);
+    expect(minutesSince(after.start, atReset + 59 * 1000)).toBe(0);
+    expect(minutesSince(after.start, atReset + 60 * 1000)).toBe(1);
+    // The reset session is active, so the idle timeout does NOT immediately fire.
+    expect(sessionTimedOut(after.lastActive, atReset)).toBe(false);
+  });
+
+  test('resetReviewSession starts a session instead of clearing it', () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    const start = rendererSource.indexOf('function resetReviewSession');
+    expect(start).toBeGreaterThan(-1);
+    const body = rendererSource.substring(start, rendererSource.indexOf('initReviewSessionTimer();', start));
+    // startReviewSession = 0 min with the clock running. endReviewSession /
+    // removeItem would leave the label dead at 0 until the next stray input event.
+    expect(body).toContain('startReviewSession(now)');
+    expect(body).not.toContain('endReviewSession');
+    expect(body).not.toContain('removeItem');
+  });
+
+  test('the timer element itself carries the click handler', () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+    const start = rendererSource.indexOf('function resetReviewSession');
+    const body = rendererSource.substring(start, rendererSource.indexOf('initReviewSessionTimer();', start));
+    expect(body).toContain("sessionTimerEl.addEventListener('click'");
+    expect(body).toContain('resetReviewSession()');
+  });
+
+  test('index.html makes the timer look clickable and says so in the tooltip', () => {
+    const indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+    const start = indexHtml.indexOf('#session-timer {');
+    expect(start).toBeGreaterThan(-1);
+    const css = indexHtml.substring(start, indexHtml.indexOf('}', start));
+    expect(css).toContain('cursor: pointer');
+    expect(indexHtml).toContain('Click to reset.');
   });
 });
 

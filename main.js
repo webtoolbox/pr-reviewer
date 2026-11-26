@@ -291,9 +291,14 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
   // terminal and strips the ``` fences, so perl/html/json code reached the bubble
   // as loose paragraphs instead of code blocks; stream-json hands the raw
   // markdown over untouched (`text` deltas, finalized by the `result` event).
-  // `-t hermes-cli` slims the toolset so the agent spends far less time loading
-  // tools before first token.
-  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '-t', 'hermes-cli', '--format', 'stream-json', '-q', prompt];
+  // Do NOT pass -t/--toolsets here. An explicit list REPLACES the profile's
+  // platform_toolsets.<surface> allow-list (gateway/session_policy.py), and the
+  // composite name 'hermes-cli' expands to tools the CLI surface does not have
+  // (kanban_*) - the gateway then refuses the WHOLE session with
+  // "invalid_params: toolsets: not available on this surface: kanban_attach, ..."
+  // and the chat bubble came back empty on every message. Omitting the flag uses
+  // the profile's own cli toolset list, which is the surface-correct set.
+  const args = ['chat', '-p', appConfig.hermesProfile || 'wt', '--format', 'stream-json', '-q', prompt];
   log('INFO', `[ai-chat] Sending (first 100): ${prompt.substring(0, 100)}`);
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
@@ -398,7 +403,13 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
             : (!state.done ? 'agent never sent a result event' : 'no output produced'));
         log('WARN', `[ai-chat] Hermes result may be INCOMPLETE (${why}) — ${clean.length} chars.`);
         if (stderrText.trim()) log('WARN', `[ai-chat] stderr: ${stderrText.trim().slice(-300)}`);
-        const msg = `Answer may be incomplete (${why}). Here's what was produced so far; re-send to continue.`;
+        // Nothing came back AND the CLI named a reason: that is a failure to start,
+        // not a truncation — saying "incomplete" there sent the reviewer off
+        // re-sending a message that could never work.
+        const reason = (state.error || '').trim();
+        const msg = clean.length === 0 && reason
+          ? `Hermes could not answer: ${reason}`
+          : `Answer may be incomplete (${why}). Here's what was produced so far; re-send to continue.`;
         try { sender.send('ai-chat-stream', { text: clean, status: '', error: msg, timedOut: true, done: true }); } catch {}
         finish({ error: msg, response: clean });
         return;
@@ -418,7 +429,7 @@ ipcMain.handle('ai-chat', async (event, { message, prNumber, repoKey, history })
 //   {"type":"result","text":"..."}    the finished answer (authoritative)
 // Everything else — system init, the session footer, blank lines — is chrome.
 function newHermesStreamState() {
-  return { answer: '', steps: [], seen: new Set(), done: false };
+  return { answer: '', steps: [], seen: new Set(), done: false, error: '' };
 }
 
 // Apply one line of the feed to the state. Returns true when the payload
@@ -436,6 +447,10 @@ function applyHermesStreamLine(line, state) {
   if (ev.type === 'tool_use') return addHermesStep(state, formatHermesToolStep(ev));
   if (ev.type === 'result') {
     if (typeof ev.text === 'string') state.answer = ev.text; // final: replaces deltas
+    // A run that could not start at all (bad args, provider/auth failure) puts the
+    // reason here and exits non-zero with no text — keep it so the bubble can say
+    // what actually went wrong instead of "answer may be incomplete".
+    if (typeof ev.error === 'string' && ev.error.trim()) state.error = ev.error.trim();
     state.done = true;
     return true;
   }
